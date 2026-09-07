@@ -680,7 +680,8 @@ def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     runner = CliRunner()
     result = runner.invoke(cli_main, ["image", "list", *_WS])
     assert result.exit_code == 0
-    assert calls == ["official", "public", "project", "private"]
+    # Source fetches run concurrently; require each exactly once, not a thread order.
+    assert sorted(calls) == sorted(["official", "public", "project", "private"])
     assert "pytorch" in result.output
     assert "lyz-dev:100" in result.output
     assert "2.0" in result.output
