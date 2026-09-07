@@ -193,6 +193,7 @@ def test_export_is_private_and_no_secret_in_output(tmp_path, mock_keys):
     assert list(tmp_path.iterdir()) == [target]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX export preflight")
 @pytest.mark.parametrize("symlink", [False, True])
 def test_export_refuses_existing_file_or_symlink_before_secret_fetch(tmp_path, mock_keys, symlink):
     target = tmp_path / "key"
@@ -231,16 +232,15 @@ def test_delete_requires_confirmation_without_network(mock_keys):
     mock_keys.assert_not_called()
 
 
-def test_ambiguous_name_needs_pick(monkeypatch, tmp_path, mock_keys):
+def test_ambiguous_name_needs_pick(monkeypatch, mock_keys):
     monkeypatch.setattr(
         api_keys,
         "list_api_keys",
         lambda **k: [api_keys.APIKeyInfo("a", "demo", "1"), api_keys.APIKeyInfo("b", "demo", "2")],
     )
-    result = CliRunner().invoke(
-        main, ["account", "api-key", "export", "demo", "--output", str(tmp_path / "key")]
-    )
-    assert result.exit_code != 0 and "--pick" in result.output
+    # Resolution also backs delete on Windows, where export stops before lookup.
+    with pytest.raises(ValueError, match="--pick"):
+        key_cli._resolve("demo", None, object())
     mock_keys.assert_not_called()
 
 
