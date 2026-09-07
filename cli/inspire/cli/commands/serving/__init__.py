@@ -21,7 +21,7 @@ from .serving_commands import (
     stop_serving,
     versions_serving,
 )
-from .serving_api import serving_api
+from .serving_api import serving_api as serving_api_command
 from .serving_logs import logs_serving
 from .serving_metrics import serving_metrics
 
@@ -73,9 +73,8 @@ serving.add_command(delete_serving)
 serving.add_command(configs_serving)
 serving.add_command(serving_metrics)
 serving.add_command(serving_api_metrics)
+serving.add_command(serving_api_command)
 serving.add_command(shell_serving)
 
 
 __all__ = ["serving"]
-
-serving.add_command(serving_api)

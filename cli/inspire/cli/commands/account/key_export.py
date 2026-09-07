@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 
-def render_key(value: str, format: str, env_name: str) -> str:
+def render_key(value: str, output_format: str, env_name: str) -> str:
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
         raise ValueError("Use a valid environment variable name.")
-    if format == "raw":
+    if output_format == "raw":
         return value + "\n"
-    if format == "dotenv":
+    if output_format == "dotenv":
         # Dotenv parsers disagree on quote escaping and ${...} expansion.
         # Plain safe tokens round-trip in shell, python-dotenv and Docker.
         if not re.fullmatch(r"[A-Za-z0-9_./+=:@%-]+", value):
@@ -25,9 +25,9 @@ def render_key(value: str, format: str, env_name: str) -> str:
                 "This key needs parser-specific dotenv escaping; use raw or a shell format."
             )
         return f"{env_name}={value}\n"
-    if format == "sh":
+    if output_format == "sh":
         return f"export {env_name}={shlex.quote(value)}\n"
-    if format == "powershell":
+    if output_format == "powershell":
         return f"$env:{env_name} = '" + value.replace("'", "''") + "'\n"
     raise ValueError("Unknown key export format.")
 

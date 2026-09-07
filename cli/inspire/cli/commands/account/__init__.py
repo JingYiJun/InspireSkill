@@ -2,8 +2,6 @@
 
 import click
 
-from .api_key import api_key
-
 from inspire.cli.commands.account.add import add
 from inspire.cli.commands.account.current import current
 from inspire.cli.commands.account.list_cmd import list_cmd
@@ -14,6 +12,7 @@ from inspire.cli.commands.account.use import use
 
 # Aliased so the submodules stay reachable as `...account.check` etc.; binding
 # the command object to the bare name would shadow the module it came from.
+from inspire.cli.commands.account.api_key import api_key as api_key_command
 from inspire.cli.commands.account.check import check as check_command
 from inspire.cli.commands.account.context import context as context_command
 
@@ -32,5 +31,4 @@ account.add_command(current)
 account.add_command(check_command)
 account.add_command(context_command)
 account.add_command(permissions)
-
-account.add_command(api_key)
+account.add_command(api_key_command)

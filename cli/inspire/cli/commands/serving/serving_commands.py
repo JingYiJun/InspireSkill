@@ -2409,7 +2409,9 @@ def create_serving(
         endpoint = serving_endpoint(result)
         if not endpoint and serving_id:
             try:
-                endpoint = serving_endpoint(browser_api_module.get_serving_detail(serving_id, session=session))
+                endpoint = serving_endpoint(
+                    browser_api_module.get_serving_detail(serving_id, session=session)
+                )
             except Exception:
                 # Creation has succeeded. A failed read must never invite a
                 # duplicate create or misreport the mutation as failed.

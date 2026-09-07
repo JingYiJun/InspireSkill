@@ -5,19 +5,19 @@ from __future__ import annotations
 import click
 
 from inspire.cli.context import (
-    Context,
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    Context,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.errors import exit_with_error
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.config import ConfigError
 from inspire.platform.web import browser_api
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
 from . import serving_commands
 from .access import invocation_info
 

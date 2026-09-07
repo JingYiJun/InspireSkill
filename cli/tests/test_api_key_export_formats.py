@@ -1,22 +1,21 @@
 """Explicit secret destinations, portable serialization and process scope."""
 
-import importlib
 import json
 import os
-from pathlib import Path
-import subprocess
 import shutil
+import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import Mock
 
-from click.testing import CliRunner
 import pytest
+from click.testing import CliRunner
 
+from inspire.cli.commands.account import api_key as key_cli
+from inspire.cli.commands.account import key_export
 from inspire.cli.main import main
 from inspire.platform.web.browser_api import api_keys
-from inspire.cli.commands.account import key_export
 
-key_cli = importlib.import_module("inspire.cli.commands.account.api_key")
 SECRET = "fixture-secret-only"
 
 

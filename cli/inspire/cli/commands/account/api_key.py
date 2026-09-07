@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from collections.abc import Iterator
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 
 import click
 
 from inspire.cli.context import (
-    Context,
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
+    Context,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
@@ -27,11 +27,12 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.errors import exit_with_error, require_confirmation
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.config import ConfigError
 from inspire.platform.web.browser_api import api_keys
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
+
 from .key_export import export_private_key, render_key, windows_acl_tool
 
 
@@ -67,15 +68,21 @@ def _name(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
     return value
 
 
-def _emit(ctx: Context, result: dict) -> None:
+def _env_name(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise click.BadParameter("Use a valid environment variable name.")
+    return value
+
+
+def _emit(ctx: Context, result: dict[str, str]) -> None:
     if ctx.json_output:
         click.echo(json_formatter.format_json(result))
     else:
-        for k, v in result.items():
-            click.echo(f"{k.replace('_', ' ').title()}: {json_formatter.sanitize_text(v)}")
+        for key, value in result.items():
+            click.echo(f"{key.replace('_', ' ').title()}: {json_formatter.sanitize_text(value)}")
 
 
-def _resolve(name: str, pick: int | None, session) -> api_keys.APIKeyInfo:
+def _resolve_key(name: str, pick: int | None, session: WebSession) -> api_keys.APIKeyInfo:
     matches = [key for key in api_keys.list_api_keys(session=session) if key.name == name]
     if not matches:
         raise ValueError("API key name not found. See 'inspire account api-key list'.")
@@ -169,12 +176,6 @@ def create_key(ctx: Context, name: str) -> None:
         _emit(ctx, result)
 
 
-def _env_name(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-        raise click.BadParameter("Use a valid environment variable name.")
-    return value
-
-
 @api_key.command("export")
 @click.argument("name", callback=_name)
 @click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
@@ -222,13 +223,20 @@ def export_key(
     are never merged or overwritten. --stdout exposes plaintext: capture it
     in your shell; ordinary JSON output never includes the key.
 
-    A child CLI cannot modify its parent shell's environment. In Bash/Zsh:
-    export INF_API_KEY="$(inspire account api-key export NAME --stdout)"
-    In PowerShell:
-    $env:INF_API_KEY = inspire account api-key export NAME --stdout
-    Use api-key run to pass the key directly to a child without printing it.
+    A child CLI cannot modify its parent shell's environment. Use api-key
+    run to pass the key directly to a child without printing it.
+
+    \b
+    Bash/Zsh:
+        INF_API_KEY="$(inspire account api-key export NAME --stdout)" && export INF_API_KEY
+
+    \b
+    PowerShell:
+        $key = inspire account api-key export NAME --stdout
+        if ($LASTEXITCODE -eq 0) { $env:INF_API_KEY = $key }
+        Remove-Variable key
     """
-    if (output is None) == (not to_stdout):
+    if (output is not None) == to_stdout:
         exit_with_error(
             ctx,
             "ValidationError",
@@ -251,7 +259,7 @@ def export_key(
             if sys.platform == "win32":
                 windows_acl_tool()
         session = get_web_session()
-        key = _resolve(name, pick, session)
+        key = _resolve_key(name, pick, session)
         value = api_keys.get_api_key_plaintext(key.key_id, session=session)
         content = render_key(value, output_format, env_name)
         if to_stdout:
@@ -296,7 +304,7 @@ def run_with_key(
         return
     with _errors(ctx):
         session = get_web_session()
-        key = _resolve(name, pick, session)
+        key = _resolve_key(name, pick, session)
         env = os.environ.copy()
         env[env_name] = api_keys.get_api_key_plaintext(key.key_id, session=session)
         try:
@@ -321,7 +329,7 @@ def delete_key(ctx: Context, name: str, pick: int | None, yes: bool) -> None:
     )
     with _errors(ctx):
         session = get_web_session()
-        key = _resolve(name, pick, session)
+        key = _resolve_key(name, pick, session)
         api_keys.delete_api_key(key.key_id, session=session)
         result = {"name": name, "status": "deleted"}
         try:

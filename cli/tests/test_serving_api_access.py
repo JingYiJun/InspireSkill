@@ -1,6 +1,5 @@
 """Invocation contracts, URL safety, and credential output boundaries."""
 
-import importlib
 import json
 import os
 import sys
@@ -8,18 +7,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from click.testing import CliRunner
 import pytest
+from click.testing import CliRunner
 
-from inspire.cli.main import main
+from inspire.cli.commands.account import api_key as key_cli
+from inspire.cli.commands.account import key_export
+from inspire.cli.commands.serving import serving_api as api_cli
+from inspire.cli.commands.serving import serving_commands
 from inspire.cli.commands.serving.access import invocation_info, serving_endpoint
 from inspire.cli.commands.serving.public_output import public_serving, public_serving_list_item
-from inspire.cli.commands.serving import serving_commands
 from inspire.cli.formatters.json_formatter import format_json
+from inspire.cli.main import main
 from inspire.platform.web.browser_api import api_keys
 
-key_cli = importlib.import_module("inspire.cli.commands.account.api_key")
-api_cli = importlib.import_module("inspire.cli.commands.serving.serving_api")
 SECRET = "test-only-secret-never-print"
 ENDPOINT = "https://inference-serving-abc.example.org"
 
@@ -240,9 +240,9 @@ def test_ambiguous_name_needs_pick(monkeypatch, mock_keys):
         "list_api_keys",
         lambda **k: [api_keys.APIKeyInfo("a", "demo", "1"), api_keys.APIKeyInfo("b", "demo", "2")],
     )
-    # Resolution also backs delete on Windows, where export stops before lookup.
+    # Name resolution is shared by export, run and delete on every platform.
     with pytest.raises(ValueError, match="--pick"):
-        key_cli._resolve("demo", None, object())
+        key_cli._resolve_key("demo", None, object())
     mock_keys.assert_not_called()
 
 
@@ -262,7 +262,7 @@ def test_create_accepted_but_refresh_failure_is_not_reported_as_failed(monkeypat
 def test_windows_export_requires_acl_tool_before_fetching_secret(tmp_path, monkeypatch, mock_keys):
     monkeypatch.setattr(key_cli.sys, "platform", "win32")
     monkeypatch.setattr(
-        importlib.import_module("inspire.cli.commands.account.key_export").shutil,
+        key_export.shutil,
         "which",
         lambda name: None,
     )
