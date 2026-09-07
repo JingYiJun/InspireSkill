@@ -91,7 +91,9 @@ def test_dotenv_file_is_private_and_does_not_merge(key, tmp_path):
     key.assert_called_once()
 
 
-@pytest.mark.parametrize("value", ["${EXPAND}", "has'quote", 'a"b', "a#comment", "a\\escape"])
+@pytest.mark.parametrize(
+    "value", ["${EXPAND}", "has'quote", 'a"b', "a#comment", "a\\escape", "~", "prefix:~"]
+)
 def test_dotenv_rejects_ambiguous_parser_escaping(value):
     with pytest.raises(ValueError):
         key_export.render_key(value, "dotenv", "INF_API_KEY")
@@ -193,3 +195,32 @@ def test_acl_subprocess_receives_path_but_no_key(monkeypatch, tmp_path):
     key_export.restrict_windows_file(str(tmp_path / "empty-file"))
     assert SECRET not in repr(call.call_args)
     assert call.call_args.kwargs["env"]["INSPIRE_KEY_EXPORT_PATH"] == str(tmp_path / "empty-file")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Native Windows ACL diagnostics")
+@pytest.mark.parametrize("keep_open", [False, True])
+def test_native_windows_acl_on_empty_file(tmp_path, keep_open):
+    # This isolated subprocess only sees an empty fixture. Its diagnostic is
+    # safe to expose on failure; production export still suppresses stderr.
+    target = tmp_path / "empty"
+    target.write_bytes(b"")
+    stream = target.open("r+") if keep_open else None
+    try:
+        result = subprocess.run(
+            [
+                key_export.windows_acl_tool(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                key_export._WINDOWS_ACL_SCRIPT,
+            ],
+            env={**os.environ, "INSPIRE_KEY_EXPORT_PATH": str(target)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert target.read_bytes() == b""
+    finally:
+        if stream is not None:
+            stream.close()

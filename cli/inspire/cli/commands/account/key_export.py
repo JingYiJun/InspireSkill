@@ -20,7 +20,7 @@ def render_key(value: str, format: str, env_name: str) -> str:
     if format == "dotenv":
         # Dotenv parsers disagree on quote escaping and ${...} expansion.
         # Plain safe tokens round-trip in shell, python-dotenv and Docker.
-        if not re.fullmatch(r"[A-Za-z0-9_./~+=:@%-]+", value):
+        if not re.fullmatch(r"[A-Za-z0-9_./+=:@%-]+", value):
             raise ValueError(
                 "This key needs parser-specific dotenv escaping; use raw or a shell format."
             )
