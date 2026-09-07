@@ -502,6 +502,8 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式。
 | 实例行字段 | `name`（**带命名空间** `<project>/<pod>`）、`component_type`(`LEADER`/`WORKER`)、`status`、`node`、`ready`、`restarts`、`term`、`created_at` / `started_at` / `finished_at`、`running_time_ms` | — |
 | `ListServingEvents` 的两级 | `INFERENCE_SERVING` 给部署级（`CreatingRevision` / `GroupsProgressing` / `Pending`），`INFERENCE_SERVING_INSTANCE` 给 Pod 级（`Scheduled` / `Pulled` / `Created` / `Started` / `Unhealthy`），两者不相交 | **Pod 级的 `object_ids` 必须带命名空间**，裸 pod 名答 `InternalError` |
 | 列表键 | `ListServingScaleHistory` 是 `scale_history_items`，不是 `items` 也不是 `list` | 曾经按 `items` 读，任何有扩缩容历史的 serving 都返回空列表——读错键就永远看不到数据 |
+| 调用地址 | `ListServings` 行和 `GetServing` 详情的 `extra_info.service`；停止态也可能保留地址 | 列表直接复用该字段，不逐条查详情；不按名字、域名前缀或容器端口拼接 URL，地址存在不代表就绪 |
+| 创建后读取 | 创建已成功但详情读取失败或未返回 Endpoint 时，CLI 保留 created 结果并提示稍后查询 | `--dry-run` 不预测 Endpoint；详情读取失败不能诱发重复创建 |
 | 节点落点 | 在 `GetServing` 的 `extra_info.node_names[]`，顶层只有 `node_num_per_replica`（每副本几个节点，是规格） | 按顶层读会让每个部署都显示成没落点 |
 | `GetServingLog` 的坏 pod 名 | 答 `InternalError` | 看着像平台故障，实际含义是「pod 名不对」 |
 | 两个指标族不相干 | `GetServingApiMetric` 是请求流量：`QPS`、`SUCCESS_QPS`、`FAIL_QPS`、`SUCCESS_RATE`、`FAIL_RATE`、`REQUEST_COUNT`、`LATENCY`、`TTFT`(+`_P50`/`_P95`/`_P99`)、`TTLT`(+同)、`INPUT_TOKENS`、`OUTPUT_TOKENS`。它**接受整个 `metric_types` 列表**（`GetTaskMetric` 不接受），也不需要计算组句柄 | 与 `GetTaskMetric` 共享零个指标名。返回项带 `metric_type` / `group_name` / `data_unit` / `time_series[{timestamp, data}]` |
@@ -586,7 +588,7 @@ Referer：`/jobs/distributedTraining`。
 
 #### 推理 API Key 与 Serving Endpoint
 
-当前网页的 API 调用页使用以下账号 Action，均由 `browser_api/api_keys.py` 封装，响应经 `_v2_result()` 解包。它们与旧的 `ListAPIKeys` 不同。
+控制台 Serving 详情页的「API 调用」与用户中心的 API Key 页面使用以下账号 Action，均由 [`browser_api/api_keys.py`](../../cli/inspire/platform/web/browser_api/api_keys.py) 封装。请求为 `POST /api/v2/user?Action=...`，沿用所选账号的 Web Session，响应经 `_v2_result()` 解包。它们与旧的 `ListAPIKeys` 不同。
 
 | Action | 请求体 | 响应 / CLI 合同 |
 | --- | --- | --- |
@@ -595,12 +597,15 @@ Referer：`/jobs/distributedTraining`。
 | `GetAPIKeyPlaintext` | `{api_key_id}` | `value` 为密钥明文，仅显式 `account api-key export` 消费，原子发布到新建的 `0600` 文件，不进日志、终端或 JSON |
 | `DeleteAPIKey` | `{api_key_id}` | 成功后列表确认对应句柄消失；`account api-key delete` |
 
-四项已通过临时 Key 的创建、列表确认、私有文件导出、删除与列表消失验证。接口错误不转发原始消息，以免服务器回显密钥。名称歧义走 `--pick`；账号由既有全局 `--account` 机制选择；不额外传 Workspace 或 Serving ID。创建/删除提交成功但确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。
+接口错误不转发原始消息，以免服务器回显密钥。列表的 `value` 即使是明文也会被丢弃，不能依赖服务端始终返回掩码；列表结构异常报错，不能降级为空列表。CLI 名称接受 1–256 个字母、数字、下划线、短横线或点；同名对象通过可读候选与 `--pick` 消歧，`key_id` 只在内部解析和请求中使用。账号由既有全局 `--account` 机制选择，不额外传 Workspace 或 Serving ID；这不构成“密钥只对某个 Serving 有权限”的保证。
+
+创建和删除提交成功后分别通过列表确认名称出现、所选句柄消失；确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。导出先拒绝既有路径，再在目标目录创建临时文件，核验实际权限为 `0600`，写入密钥及末尾换行并 fsync，最后用硬链接原子发布，清理临时文件。既有文件、符号链接或发布期间出现的同名路径都不会被覆盖；Windows 原生环境在获取明文前拒绝导出并提示 WSL。
+
+[`test_serving_api_access.py`](../../cli/tests/test_serving_api_access.py) 覆盖请求合同、值清洗、名称歧义、Header/URL 校验和导出竞争；[`test_serving_commands.py`](../../cli/tests/test_serving_commands.py) 覆盖状态输出及创建后读取失败。验证密钥生命周期时使用独立临时 Key，并在删除后读回确认；不要以成功信封或 HEAD 状态码代替实际模型推理验收。
 
 Serving 调用页直接使用 `GetServing.extra_info.service`，列表行同样包含该值。公开输出只放行经过验证的 HTTP(S) origin；含 userinfo、query、fragment、未知路径或非法主机的地址不输出。JSON 在这些命令中显式保留 `endpoint`，其他调用仍按默认规则剔除该字段。生成示例中的 `example` 和已派生的 `base_url` 有同样的局部保留例外。
 
 `INF_API_KEY` 是客户端环境变量，鉴权为 Bearer；`x-inspire-inference-key` 是亲和性 Hash Header。CUSTOM 不追加固定业务路径，也不自动宣称兼容 OpenAI；EXCLUSIVE / SERVERLESS 按控制台示例派生 `/v1` 和 chat completions。Header 值拒绝控制字符并使用 shell quoting，生成示例不调用推理服务。
-
 
 ### 8.8 `project` — 项目
 

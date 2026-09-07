@@ -124,7 +124,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 `serving list/status` 返回平台分配的 Endpoint；创建成功时会尝试读取 Endpoint，尚未取得则提示稍后查询。地址在停止状态也可能保留，所以看到地址不代表服务已就绪。用 `serving api <name> --workspace <workspace>` 查看完整地址、服务类型和调用说明；`--format curl` 只生成示例，不发送请求、不获取密钥，`--json` 返回单一结构化结果。
 
-密钥由 `account api-key` 管理，属于选定账号，和 `serving create` 的部署配置分离。`list` 只展示名称和创建时间；`create --name` 创建新密钥；`export <name> --output <path>` 将明文写入新的私有文件（权限 `0600`，不覆盖文件或符号链接），终端和 JSON 不输出明文；导出要求 POSIX 文件权限，Windows 原生环境需改用 WSL；`delete` 会撤销密钥，使用它的客户端会失去访问权。参数以相应 Help 为准。不要在未确认消费者时删除既有密钥。
+密钥由 `account api-key` 管理，属于选定账号，和 `serving create` 的部署配置分离。`list` 只展示名称和创建时间；`create --name` 创建新密钥；`export <name> --output <path>` 将明文写入新的私有文件（权限 `0600`，不覆盖文件或符号链接），终端和 JSON 不输出明文；导出要求 POSIX 文件权限，Windows 原生环境需改用 WSL；`delete` 会撤销密钥，使用它的客户端会失去访问权。同名密钥用 `--pick` 消歧。创建或删除显示 confirmation pending 时，先重新查询列表确认结果，避免重复创建。参数以相应 Help 为准。不要在未确认消费者时删除既有密钥。
 
 网页示例的 `INF_API_KEY` 是**调用者**保存 API Key 的环境变量。导出文件只含密钥和末尾换行，可由客户端 shell 使用 `export INF_API_KEY="$(cat /path/to/private-key)"` 加载；不要开启 shell tracing 或打印其值。HTTP 请求使用 `Authorization: Bearer $INF_API_KEY`。这不要求把密钥放到 Serving 容器，也不是 `serving create` 的额外参数。
 
