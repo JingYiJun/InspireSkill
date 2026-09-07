@@ -91,6 +91,20 @@ def test_format_list_rows_does_not_emit_pagination_footer() -> None:
     assert "Showing" not in out
 
 
+@pytest.mark.parametrize("endpoint", [
+    "https://serving-abc.example.org",
+    "https://inference-serving-12345678-1234-1234-1234-123456789abc.example.org",
+    "https://inference-serving-" + "a" * 40 + ".example.org",
+])
+def test_format_list_rows_preserves_complete_endpoint_only(endpoint: str) -> None:
+    rows = _rows(1)
+    rows[0].update(endpoint=endpoint, model="model-abcdef", project="project-abcdef")
+    out = _format_list_rows(rows, total=1)
+    assert endpoint in out
+    assert "model-abcdef" not in out
+    assert "project-abcdef" not in out
+
+
 def test_format_list_rows_ignores_server_total() -> None:
     out = _format_list_rows(_rows(10), total=10)
     assert "demo-9" in out
@@ -1593,3 +1607,44 @@ def test_serving_create_never_doubles_a_tag_already_in_the_image_name() -> None:
     # A different tag is not a duplicate and must survive.
     assert _with_tag("sandbox-base:u22", "u24") == "sandbox-base:u22:u24"
     assert _with_tag("sandbox-base", "") == "sandbox-base"
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_serving_status_displays_validated_endpoint(monkeypatch, json_output):
+    _patch_serving_cli_deps(monkeypatch)
+    monkeypatch.setattr(serving_commands_module, "remember_resource_identity", lambda **kw: None)
+    endpoint = "https://serving-abc.example.org"
+    monkeypatch.setattr(browser_api_module, "get_serving_detail", lambda **kw: {
+        "name": "demo", "status": "RUNNING", "extra_info": {"service": endpoint},
+    })
+    args = (["--json"] if json_output else []) + ["serving", "status", "demo", "--workspace", "space"]
+    result = CliRunner().invoke(cli_main, args)
+    assert result.exit_code == 0, result.output
+    if json_output:
+        assert json.loads(result.output)["data"]["endpoint"] == endpoint
+    else:
+        assert f"Endpoint: {endpoint}" in result.output
+
+
+@pytest.mark.parametrize("read_fails", [False, True])
+def test_created_serving_remains_successful_when_endpoint_read_fails(monkeypatch, read_fails):
+    _patch_serving_create_deps(monkeypatch, allowed_priority_levels=("low",), priority=1)
+    monkeypatch.setattr(serving_commands_module, "remember_resource_identity", lambda **kw: None)
+    monkeypatch.setattr(browser_api_module, "create_serving", lambda **kw: {"inference_serving_id": "serving-internal"})
+    calls = []
+    def get_detail(*args, **kwargs):
+        calls.append(True)
+        if read_fails:
+            raise ValueError("private backend error")
+        return {"extra_info": {"service": "https://serving.example.org"}}
+    monkeypatch.setattr(browser_api_module, "get_serving_detail", get_detail)
+    result = CliRunner().invoke(cli_main, ["--json", *_serving_create_args()[:-1]])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    data = json.loads(result.output)["data"]
+    assert data["status"] == "created"
+    if read_fails:
+        assert "hint" in data and "endpoint" not in data
+        assert "private backend error" not in result.output
+    else:
+        assert data["endpoint"] == "https://serving.example.org"

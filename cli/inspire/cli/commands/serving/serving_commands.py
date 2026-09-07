@@ -396,7 +396,7 @@ def _serving_resource_label(data: dict[str, Any]) -> str:
 
 
 def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
-    """Render a compact, handle-free inference-serving list."""
+    """Render public rows, preserving validated endpoints as usable URLs."""
     del total
     if not rows:
         return "No inference servings found."
@@ -405,6 +405,7 @@ def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
         (key, label)
         for key, label in (
             ("model", "Model"),
+            ("endpoint", "Endpoint"),
             ("replicas", "Replicas"),
             ("project", "Project"),
             ("workspace", "Workspace"),
@@ -413,18 +414,29 @@ def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
         if any(row.get(key) not in (None, "", "-") for row in rows)
     )
     table_rows = [
-        tuple(row.get(key) or "-" for key, _label in columns)
+        tuple(
+            (row.get(key) or "-") if key == "endpoint" else scrub_raw_ids(row.get(key) or "-")
+            for key, _label in columns
+        )
         for row in rows
     ]
+    # public_serving already validated endpoint origins. Scrubbing embedded
+    # handles or clipping these cells would turn them into unusable URLs.
     widths = [
-        column_width(label, [row[index] for row in table_rows], max_width=48)
-        for index, (_key, label) in enumerate(columns)
+        column_width(
+            label,
+            [row[index] for row in table_rows],
+            max_width=None if key == "endpoint" else 48,
+            scrub=False,
+        )
+        for index, (key, label) in enumerate(columns)
     ]
     rendered = render_table(
         tuple(label for _key, label in columns),
         table_rows,
         widths,
         line_char="─",
+        scrub=False,
     )
     return "\n".join(rendered)
 
@@ -931,7 +943,8 @@ def list_serving(
                     {
                         **page.metadata(),
                         "items": public_items,
-                    }
+                    },
+                    preserve_raw={"endpoint"}
                 )
             )
             return
@@ -954,6 +967,7 @@ def list_serving(
                         if nodes_per_replica not in (None, "")
                         else str(replicas or "-")
                     ),
+                    "endpoint": str(projected.get("endpoint") or "-"),
                     "project": str(projected.get("project") or "-"),
                     "workspace": (
                         scrub_raw_ids(workspace_name) if all_workspaces else "-"
@@ -997,7 +1011,8 @@ def status_serving(
     """Show detail for one inference serving by name.
 
     Detail includes status, project, model, image, resource, startup command,
-    port, replicas, and timestamps when the platform returns them.
+    port, replicas, endpoint, and timestamps when the platform returns them.
+    Use serving api for authentication and invocation examples.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -1056,7 +1071,7 @@ def status_serving(
             resource_label = _serving_resource_label(data)
             if resource_label:
                 detail["resource"] = resource_label
-            click.echo(json_formatter.format_json(detail))
+            click.echo(json_formatter.format_json(detail, preserve_raw={"endpoint"}))
             return
 
         detail = public_serving(data, fallback_name=name)
@@ -1065,6 +1080,7 @@ def status_serving(
             f"Status: {detail.get('status') or 'N/A'}",
         ]
         for key, label in (
+            ("endpoint", "Endpoint"),
             ("type", "Type"),
             ("project", "Project"),
             ("workspace", "Workspace"),
@@ -2398,10 +2414,28 @@ def create_serving(
                 status=str(result.get("status") or ""),
                 created_at=str(result.get("created_at") or ""),
             )
+        from .access import serving_endpoint
+
+        created = public_operation(name, "created")
+        endpoint = serving_endpoint(result)
+        if not endpoint and serving_id:
+            try:
+                endpoint = serving_endpoint(
+                    browser_api_module.get_serving_detail(serving_id, session=session)
+                )
+            except Exception:
+                # Creation has succeeded. A failed read must never invite a
+                # duplicate create or misreport the mutation as failed.
+                pass
+        if endpoint:
+            created["endpoint"] = endpoint
+        else:
+            created["hint"] = "Endpoint not available yet; use serving status or serving api later."
         if ctx.json_output:
-            click.echo(json_formatter.format_json(public_operation(name, "created")))
+            click.echo(json_formatter.format_json(created, preserve_raw={"endpoint"}))
             return
         click.echo(human_formatter.format_mutation_success("Serving", "created", name))
+        click.echo(f"Endpoint: {endpoint}" if endpoint else created["hint"])
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)

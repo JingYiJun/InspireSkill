@@ -160,7 +160,7 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
             if spec.get("gpu_count") not in (None, ""):
                 bits.append(f"{spec['gpu_count']} GPU")
             resource = ", ".join(bits)
-    return sanitize_public_data(
+    projected = sanitize_public_data(
         _compact(
             {
                 "name": sanitize_public_text(name, omit_urls=True),
@@ -212,6 +212,13 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
         )
     )
 
+    from .access import serving_endpoint
+
+    endpoint = serving_endpoint(item)
+    if endpoint:
+        projected["endpoint"] = endpoint
+    return projected
+
 
 def public_serving_list_item(
     item: object,
@@ -229,6 +236,7 @@ def public_serving_list_item(
         "status": view.get("status", ""),
         "project": view.get("project", ""),
         "workspace": workspace,
+        **({"endpoint": view["endpoint"]} if view.get("endpoint") else {}),
         "compute_group": view.get("compute_group", ""),
         "created_by": view.get("created_by", ""),
     }
