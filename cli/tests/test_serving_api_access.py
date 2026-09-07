@@ -180,7 +180,6 @@ def mock_keys(monkeypatch):
     return fetch
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX private export")
 def test_export_is_private_and_no_secret_in_output(tmp_path, mock_keys):
     target = tmp_path / "key"
     result = CliRunner().invoke(
@@ -188,7 +187,10 @@ def test_export_is_private_and_no_secret_in_output(tmp_path, mock_keys):
     )
     assert result.exit_code == 0, result.output
     assert target.read_text() == SECRET + "\n"
-    assert target.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert target.stat().st_mode & 0o777 == 0o600
+    else:
+        assert "current-user-only ACL" in result.output
     assert SECRET not in result.output and "private-id" not in result.output
     assert list(tmp_path.iterdir()) == [target]
 
@@ -257,11 +259,16 @@ def test_create_accepted_but_refresh_failure_is_not_reported_as_failed(monkeypat
     create.assert_called_once()
 
 
-def test_windows_export_rejects_before_fetching_secret(tmp_path, monkeypatch, mock_keys):
+def test_windows_export_requires_acl_tool_before_fetching_secret(tmp_path, monkeypatch, mock_keys):
     monkeypatch.setattr(key_cli.sys, "platform", "win32")
+    monkeypatch.setattr(
+        importlib.import_module("inspire.cli.commands.account.key_export").shutil,
+        "which",
+        lambda name: None,
+    )
     result = CliRunner().invoke(
         main, ["account", "api-key", "export", "demo", "--output", str(tmp_path / "key")]
     )
-    assert result.exit_code != 0 and "WSL" in result.output
+    assert result.exit_code != 0 and "PowerShell" in result.output
     mock_keys.assert_not_called()
     assert not list(tmp_path.iterdir())

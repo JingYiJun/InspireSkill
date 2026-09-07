@@ -124,9 +124,35 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 `serving list/status` 返回平台分配的 Endpoint；创建成功时会尝试读取 Endpoint，尚未取得则提示稍后查询。地址在停止状态也可能保留，所以看到地址不代表服务已就绪。用 `serving api <name> --workspace <workspace>` 查看完整地址、服务类型和调用说明；`--format curl` 只生成示例，不发送请求、不获取密钥，`--json` 返回单一结构化结果。
 
-密钥由 `account api-key` 管理，属于选定账号，和 `serving create` 的部署配置分离。`list` 只展示名称和创建时间；`create --name` 创建新密钥；`export <name> --output <path>` 将明文写入新的私有文件（权限 `0600`，不覆盖文件或符号链接），终端和 JSON 不输出明文；导出要求 POSIX 文件权限，Windows 原生环境需改用 WSL；`delete` 会撤销密钥，使用它的客户端会失去访问权。同名密钥用 `--pick` 消歧。创建或删除显示 confirmation pending 时，先重新查询列表确认结果，避免重复创建。参数以相应 Help 为准。不要在未确认消费者时删除既有密钥。
+密钥由 `account api-key` 管理，属于选定账号，和 `serving create` 的部署配置分离。`list` 只展示名称和创建时间；`create --name` 创建新密钥；`delete` 会撤销密钥，使用它的客户端会失去访问权。同名密钥用 `--pick` 消歧。创建或删除显示 confirmation pending 时，先重新查询列表确认结果，避免重复创建。参数以相应 Help 为准。不要在未确认消费者时删除既有密钥。
 
-网页示例的 `INF_API_KEY` 是**调用者**保存 API Key 的环境变量。导出文件只含密钥和末尾换行，可由客户端 shell 使用 `export INF_API_KEY="$(cat /path/to/private-key)"` 加载；不要开启 shell tracing 或打印其值。HTTP 请求使用 `Authorization: Bearer $INF_API_KEY`。这不要求把密钥放到 Serving 容器，也不是 `serving create` 的额外参数。
+网页示例的 `INF_API_KEY` 是**调用者**保存 API Key 的环境变量，HTTP 请求使用 `Authorization: Bearer $INF_API_KEY`。这不要求把密钥放到 Serving 容器，也不是 `serving create` 的额外参数。按客户端的加载方式选择导出目标：
+
+```bash
+# 新建标准 .env 文件：INF_API_KEY=密钥
+inspire account api-key export my-key --format dotenv --output .env
+
+# 当前 Bash / Zsh 接收明文输出，保存为环境变量
+# 分开赋值与 export，确保取密钥失败时不会被 export 的成功状态掩盖
+INF_API_KEY="$(inspire account api-key export my-key --stdout)" && export INF_API_KEY
+
+# 只给启动的客户端进程注入环境变量，CLI 不打印密钥
+inspire account api-key run my-key -- python client.py
+```
+
+PowerShell 的当前进程环境变量可用以下方式设置；先检查命令状态，避免失败后继续使用空值：
+
+```powershell
+$key = inspire account api-key export my-key --stdout
+if ($LASTEXITCODE -eq 0) { $env:INF_API_KEY = $key }
+Remove-Variable key
+```
+
+CLI 子进程不能直接修改父终端的环境变量。`run` 继承当前环境并覆盖 `INF_API_KEY`，传播客户端退出状态，父终端保持原值；客户端输出直接继承到终端，客户端自身不要打印密钥。`--env-name APP_API_KEY` 可更换目标变量名。`export --format raw|dotenv|sh|powershell` 分别生成纯密钥、`.env` 赋值、POSIX shell 赋值或 PowerShell 赋值；选择 `--output` 或 `--stdout` 之一。默认 `raw` 含密钥及末尾换行；shell 格式按对应语法引用字面值；dotenv 仅接受无需引用且不会触发变量展开的值，遇到不明确的转义规则会拒绝并提示改用 raw 或 shell 格式。
+
+文件导出在 Linux / macOS 使用 `0600`，Windows 原生环境通过 PowerShell 设置并读回校验仅当前用户的受保护 ACL；无需 WSL。Windows 缺少 PowerShell 时，在获取明文前提示替代方式；文件系统不能满足权限或原子发布要求时导出失败。所有格式都只创建新文件，不覆盖、合并或追加已有 `.env`，也不覆盖符号链接。显式 `--stdout` 会输出明文，应由 shell 捕获；不能与 `--json` 同用。普通命令输出、文件导出结果及 JSON 均不含密钥。不要开启 shell tracing、打印变量或把导出文件提交到仓库。
+
+控制台 API Key 创建弹窗声明“可通过 API Key 访问推理服务和应用”，没有可选的逐服务、项目或用途权限范围。已确认的调用合同是推理服务的 Bearer 鉴权；这不等于通用管理 API 凭据。用户中心的 AccessKey（带所属项目、BucketName）和 SSH 公钥是独立入口，不能用 API Key 替代。网页“应用”的独立调用协议尚未确认，不能据此推导 Notebook、Job、存储或管理接口都接受该 Bearer Key。
 
 `x-inspire-inference-key` 是可选的请求 Hash Key，平台声明相同值的请求会路由到同一节点；它不承担鉴权。需要亲和性时通过 `serving api --affinity-key <业务会话标识>` 生成对应 Header。扩缩容或故障期间的映射稳定性没有额外保证，不能据此假定应用状态永远留在同一副本。
 

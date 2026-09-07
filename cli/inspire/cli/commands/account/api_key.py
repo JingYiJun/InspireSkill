@@ -1,4 +1,4 @@
-"""Account API key lifecycle with explicit, file-only secret export."""
+"""Account API key lifecycle with explicit secret export and child-process injection."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Iterator
 import os
 from pathlib import Path
 import re
-import tempfile
+import subprocess
 import sys
 
 import click
@@ -32,6 +32,7 @@ from inspire.cli.utils.errors import exit_with_error, require_confirmation
 from inspire.config import ConfigError
 from inspire.platform.web.browser_api import api_keys
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+from .key_export import export_private_key, render_key, windows_acl_tool
 
 
 @contextmanager
@@ -93,8 +94,9 @@ def api_key() -> None:
     """Manage platform inference API keys for the selected account.
 
     Keys are separate from serving creation. List never displays key values.
-    Export explicitly to a new private file, then load it into INF_API_KEY
-    in your client. Use serving api for endpoint and request examples.
+    Export to a private raw/.env/shell file, explicitly capture stdout in
+    your shell, or use run to inject INF_API_KEY into a child process.
+    Use serving api for endpoint and request examples.
     """
 
 
@@ -167,25 +169,10 @@ def create_key(ctx: Context, name: str) -> None:
         _emit(ctx, result)
 
 
-def export_private_key(value: str, output: Path) -> None:
-    """Publish a complete 0600 file atomically; never replace files/symlinks."""
-    if sys.platform == "win32":
-        raise ValueError(
-            "Private API key export requires POSIX file permissions; use WSL on Windows."
-        )
-    fd, temporary = tempfile.mkstemp(prefix=".inspire-key-", dir=output.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            if os.fstat(stream.fileno()).st_mode & 0o777 != 0o600:
-                raise ValueError(
-                    "The destination filesystem did not enforce private 0600 permissions."
-                )
-            stream.write(value + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.link(temporary, output)
-    finally:
-        os.unlink(temporary)
+def _env_name(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise click.BadParameter("Use a valid environment variable name.")
+    return value
 
 
 @api_key.command("export")
@@ -193,30 +180,130 @@ def export_private_key(value: str, output: Path) -> None:
 @click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--output",
-    required=True,
     type=click.Path(path_type=Path, dir_okay=False),
-    help="New file for the plaintext key (0600; never overwritten).",
+    help="New private file; existing files and symlinks are never overwritten.",
+)
+@click.option(
+    "--stdout",
+    "to_stdout",
+    is_flag=True,
+    help="Explicitly emit the secret to stdout for shell capture. Incompatible with --json.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["raw", "dotenv", "sh", "powershell"]),
+    default="raw",
+    show_default=True,
+    help="Plain key, .env assignment, or shell assignment.",
+)
+@click.option(
+    "--env-name",
+    default="INF_API_KEY",
+    callback=_env_name,
+    show_default=True,
+    help="Environment variable used by assignment formats.",
 )
 @pass_context
-def export_key(ctx: Context, name: str, pick: int | None, output: Path) -> None:
-    """Write plaintext to a new private file; stdout/JSON contain no secret.
+def export_key(
+    ctx: Context,
+    name: str,
+    pick: int | None,
+    output: Path | None,
+    to_stdout: bool,
+    output_format: str,
+    env_name: str,
+) -> None:
+    """Export a key to a private file or explicitly to stdout.
 
-    Load the exported file in your client: export INF_API_KEY="$(cat PATH)".
-    The file contains only the key and a trailing newline, not a shell script.
-    Requires POSIX file permissions; use WSL on Windows.
+    Choose exactly one of --output and --stdout. File exports use POSIX 0600
+    or a verified current-user-only Windows ACL. --format dotenv writes a
+    standard NAME=value line, suitable for a new .env file. Existing files
+    are never merged or overwritten. --stdout exposes plaintext: capture it
+    in your shell; ordinary JSON output never includes the key.
+
+    A child CLI cannot modify its parent shell's environment. In Bash/Zsh:
+    export INF_API_KEY="$(inspire account api-key export NAME --stdout)"
+    In PowerShell:
+    $env:INF_API_KEY = inspire account api-key export NAME --stdout
+    Use api-key run to pass the key directly to a child without printing it.
     """
+    if (output is None) == (not to_stdout):
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            "Choose exactly one of --output or --stdout.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+    if to_stdout and ctx.json_output:
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            "--stdout cannot be combined with --json.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     with _errors(ctx):
-        if sys.platform == "win32":
-            raise ValueError(
-                "Private API key export requires POSIX file permissions; use WSL on Windows."
-            )
-        if os.path.lexists(output):
-            raise ValueError("Export destination already exists; choose a new file.")
+        if output is not None:
+            if os.path.lexists(output):
+                raise ValueError("Export destination already exists; choose a new file.")
+            if sys.platform == "win32":
+                windows_acl_tool()
         session = get_web_session()
         key = _resolve(name, pick, session)
         value = api_keys.get_api_key_plaintext(key.key_id, session=session)
-        export_private_key(value, output)
-        _emit(ctx, {"name": name, "status": "exported", "permissions": "0600"})
+        content = render_key(value, output_format, env_name)
+        if to_stdout:
+            click.echo(content, nl=False)
+        else:
+            assert output is not None
+            export_private_key(content, output)
+            _emit(
+                ctx,
+                {
+                    "name": name,
+                    "status": "exported",
+                    "format": output_format,
+                    "permissions": "current-user-only ACL" if sys.platform == "win32" else "0600",
+                },
+            )
+
+
+@api_key.command("run", context_settings={"ignore_unknown_options": True})
+@click.argument("name", callback=_name)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option("--env-name", default="INF_API_KEY", callback=_env_name, show_default=True)
+@click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
+@pass_context
+def run_with_key(
+    ctx: Context, name: str, pick: int | None, env_name: str, command: tuple[str, ...]
+) -> None:
+    """Run COMMAND with the key in its environment, without CLI secret output.
+
+    Example: inspire account api-key run NAME -- python client.py
+    Works on Windows and POSIX. The parent shell is unchanged. Child output
+    is inherited, so the child must not print its environment or credentials.
+    The child exit status is propagated; --json is not supported.
+    """
+    if ctx.json_output:
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            "api-key run cannot be combined with --json.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+    with _errors(ctx):
+        session = get_web_session()
+        key = _resolve(name, pick, session)
+        env = os.environ.copy()
+        env[env_name] = api_keys.get_api_key_plaintext(key.key_id, session=session)
+        try:
+            returncode = subprocess.call(command, env=env)
+        except OSError:
+            raise ValueError("Could not start the child command.") from None
+    raise SystemExit(returncode if returncode >= 0 else 128 - returncode)
 
 
 @api_key.command("delete")

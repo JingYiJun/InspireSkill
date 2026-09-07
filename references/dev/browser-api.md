@@ -594,14 +594,18 @@ Referer：`/jobs/distributedTraining`。
 | --- | --- | --- |
 | `GetMyAPIList` | `{}` | `items[{key_id,name,created_at,value}]`；wrapper 丢弃 `value`，默认列表只输出名称和时间；`account api-key list` |
 | `GenerateAPIKey` | `{key_name}` | 不依赖创建返回值，成功后列表读回；`account api-key create` |
-| `GetAPIKeyPlaintext` | `{api_key_id}` | `value` 为密钥明文，仅显式 `account api-key export` 消费，原子发布到新建的 `0600` 文件，不进日志、终端或 JSON |
+| `GetAPIKeyPlaintext` | `{api_key_id}` | `value` 为密钥明文，仅显式 `account api-key export/run` 消费；默认输出与 JSON 不含值，只有 `export --stdout` 显式输出明文 |
 | `DeleteAPIKey` | `{api_key_id}` | 成功后列表确认对应句柄消失；`account api-key delete` |
 
 接口错误不转发原始消息，以免服务器回显密钥。列表的 `value` 即使是明文也会被丢弃，不能依赖服务端始终返回掩码；列表结构异常报错，不能降级为空列表。CLI 名称接受 1–256 个字母、数字、下划线、短横线或点；同名对象通过可读候选与 `--pick` 消歧，`key_id` 只在内部解析和请求中使用。账号由既有全局 `--account` 机制选择，不额外传 Workspace 或 Serving ID；这不构成“密钥只对某个 Serving 有权限”的保证。
 
-创建和删除提交成功后分别通过列表确认名称出现、所选句柄消失；确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。导出先拒绝既有路径，再在目标目录创建临时文件，核验实际权限为 `0600`，写入密钥及末尾换行并 fsync，最后用硬链接原子发布，清理临时文件。既有文件、符号链接或发布期间出现的同名路径都不会被覆盖；Windows 原生环境在获取明文前拒绝导出并提示 WSL。
+创建和删除提交成功后分别通过列表确认名称出现、所选句柄消失；确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。文件导出先拒绝既有路径，再在目标目录创建空临时文件：POSIX 校验实际权限 `0600`；Windows 通过 PowerShell 设置不继承、仅当前用户 FullControl 的 ACL，读回核验后才写入秘密。PowerShell 参数和脚本仅接收空文件路径，不传密钥。格式化内容写入后 fsync，最后以硬链接原子发布，清理临时文件；既有文件、符号链接或发布期间出现的同名路径不会被覆盖。Windows 缺少 PowerShell 时在获取明文前失败；权限或硬链接不受支持时不降级为公开文件。
 
-[`test_serving_api_access.py`](../../cli/tests/test_serving_api_access.py) 覆盖请求合同、值清洗、名称歧义、Header/URL 校验和导出竞争；[`test_serving_commands.py`](../../cli/tests/test_serving_commands.py) 覆盖状态输出及创建后读取失败。验证密钥生命周期时使用独立临时 Key，并在删除后读回确认；不要以成功信封或 HEAD 状态码代替实际模型推理验收。
+`export` 必须选择 `--output` 或 `--stdout` 之一，支持 raw、dotenv、sh、powershell 四种格式和 `--env-name`；dotenv 限定可移植的未引用 token，shell 格式按各自规则引用。仅显式 `--stdout` 可输出明文，不能组合 `--json`。`run NAME -- COMMAND...` 将明文放入子进程环境，使用参数数组启动而不经过 shell，传播退出码，不修改父进程环境，不支持 `--json`。这是显式秘密出口，不能让普通 JSON 清洗例外隐式放行 key value。
+
+网页 API Key 创建弹窗的权限说明为“可通过 API Key 访问推理服务和应用”，只包含名称输入，没有权限范围选择器。AccessKey 与 SSH 公钥为独立用户中心入口；AccessKey 表头包含所属项目和 BucketName。当前只确认推理服务 Bearer 调用合同，应用的独立协议仍未确认，不将该密钥推广为所有 Browser API 的认证凭据。
+
+[`test_serving_api_access.py`](../../cli/tests/test_serving_api_access.py) 覆盖请求合同、值清洗、名称歧义、Header/URL 校验和导出竞争；[`test_api_key_export_formats.py`](../../cli/tests/test_api_key_export_formats.py) 覆盖显式 stdout、格式转义、子进程环境、Windows ACL 失败清理与原生 PowerShell 行为；[`test_serving_commands.py`](../../cli/tests/test_serving_commands.py) 覆盖状态输出及创建后读取失败。验证密钥生命周期时使用独立临时 Key，并在删除后读回确认；不要以成功信封或 HEAD 状态码代替实际模型推理验收。
 
 Serving 调用页直接使用 `GetServing.extra_info.service`，列表行同样包含该值。公开输出只放行经过验证的 HTTP(S) origin；含 userinfo、query、fragment、未知路径或非法主机的地址不输出。JSON 在这些命令中显式保留 `endpoint`，其他调用仍按默认规则剔除该字段。生成示例中的 `example` 和已派生的 `base_url` 有同样的局部保留例外。
 
@@ -1044,7 +1048,7 @@ GET 它答 `301`，Location 是带 token 的网关地址 `https://<gateway>/ws-�
 | 稳定身份只有 Name 和 Alias | 不透明句柄（`ws-`、`project-`、`lcg-`、`quota_id`、`mirror_id`、`notebook_id`、`job_id`）只存在于 `browser_api/` 和 Session 层 |
 | Notebook 地址例外 | `notebook proxy-url` 走 `format_json(…, preserve_raw={"url"})` 打印完整网关 URL——这个地址的每一段都是平台句柄，默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。**代价必须说清楚：这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史 |
 | 明文凭据不进入普通输出 | `file.GetSftpgoConnectionInfo` 的 `auth`：不进日志、不进报错、不进 `--json`、不进文档 |
-| Serving 地址与密钥导出例外 | `serving list/status/create/api` 仅保留已校验 Endpoint；`account api-key export` 只写私有文件，普通输出永远不含密钥值。详见 8.7 节。 |
+| Serving 地址与密钥导出例外 | `serving list/status/create/api` 仅保留已校验 Endpoint；`account api-key export` 支持私有文件与显式 `--stdout`；`run` 注入子进程环境，普通输出永远不含密钥值。详见 8.7 节。 |
 | 内嵌 id 的报错要折掉 | 例如 `Cannot save image of non-running notebook: <id>` |
 
 ## 13. 变更验收
