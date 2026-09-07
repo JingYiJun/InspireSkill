@@ -36,6 +36,9 @@ def render_key(value: str, format: str, env_name: str) -> str:
 # passed in argv, the script, environment variables, stdout or stderr.
 _WINDOWS_ACL_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+# Python may inherit PS7's module path when launching Windows PowerShell.
+# Load the security cmdlets from this engine's own installation explicitly.
+Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
 $path = $env:INSPIRE_KEY_EXPORT_PATH
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = New-Object System.Security.AccessControl.FileSecurity

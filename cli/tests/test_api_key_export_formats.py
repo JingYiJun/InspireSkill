@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 from unittest.mock import Mock
 
@@ -197,9 +198,13 @@ def test_acl_subprocess_receives_path_but_no_key(monkeypatch, tmp_path):
     assert call.call_args.kwargs["env"]["INSPIRE_KEY_EXPORT_PATH"] == str(tmp_path / "empty-file")
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Native Windows ACL diagnostics")
+@pytest.mark.skipif(sys.platform != "win32", reason="Native Windows ACL integration")
 @pytest.mark.parametrize("keep_open", [False, True])
-def test_native_windows_acl_on_empty_file(tmp_path, keep_open):
+@pytest.mark.parametrize("shell_name", ["powershell.exe", "pwsh.exe"])
+def test_native_windows_acl_on_empty_file(tmp_path, keep_open, shell_name):
+    shell = shutil.which(shell_name)
+    if not shell:
+        pytest.skip(f"{shell_name} is not installed")
     # This isolated subprocess only sees an empty fixture. Its diagnostic is
     # safe to expose on failure; production export still suppresses stderr.
     target = tmp_path / "empty"
@@ -208,7 +213,7 @@ def test_native_windows_acl_on_empty_file(tmp_path, keep_open):
     try:
         result = subprocess.run(
             [
-                key_export.windows_acl_tool(),
+                shell,
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",

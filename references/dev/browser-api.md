@@ -599,7 +599,7 @@ Referer：`/jobs/distributedTraining`。
 
 接口错误不转发原始消息，以免服务器回显密钥。列表的 `value` 即使是明文也会被丢弃，不能依赖服务端始终返回掩码；列表结构异常报错，不能降级为空列表。CLI 名称接受 1–256 个字母、数字、下划线、短横线或点；同名对象通过可读候选与 `--pick` 消歧，`key_id` 只在内部解析和请求中使用。账号由既有全局 `--account` 机制选择，不额外传 Workspace 或 Serving ID；这不构成“密钥只对某个 Serving 有权限”的保证。
 
-创建和删除提交成功后分别通过列表确认名称出现、所选句柄消失；确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。文件导出先拒绝既有路径，再在目标目录创建空临时文件：POSIX 校验实际权限 `0600`；Windows 通过 PowerShell 设置不继承、仅当前用户 FullControl 的 ACL，读回核验后才写入秘密。PowerShell 参数和脚本仅接收空文件路径，不传密钥。格式化内容写入后 fsync，最后以硬链接原子发布，清理临时文件；既有文件、符号链接或发布期间出现的同名路径不会被覆盖。Windows 缺少 PowerShell 时在获取明文前失败；权限或硬链接不受支持时不降级为公开文件。
+创建和删除提交成功后分别通过列表确认名称出现、所选句柄消失；确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。文件导出先拒绝既有路径，再在目标目录创建空临时文件：POSIX 校验实际权限 `0600`；Windows 通过 PowerShell 设置不继承、仅当前用户 FullControl 的 ACL，读回核验后才写入秘密。PowerShell 参数和脚本仅接收空文件路径，不传密钥；Security 模块从该引擎的 `$PSHOME` 显式加载，避免 PowerShell 7 → Python → Windows PowerShell 5.1 的模块路径继承导致版本冲突。格式化内容写入后 fsync，最后以硬链接原子发布，清理临时文件；既有文件、符号链接或发布期间出现的同名路径不会被覆盖。Windows 缺少 PowerShell 时在获取明文前失败；权限或硬链接不受支持时不降级为公开文件。
 
 `export` 必须选择 `--output` 或 `--stdout` 之一，支持 raw、dotenv、sh、powershell 四种格式和 `--env-name`；dotenv 限定可移植的未引用 token，shell 格式按各自规则引用。仅显式 `--stdout` 可输出明文，不能组合 `--json`。`run NAME -- COMMAND...` 将明文放入子进程环境，使用参数数组启动而不经过 shell，传播退出码，不修改父进程环境，不支持 `--json`。这是显式秘密出口，不能让普通 JSON 清洗例外隐式放行 key value。
 
