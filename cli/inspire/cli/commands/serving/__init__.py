@@ -21,6 +21,7 @@ from .serving_commands import (
     stop_serving,
     versions_serving,
 )
+from .serving_api import serving_api
 from .serving_logs import logs_serving
 from .serving_metrics import serving_metrics
 
@@ -36,7 +37,8 @@ def serving() -> None:
     to verify the deployment plan.
 
     `metrics` covers GPU / CPU / memory utilization; `api-metrics` covers
-    request traffic (QPS, success rate, latency, tokens).
+    request traffic (QPS, success rate, latency, tokens). Use `api` for the
+    endpoint and invocation examples; manage credentials with `account api-key`.
 
     \b
     Examples:
@@ -75,3 +77,5 @@ serving.add_command(shell_serving)
 
 
 __all__ = ["serving"]
+
+serving.add_command(serving_api)

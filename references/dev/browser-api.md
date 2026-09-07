@@ -263,7 +263,7 @@ CAS 会在连续登录失败后锁账号，也可能对来源机器增加验证�
 | [`notebook`](#84-notebook--交互式建模) | 交互式建模 | 18 | `notebook`、`image` |
 | [`inference_serving`](#85-inference_serving--模型部署) | 模型部署 | 19 | `serving` |
 | [`workspace`](#86-workspace--工作空间资源) | 计算组、节点、配额、用量 | 9 | `resources`、`<workload> quota`、每个 `create` |
-| [`user`](#87-user--账号) | 账号身份与权限 | 3 | `account permissions`、所有按当前用户过滤的列表 |
+| [`user`](#87-user--账号) | 账号身份、权限与 API Key | 7 | `account permissions`、所有按当前用户过滤的列表 |
 | [`project`](#88-project--项目) | 项目 | 4 | `project`、每个 `create` |
 | [`image`](#89-image--镜像) | 镜像 | 5 | `image` |
 | [`model-hub`](#810-model-hub--模型仓库) | 模型仓库 | 14 | `model`、`serving create` |
@@ -474,7 +474,7 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式。
 | --- | --- | --- | --- |
 | `CreateServingConsole` † | 见[创建面字段合同](#9-创建面的字段合同) | `{inference_serving_id, sub_code, sub_msg}` | `serving create`、`serving batch` |
 | `ListServings` | `{workspace_id, page, page_size, filter_by:{my_serving:true, keyword?, project_id[]?, status[]?, inference_serving_type[]?}}` | `{inference_servings[], total}` | `serving list`、Name Resolver |
-| `GetServing` | `{inference_serving_id}` | `status` / `replicas` / `node_num_per_replica` / `model_id` / `model_version` / `mirror_id` / `port` / `command` / `resource_spec_price{}` / `extra_info{node_names[]}` | `serving status`、`serving metrics` |
+| `GetServing` | `{inference_serving_id}` | `status` / `replicas` / `node_num_per_replica` / `model_id` / `model_version` / `mirror_id` / `port` / `command` / `resource_spec_price{}` / `extra_info{node_names[], service}` | `serving status`、`serving api`、`serving metrics` |
 | `ListServingVersions` | `{inference_serving_id}` | `{inference_servings[]\|list[], total}` | `serving versions` |
 | `ListServingInstances` | `{inference_serving_id, page, page_size}` | `{groups[{items[]}], total}` | `serving instances` / `logs` / `events --instance` |
 | `ListServingEvents` | `{page, page_size, filter:{object_type, object_ids[]}}` | `{events[]\|items[]\|list[]}` | `serving events`、`--instance` |
@@ -583,6 +583,24 @@ Referer：`/jobs/distributedTraining`。
 | 未封装 | `user.ListSSH`（账号级 SSH 公钥注册表，与 Notebook SSH 链路无关）、`user.GetMyPermissions`（见第 6 章）。`ListAPIKeys` 随 `user api-keys` 命令一起下线 |
 
 ---
+
+#### 推理 API Key 与 Serving Endpoint
+
+当前网页的 API 调用页使用以下账号 Action，均由 `browser_api/api_keys.py` 封装，响应经 `_v2_result()` 解包。它们与旧的 `ListAPIKeys` 不同。
+
+| Action | 请求体 | 响应 / CLI 合同 |
+| --- | --- | --- |
+| `GetMyAPIList` | `{}` | `items[{key_id,name,created_at,value}]`；wrapper 丢弃 `value`，默认列表只输出名称和时间；`account api-key list` |
+| `GenerateAPIKey` | `{key_name}` | 不依赖创建返回值，成功后列表读回；`account api-key create` |
+| `GetAPIKeyPlaintext` | `{api_key_id}` | `value` 为密钥明文，仅显式 `account api-key export` 消费，原子发布到新建的 `0600` 文件，不进日志、终端或 JSON |
+| `DeleteAPIKey` | `{api_key_id}` | 成功后列表确认对应句柄消失；`account api-key delete` |
+
+四项已通过临时 Key 的创建、列表确认、私有文件导出、删除与列表消失验证。接口错误不转发原始消息，以免服务器回显密钥。名称歧义走 `--pick`；账号由既有全局 `--account` 机制选择；不额外传 Workspace 或 Serving ID。创建/删除提交成功但确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。
+
+Serving 调用页直接使用 `GetServing.extra_info.service`，列表行同样包含该值。公开输出只放行经过验证的 HTTP(S) origin；含 userinfo、query、fragment、未知路径或非法主机的地址不输出。JSON 在这些命令中显式保留 `endpoint`，其他调用仍按默认规则剔除该字段。生成示例中的 `example` 和已派生的 `base_url` 有同样的局部保留例外。
+
+`INF_API_KEY` 是客户端环境变量，鉴权为 Bearer；`x-inspire-inference-key` 是亲和性 Hash Header。CUSTOM 不追加固定业务路径，也不自动宣称兼容 OpenAI；EXCLUSIVE / SERVERLESS 按控制台示例派生 `/v1` 和 chat completions。Header 值拒绝控制字符并使用 shell quoting，生成示例不调用推理服务。
+
 
 ### 8.8 `project` — 项目
 
@@ -1019,8 +1037,9 @@ GET 它答 `301`，Location 是带 token 的网关地址 `https://<gateway>/ws-�
 | --- | --- |
 | 原始响应不得穿透 | 平台原始响应不得直接进入公共输出。命令层必须先解析、投影和清洗，Human 与 JSON 输出使用显式 Allowlist |
 | 稳定身份只有 Name 和 Alias | 不透明句柄（`ws-`、`project-`、`lcg-`、`quota_id`、`mirror_id`、`notebook_id`、`job_id`）只存在于 `browser_api/` 和 Session 层 |
-| 唯一的例外 | `notebook proxy-url` 走 `format_json(…, preserve_raw={"url"})` 打印完整网关 URL——这个地址的每一段都是平台句柄，默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。**代价必须说清楚：这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史 |
-| 明文凭据一律不出现 | `file.GetSftpgoConnectionInfo` 的 `auth`：不进日志、不进报错、不进 `--json`、不进文档 |
+| Notebook 地址例外 | `notebook proxy-url` 走 `format_json(…, preserve_raw={"url"})` 打印完整网关 URL——这个地址的每一段都是平台句柄，默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。**代价必须说清楚：这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史 |
+| 明文凭据不进入普通输出 | `file.GetSftpgoConnectionInfo` 的 `auth`：不进日志、不进报错、不进 `--json`、不进文档 |
+| Serving 地址与密钥导出例外 | `serving list/status/create/api` 仅保留已校验 Endpoint；`account api-key export` 只写私有文件，普通输出永远不含密钥值。详见 8.7 节。 |
 | 内嵌 id 的报错要折掉 | 例如 `Cannot save image of non-running notebook: <id>` |
 
 ## 13. 变更验收

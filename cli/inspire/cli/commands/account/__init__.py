@@ -2,6 +2,8 @@
 
 import click
 
+from .api_key import api_key
+
 from inspire.cli.commands.account.add import add
 from inspire.cli.commands.account.current import current
 from inspire.cli.commands.account.list_cmd import list_cmd
@@ -18,7 +20,7 @@ from inspire.cli.commands.account.context import context as context_command
 
 @click.group()
 def account() -> None:
-    """Manage named Inspire account profiles."""
+    """Manage named account profiles, permissions, and inference API keys."""
 
 
 account.add_command(add)
@@ -30,3 +32,5 @@ account.add_command(current)
 account.add_command(check_command)
 account.add_command(context_command)
 account.add_command(permissions)
+
+account.add_command(api_key)

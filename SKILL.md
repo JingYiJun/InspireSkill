@@ -75,6 +75,7 @@ CLI 不读写仓库级 `./.inspire/`，不把仓库绑定到某个 Project，也
 | GPU Job、CPU HPC、Ray、Serving、TensorBoard，及提交后的观察、优先级与异常 | [`references/compute-workloads.md`](references/compute-workloads.md) |
 | CPU 准备、数据处理、GPU 训练、部署或交付的阶段化计划 | [`references/workflows.md`](references/workflows.md) |
 | Image 选择、保存、注册、可见性和清理 | [`references/image.md`](references/image.md) |
+| Serving Endpoint、`INF_API_KEY`、API Key 管理与请求亲和性 | [`references/compute-workloads.md`](references/compute-workloads.md) |
 | Model Registry、Model Version 与 Serving 的关系 | [`references/model.md`](references/model.md) |
 
 ### CLI 开发

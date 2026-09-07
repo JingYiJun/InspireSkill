@@ -298,7 +298,7 @@ def _sanitize_json_value(
             for key, child in value.items()
             if not _is_id_key(key)
             and not _is_sensitive_field(key)
-            and not _is_engineering_field(key, child)
+            and (not _is_engineering_field(key, child) or _normalized_key(key) in preserve_raw_keys)
         }
     if isinstance(value, list):
         return [
@@ -324,8 +324,8 @@ def _sanitize_json_value(
         if _normalized_key(parent_key) in preserve_raw_keys:
             # The caller declared this key's value *is* the answer, so it ships
             # byte for byte. Only for values that are useless once scrubbed —
-            # `notebook proxy-url` is the one caller today, because a proxy URL
-            # with its handles removed addresses nothing.
+            # Notebook proxy URLs and validated Serving endpoints/templates
+            # would no longer work after handle/header scrubbing.
             return value
         if _normalized_key(parent_key) in _RAW_CONTENT_KEYS:
             return scrub_raw_ids(value)

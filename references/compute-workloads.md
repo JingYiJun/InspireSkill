@@ -106,11 +106,11 @@ Serving 面向模型部署服务。通常先用 Model Registry 找到模型和�
 - 镜像里有服务 Runtime 和启动命令所需依赖。
 - 端口、健康检查和业务 Smoke Test 明确。
 - 资源规格来自 Serving Quota，而不是训练 Job Quota。
-- 公开访问前应用自身鉴权可用；平台通路不替代 API Key 或登录。
+- 调用者已准备平台 API Key；自定义应用有额外鉴权时，还需满足应用本身的要求。
 
 LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类型；普通 Custom Serving 不要推导它们的字段。
 
-当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/logs/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。重复调度条件用 `serving profile`。
+当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/logs/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。每次创建显式传入调度条件；批量创建使用 `serving batch`。
 
 副本数用 `serving scale` 调整，其余配置原样保留；每个副本各占一份完整规格，扩容前先看 `resources availability`。历史配置用 `serving versions` 列出，`serving rollback --version` 按某个历史版本重新部署——副本会被替换，在途请求和重启一样会断。
 
@@ -119,6 +119,20 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 两套指标不要混：`serving metrics` 看 GPU / CPU / 内存这类资源占用，`serving api-metrics` 看请求量、成功率和延迟。「没人调用」和「一直调用一直失败」只有后者分得清。
 
 部署起不来时事件比日志先有线索，而且要看到实例级那一半：`Unhealthy` 是「副本起来了但健康检查一直不过」这个最常见故障的唯一署名，它只出现在实例级事件里，部署级只会说 `GroupsProgressing` / `Pending`。默认的 `serving events` 已经把两级合成一条时间线，不用再加开关。
+
+### Serving 调用与 API Key
+
+`serving list/status` 返回平台分配的 Endpoint；创建成功时会尝试读取 Endpoint，尚未取得则提示稍后查询。地址在停止状态也可能保留，所以看到地址不代表服务已就绪。用 `serving api <name> --workspace <workspace>` 查看完整地址、服务类型和调用说明；`--format curl` 只生成示例，不发送请求、不获取密钥，`--json` 返回单一结构化结果。
+
+密钥由 `account api-key` 管理，属于选定账号，和 `serving create` 的部署配置分离。`list` 只展示名称和创建时间；`create --name` 创建新密钥；`export <name> --output <path>` 将明文写入新的私有文件（权限 `0600`，不覆盖文件或符号链接），终端和 JSON 不输出明文；导出要求 POSIX 文件权限，Windows 原生环境需改用 WSL；`delete` 会撤销密钥，使用它的客户端会失去访问权。参数以相应 Help 为准。不要在未确认消费者时删除既有密钥。
+
+网页示例的 `INF_API_KEY` 是**调用者**保存 API Key 的环境变量。导出文件只含密钥和末尾换行，可由客户端 shell 使用 `export INF_API_KEY="$(cat /path/to/private-key)"` 加载；不要开启 shell tracing 或打印其值。HTTP 请求使用 `Authorization: Bearer $INF_API_KEY`。这不要求把密钥放到 Serving 容器，也不是 `serving create` 的额外参数。
+
+`x-inspire-inference-key` 是可选的请求 Hash Key，平台声明相同值的请求会路由到同一节点；它不承担鉴权。需要亲和性时通过 `serving api --affinity-key <业务会话标识>` 生成对应 Header。扩缩容或故障期间的映射稳定性没有额外保证，不能据此假定应用状态永远留在同一副本。
+
+CUSTOM 服务的业务路径、HTTP 方法和请求体由容器决定，生成器只提供根地址的基础 curl 模板，不宣称 OpenAI 兼容。平台 EXCLUSIVE / SERVERLESS 类型的示例使用 `/v1` base URL 和 `/v1/chat/completions`；部署是否就绪及模型是否满足业务要求仍须由调用方验证。
+
+Endpoint 只接受当前已确认的无凭证 HTTP(S) origin；含 userinfo、query、fragment 或未知路径结构的地址不会输出，应核对平台新合同后再扩展支持，不能手工拼接域名替代。
 
 ## 7. 矩阵提交（Batch）
 
