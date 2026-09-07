@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Serving 的 list/status/create 输出平台 Endpoint；新增 `serving api`，生成 Bearer 鉴权、`INF_API_KEY` 和可选 `x-inspire-inference-key` 亲和性 Header 的调用说明与 curl 示例。CUSTOM 服务不假定 OpenAI 兼容。
+- Serving 的 list/status/create 输出平台 Endpoint；列表完整保留已校验地址，不清洗域名中的句柄或截断长地址。新增 `serving api`，生成 Bearer 鉴权、`INF_API_KEY` 和可选 `x-inspire-inference-key` 亲和性 Header 的调用说明与 curl 示例。CUSTOM 服务不假定 OpenAI 兼容。
 - 新增 `account api-key list/create/export/run/delete`，按名称管理账号推理密钥。export 支持 raw、dotenv、sh、powershell 格式、私有文件和显式 stdout；run 将密钥直接注入子进程环境。文件在 POSIX 使用 `0600`、Windows 使用经校验的当前用户 ACL，原子发布且不覆盖已有文件；普通输出和 JSON 不含密钥值；创建和删除后读回确认，读取失败时明确标记 confirmation pending。
 
 ## v7.1.7

@@ -396,7 +396,7 @@ def _serving_resource_label(data: dict[str, Any]) -> str:
 
 
 def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
-    """Render a compact, handle-free inference-serving list."""
+    """Render public rows, preserving validated endpoints as usable URLs."""
     del total
     if not rows:
         return "No inference servings found."
@@ -414,18 +414,29 @@ def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
         if any(row.get(key) not in (None, "", "-") for row in rows)
     )
     table_rows = [
-        tuple(row.get(key) or "-" for key, _label in columns)
+        tuple(
+            (row.get(key) or "-") if key == "endpoint" else scrub_raw_ids(row.get(key) or "-")
+            for key, _label in columns
+        )
         for row in rows
     ]
+    # public_serving already validated endpoint origins. Scrubbing embedded
+    # handles or clipping these cells would turn them into unusable URLs.
     widths = [
-        column_width(label, [row[index] for row in table_rows], max_width=48)
-        for index, (_key, label) in enumerate(columns)
+        column_width(
+            label,
+            [row[index] for row in table_rows],
+            max_width=None if key == "endpoint" else 48,
+            scrub=False,
+        )
+        for index, (key, label) in enumerate(columns)
     ]
     rendered = render_table(
         tuple(label for _key, label in columns),
         table_rows,
         widths,
         line_char="─",
+        scrub=False,
     )
     return "\n".join(rendered)
 

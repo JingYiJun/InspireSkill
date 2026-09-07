@@ -122,7 +122,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 ### Serving 调用与 API Key
 
-`serving list/status` 返回平台分配的 Endpoint；创建成功时会尝试读取 Endpoint，尚未取得则提示稍后查询。地址在停止状态也可能保留，所以看到地址不代表服务已就绪。用 `serving api <name> --workspace <workspace>` 查看完整地址、服务类型和调用说明；`--format curl` 只生成示例，不发送请求、不获取密钥，`--json` 返回单一结构化结果。
+`serving list/status` 返回平台分配的 Endpoint；列表中的已校验地址完整显示，不清洗域名中的句柄或截断长地址。创建成功时会尝试读取 Endpoint，尚未取得则提示稍后查询。地址在停止状态也可能保留，所以看到地址不代表服务已就绪。用 `serving api <name> --workspace <workspace>` 查看完整地址、服务类型和调用说明；`--format curl` 只生成示例，不发送请求、不获取密钥，`--json` 返回单一结构化结果。
 
 密钥由 `account api-key` 管理，属于选定账号，和 `serving create` 的部署配置分离。`list` 只展示名称和创建时间；`create --name` 创建新密钥；`delete` 会撤销密钥，使用它的客户端会失去访问权。同名密钥用 `--pick` 消歧。创建或删除显示 confirmation pending 时，先重新查询列表确认结果，避免重复创建。参数以相应 Help 为准。不要在未确认消费者时删除既有密钥。
 

@@ -91,6 +91,20 @@ def test_format_list_rows_does_not_emit_pagination_footer() -> None:
     assert "Showing" not in out
 
 
+@pytest.mark.parametrize("endpoint", [
+    "https://serving-abc.example.org",
+    "https://inference-serving-12345678-1234-1234-1234-123456789abc.example.org",
+    "https://inference-serving-" + "a" * 40 + ".example.org",
+])
+def test_format_list_rows_preserves_complete_endpoint_only(endpoint: str) -> None:
+    rows = _rows(1)
+    rows[0].update(endpoint=endpoint, model="model-abcdef", project="project-abcdef")
+    out = _format_list_rows(rows, total=1)
+    assert endpoint in out
+    assert "model-abcdef" not in out
+    assert "project-abcdef" not in out
+
+
 def test_format_list_rows_ignores_server_total() -> None:
     out = _format_list_rows(_rows(10), total=10)
     assert "demo-9" in out
