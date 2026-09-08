@@ -880,7 +880,11 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
                     route_fair_scheduling,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Workspace discovery failed during login; workspace names may be incomplete "
+                "until the session is refreshed. Re-login to retry workspace discovery."
+            )
+            logger.debug("Workspace route discovery failed", exc_info=True)
 
         storage_cookies = [_cookie_to_storage_entry(cookie) for cookie in http.cookies]
         cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
@@ -1068,6 +1072,10 @@ def _login_with_cas_requests(
     try:
         detail = _v2_result(user_detail_resp.json())
     except Exception:
+        logger.debug(
+            "user detail unavailable; resource cache scope will lack subject_id",
+            exc_info=True,
+        )
         detail = {}
     if detail:
         user_detail = detail
@@ -1095,7 +1103,11 @@ def _login_with_cas_requests(
                 route_fair_scheduling,
             )
     except Exception:
-        pass
+        logger.warning(
+            "Workspace discovery failed during login; workspace names may be incomplete "
+            "until the session is refreshed. Re-login to retry workspace discovery."
+        )
+        logger.debug("Workspace route discovery failed", exc_info=True)
 
     storage_state = {
         "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
@@ -1409,6 +1421,10 @@ def _submit_credentials(
                 if detail:
                     user_detail = detail
         except Exception:
+            logger.debug(
+                "user detail unavailable; resource cache scope will lack subject_id",
+                exc_info=True,
+            )
             user_detail = None
 
         # Discover all workspace IDs via `user.GetRoutes`. The response contains
@@ -1437,7 +1453,11 @@ def _submit_credentials(
                     route_fair_scheduling,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Workspace discovery failed during login; workspace names may be incomplete "
+                "until the session is refreshed. Re-login to retry workspace discovery."
+            )
+            logger.debug("Workspace route discovery failed", exc_info=True)
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 

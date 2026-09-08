@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -1417,10 +1418,13 @@ def test_a_lost_response_after_submission_is_an_authentication_failure(
     assert http.submissions == 1
 
 
-def test_a_cache_write_failure_does_not_discard_an_accepted_login(
+@pytest.mark.parametrize("failure", ["cache", "routes", "user_detail"])
+def test_optional_failure_does_not_discard_an_accepted_login(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
 ) -> None:
-    """The platform said yes. A local disk problem must not undo that."""
+    """An accepted login survives optional failures and explains missing metadata."""
     login_html = f"""
     <form action="/cas/login">
       <input name="username" value="">
@@ -1440,6 +1444,8 @@ def test_a_cache_write_failure_does_not_discard_an_accepted_login(
             return None
 
         def json(self) -> dict:
+            if failure == "user_detail" and "id" in self._payload.get("Result", {}):
+                raise ValueError("invalid user detail JSON")
             return self._payload
 
     class HTTP(requests.Session):
@@ -1447,6 +1453,10 @@ def test_a_cache_write_failure_does_not_discard_an_accepted_login(
             return Response(200)
 
         def post(self, url, **_kwargs):  # noqa: ANN001
+            if url.endswith("Action=GetRoutes"):
+                if failure == "routes":
+                    raise requests.ConnectionError("routes unavailable")
+                return Response(200)
             return Response(200, {"Result": {"id": "user-one"}})
 
     monkeypatch.setattr(requests, "Session", lambda: HTTP())
@@ -1457,10 +1467,12 @@ def test_a_cache_write_failure_does_not_discard_an_accepted_login(
     )
 
     def explode(self, account=None):  # noqa: ANN001, ANN202, ARG001
-        raise OSError("read-only file system")
+        if failure == "cache":
+            raise OSError("read-only file system")
 
     monkeypatch.setattr(WebSession, "save", explode)
 
+    caplog.set_level(logging.DEBUG, logger=ws_auth.__name__)
     session = ws_auth.login_with_playwright(
         "user",
         "password",
@@ -1468,6 +1480,26 @@ def test_a_cache_write_failure_does_not_discard_an_accepted_login(
     )
 
     assert session.login_username == "user"
+    if failure == "routes":
+        assert session.user_detail == {"id": "user-one"}
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "Workspace discovery failed during login" in warnings[0].message
+        assert "workspace names may be incomplete" in warnings[0].message
+        assert "Re-login" in warnings[0].message
+        assert warnings[0].exc_info is None
+        assert any(
+            record.message == "Workspace route discovery failed" and record.exc_info
+            for record in caplog.records
+        )
+    elif failure == "user_detail":
+        assert session.user_detail is None
+        assert any(
+            "user detail unavailable; resource cache scope will lack subject_id" in record.message
+            and record.levelno == logging.DEBUG
+            and record.exc_info
+            for record in caplog.records
+        )
 
 
 def test_describe_proxy_config_redacts_credentials() -> None:

@@ -629,7 +629,10 @@ def _resolve_web_job_id(
         for workspace_id, scope in cache_scopes.items():
             try:
                 snapshot_tokens[workspace_id] = cache_index.snapshot_token(scope)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug(
+                    "Job cache snapshot unavailable; continuing with live lookup", exc_info=True
+                )
                 continue
 
     if cache_index is not None and cache_scopes and not require_live:
@@ -718,10 +721,11 @@ def _resolve_web_job_id(
                 try:
                     if cache_index.generation() != token[0]:
                         continue
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                    logger.debug("Job cache generation unavailable after stale refresh", exc_info=True)
                 stale_workspaces.add(workspace_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug("Job cache refresh failed; continuing with live results", exc_info=True)
                 continue
 
     if stale_workspaces:
@@ -755,7 +759,8 @@ def _resolve_web_job_id(
                         fresh_only=False,
                     )
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug("Job cache lookup failed after concurrent refresh", exc_info=True)
                 continue
         exact = _dedupe_job_rows([*exact, *current_rows])
 
@@ -1695,8 +1700,8 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
                 )
                 if index is not None and scope is not None:
                     index.mark_deleted(scope, resource_id=job_id, name=job)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug("Job cache deletion update failed after live deletion", exc_info=True)
 
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": job, "status": "deleted"}))
