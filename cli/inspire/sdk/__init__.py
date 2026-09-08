@@ -1,5 +1,7 @@
 """Experimental synchronous SDK. CLI installation requirements are unchanged."""
 
+from inspire.services.remote_exec import ExecResult
+
 from .models_compute import (
     HPCJob,
     HPCJobRef,
@@ -120,6 +122,7 @@ from .exceptions import ServingFailedError, TensorboardFailedError
 
 
 __all__ = [
+    "ExecResult",
     "ServingInstanceView",
     "Serving",
     "ServingRef",

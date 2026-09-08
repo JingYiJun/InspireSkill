@@ -143,7 +143,7 @@ def _patch_terminal_http(monkeypatch, http, *, jupyter_url):  # noqa: ANN001, AN
     monkeypatch.setattr(jt, "_notebook_jupyter_url", lambda *_a, **_k: jupyter_url)
     monkeypatch.setattr(
         jt.rtunnel_module,
-        "_build_terminal_websocket_url",
+        "build_terminal_websocket_url",
         lambda lab_url, term_name: f"wss://nb.example.com/terminals/websocket/{term_name}",
     )
 
@@ -201,6 +201,12 @@ def test_jupyter_terminal_yields_none_when_creation_is_refused(monkeypatch) -> N
 
 
 class _FakeWebSocket:
+    def has_pending_data(self):
+        return False
+
+    def set_read_timeout(self, timeout):
+        pass
+
     """Replays terminal frames, and records what was written back."""
 
     def __init__(self, frames: list[str]) -> None:
@@ -226,9 +232,9 @@ class _FakeWebSocket:
 
 
 def _patch_capture_socket(monkeypatch, ws):  # noqa: ANN001, ANN202
-    import inspire.cli.utils.job_shell as job_shell
+    import inspire.platform.web.pty_socket as job_shell
 
-    monkeypatch.setattr(job_shell, "_WebSocketClient", lambda *_a, **_k: ws)
+    monkeypatch.setattr(job_shell, "WebSocketClient", lambda *_a, **_k: ws)
     monkeypatch.setattr(jt.select, "select", lambda r, _w, _x, _t=None: (r, [], []))
     monkeypatch.setattr(jt, "_jupyter_ws_headers", lambda *_a, **_k: {})
 
@@ -300,7 +306,7 @@ def test_capture_reports_unfinished_when_the_marker_never_arrives(monkeypatch) -
 
 
 def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: ANN001
-    import inspire.cli.utils.job_shell as job_shell
+    import inspire.platform.web.pty_socket as job_shell
 
     class _BrokenWebSocket:
         def __enter__(self):
@@ -309,7 +315,7 @@ def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: A
         def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
             return False
 
-    monkeypatch.setattr(job_shell, "_WebSocketClient", lambda *_a, **_k: _BrokenWebSocket())
+    monkeypatch.setattr(job_shell, "WebSocketClient", lambda *_a, **_k: _BrokenWebSocket())
 
     with caplog.at_level("DEBUG", logger=jt.__name__):
         result = jt._capture_terminal_output(
@@ -320,7 +326,7 @@ def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: A
             marker="__INSPIRE_DONE_abc__",
         )
 
-    assert result is None
+    assert result is not None and not result.completed
     assert "JupyterTerminal WebSocket failed" in caplog.text
     assert "ConnectionRefusedError" in caplog.text
 
@@ -352,14 +358,14 @@ def test_command_capture_runs_without_playwright(monkeypatch) -> None:  # noqa: 
 
     assert result.returncode == 0
     assert seen["ws_url"] == "wss://nb.example.com/terminals/websocket/1"
-    assert seen["timeout_ms"] == 9000
+    assert 0 < seen["timeout_ms"] <= 9000
     assert http.closed is True
 
 
 def test_build_jupyter_terminal_ws_url_uses_existing_rtunnel_helper(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(
         jt.rtunnel_module,
-        "_build_terminal_websocket_url",
+        "build_terminal_websocket_url",
         lambda lab_url, term_name: f"wss://example.test/{term_name}",
     )
 

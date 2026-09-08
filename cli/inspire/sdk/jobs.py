@@ -1,6 +1,8 @@
 """Training-job discovery, submission and observation."""
 
 from __future__ import annotations
+from typing import Callable
+from inspire.services.remote_exec import ExecResult
 from typing import Iterator, Sequence, Any
 import builtins
 from .models import Page, WorkspaceRef, ComputeGroupRef
@@ -40,6 +42,38 @@ from inspire.services.job_status import normalize_status, TERMINAL_STATUSES
 
 
 class Jobs(Service):
+
+    @operation
+    def exec(
+        self,
+        ref: str | JobRef,
+        *,
+        command: str,
+        workspace: str | WorkspaceRef | None = None,
+        instance: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float = 120,
+        on_output: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        from .remote_exec import shaped_command, workload_exec
+
+        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        resolved = self._resolve(ref, workspace)
+        from inspire.services.job_events import list_all_job_instances
+
+        rows = list_all_job_instances(resolved.key, session=self.session)
+        return workload_exec(
+            self,
+            key=resolved.key,
+            workload="job",
+            rows=rows,
+            instance=instance,
+            command=command,
+            timeout=timeout,
+            on_output=on_output,
+        )
+
     def _all(self, ws, *, keyword=None):
         from inspire.platform.web.browser_api.jobs import list_jobs
 

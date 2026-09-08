@@ -101,7 +101,7 @@ def run_ssh_command(
     command: str,
     bridge_name: Optional[str] = None,
     config: Optional[TunnelConfig] = None,
-    timeout: Optional[int] = None,
+    timeout: Optional[float] = None,
     capture_output: bool = True,
     check: bool = False,
     *,
@@ -190,14 +190,13 @@ def run_ssh_command_streaming(
     command: str,
     bridge_name: Optional[str] = None,
     config: Optional[TunnelConfig] = None,
-    timeout: Optional[int] = None,
+    timeout: Optional[float] = None,
     output_callback: Optional[Callable[[str], None]] = None,
     *,
     pass_stdin: bool = False,
+    stderr_callback: Optional[Callable[[str], None]] = None,
 ) -> int:
     """Execute a command on Bridge via SSH with streaming output."""
-    import click
-
     _config, bridge, proxy_cmd = _resolve_bridge_and_proxy(bridge_name, config)
     ssh_cmd = _build_ssh_base_args(bridge=bridge, proxy_cmd=proxy_cmd)
     popen_stdin: int | None = subprocess.PIPE
@@ -219,6 +218,8 @@ def run_ssh_command_streaming(
 
         def _default_output_callback(line: str) -> None:
             # Remote command output is the user's own data: pass it through.
+            import click
+
             click.echo(line, nl=False)
 
         output_callback = _default_output_callback
@@ -227,7 +228,7 @@ def run_ssh_command_streaming(
         ssh_cmd,
         stdin=popen_stdin,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE if stderr_callback is not None else subprocess.STDOUT,
         bufsize=1,
         text=True,
         encoding="utf-8",
@@ -244,6 +245,9 @@ def run_ssh_command_streaming(
         if process.stdin is not None:
             process.stdin.write(script)
             process.stdin.close()
+
+    if stderr_callback is not None:
+        return _stream_separate_pipes(process, output_callback, stderr_callback, timeout, ssh_cmd)
 
     start_time = time.time()
 
@@ -296,3 +300,58 @@ __all__ = [
     "run_ssh_command",
     "run_ssh_command_streaming",
 ]
+
+
+def _stream_separate_pipes(
+    process: subprocess.Popen, output_callback: Callable[[str], None],
+    stderr_callback: Callable[[str], None], timeout: float | None, command: list[str],
+) -> int:
+    """Drain both pipes without blocking the deadline on a partial line."""
+    import codecs
+    import queue
+    import threading
+
+    pending: queue.Queue[tuple[int, bytes | None]] = queue.Queue()
+
+    def drain(index, stream):
+        try:
+            while True:
+                chunk = stream.buffer.read1(4096)
+                if not chunk:
+                    break
+                pending.put((index, chunk))
+        finally:
+            pending.put((index, None))
+
+    readers = [threading.Thread(target=drain, args=(i, stream), daemon=True)
+               for i, stream in enumerate((process.stdout, process.stderr))]
+    decoders = [codecs.getincrementaldecoder("utf-8")("replace") for _ in readers]
+    callbacks = [output_callback, stderr_callback]
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    for reader in readers:
+        reader.start()
+    ended = 0
+    try:
+        while ended < 2:
+            remaining = deadline - time.monotonic() if deadline is not None else 1.0
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout or 0)
+            try:
+                index, data = pending.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                continue
+            chunk = decoders[index].decode(data or b"", final=data is None)
+            if chunk:
+                callbacks[index](chunk)
+            if data is None:
+                ended += 1
+        return process.wait(timeout=max(0.001, deadline - time.monotonic()) if deadline else None)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        for reader in readers:
+            reader.join(timeout=1)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()

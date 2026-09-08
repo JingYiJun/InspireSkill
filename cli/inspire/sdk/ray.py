@@ -1,6 +1,8 @@
 """Ray cluster submission and platform observations."""
 
 from __future__ import annotations
+from typing import Callable
+from inspire.services.remote_exec import ExecResult
 from datetime import datetime
 from typing import Sequence
 from uuid import uuid4
@@ -30,6 +32,36 @@ from .exceptions import ValidationError, RayJobFailedError, SubmissionUncertainE
 
 
 class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
+
+    @operation
+    def exec(
+        self,
+        ref: str | RayJobRef,
+        *,
+        command: str,
+        workspace: str | WorkspaceRef | None = None,
+        instance: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float = 120,
+        on_output: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        from .remote_exec import shaped_command, workload_exec
+
+        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        resolved = self._resolve(ref, workspace)
+        rows, _ = fetch_ray_instances(resolved.key, limit=500, show_all=True, session=self.session)
+        return workload_exec(
+            self,
+            key=resolved.key,
+            workload="ray",
+            rows=rows,
+            instance=instance,
+            command=command,
+            timeout=timeout,
+            on_output=on_output,
+        )
+
     _binding = WorkloadBinding[RayInstanceView](
         list_page_size=20,
         list_jobs=lambda **kwargs: api.list_ray_jobs(**kwargs),

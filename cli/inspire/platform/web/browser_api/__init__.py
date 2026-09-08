@@ -128,7 +128,6 @@ _EXPORTS = {
     "JupyterCommandResult": (".jupyter_terminal", "JupyterCommandResult"),
     "build_jupyter_terminal_ws_url": (".jupyter_terminal", "build_jupyter_terminal_ws_url"),
     "build_jupyter_exec_command": (".jupyter_terminal", "build_jupyter_exec_command"),
-    "open_jupyter_terminal_shell": (".jupyter_terminal", "open_jupyter_terminal_shell"),
     "parse_jupyter_exec_output": (".jupyter_terminal", "parse_jupyter_exec_output"),
     "run_command_capture_in_notebook": (".jupyter_terminal", "run_command_capture_in_notebook"),
     "CustomImageInfo": (".images", "CustomImageInfo"),
@@ -310,7 +309,6 @@ __all__ = [
     "JupyterCommandResult",
     "build_jupyter_terminal_ws_url",
     "build_jupyter_exec_command",
-    "open_jupyter_terminal_shell",
     "parse_jupyter_exec_output",
     "run_command_capture_in_notebook",
     "OpenSSHInternalInstallError",
@@ -516,7 +514,6 @@ if TYPE_CHECKING:
         JupyterCommandResult,
         build_jupyter_terminal_ws_url,
         build_jupyter_exec_command,
-        open_jupyter_terminal_shell,
         parse_jupyter_exec_output,
         run_command_capture_in_notebook,
     )

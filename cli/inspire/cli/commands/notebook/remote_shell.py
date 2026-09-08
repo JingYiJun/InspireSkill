@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.cli.utils import jupyter_shell
+
 import logging
 import shlex
 import subprocess
@@ -219,7 +221,7 @@ def bridge_ssh(
                     )
                 ),
             )
-        code = browser_api_module.open_jupyter_terminal_shell(
+        code = jupyter_shell.open_jupyter_terminal_shell(
             notebook_id=policy.notebook_id,
             session=policy.session,
             cwd=remote_cwd,

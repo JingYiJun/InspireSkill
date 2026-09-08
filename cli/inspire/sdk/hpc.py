@@ -1,6 +1,8 @@
 """HPC Slurm submission and platform observations."""
 
 from __future__ import annotations
+from typing import Callable
+from inspire.services.remote_exec import ExecResult
 from datetime import datetime
 from typing import Sequence
 from uuid import uuid4
@@ -38,6 +40,36 @@ def metric_group(detail: object) -> str | None:
 
 
 class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
+
+    @operation
+    def exec(
+        self,
+        ref: str | HPCJobRef,
+        *,
+        command: str,
+        workspace: str | WorkspaceRef | None = None,
+        instance: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float = 120,
+        on_output: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        from .remote_exec import shaped_command, workload_exec
+
+        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        resolved = self._resolve(ref, workspace)
+        rows, _ = fetch_hpc_instances(resolved.key, limit=500, show_all=True, session=self.session)
+        return workload_exec(
+            self,
+            key=resolved.key,
+            workload="hpc",
+            rows=rows,
+            instance=instance,
+            command=command,
+            timeout=timeout,
+            on_output=on_output,
+        )
+
     def _fetch(self, ws, page, page_size, *, keyword=None, project=None, status=None):
         return self._binding.list_jobs(
             workspace_id=ws.ref.key, page_num=page, page_size=page_size,

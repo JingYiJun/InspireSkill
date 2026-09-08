@@ -149,6 +149,7 @@ with InspireClient(catalog_ttl=60) as client:
 
 | SDK 方法 | CLI 子命令 |
 |---|---|
+| `jobs.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None)` | `job shell（非交互执行）` |
 | `jobs.command(ref, *, workspace=None)` | `job command` |
 | `jobs.create(spec, *, operation_id=None)` | `job create` |
 | `jobs.delete(ref, *, workspace=None)` | `job delete` |
@@ -174,6 +175,7 @@ with InspireClient(catalog_ttl=60) as client:
 
 | SDK 方法 | CLI 子命令 |
 |---|---|
+| `notebooks.exec(ref, *, command, workspace=None, cwd=None, env=None, timeout=120, transport="auto", on_output=None)` | `notebook exec` |
 | `notebooks.cancel_save_image(ref, *, workspace=None)` | `notebook cancel-save-image` |
 | `notebooks.create(spec, *, operation_id=None)` | `notebook create` |
 | `notebooks.delete(ref, *, workspace=None)` | `notebook delete` |
@@ -199,6 +201,7 @@ with InspireClient(catalog_ttl=60) as client:
 
 | SDK 方法 | CLI 子命令 |
 |---|---|
+| `hpc.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None)` | `hpc shell（非交互执行）` |
 | `hpc.create(spec, *, operation_id=None)` | `hpc create` |
 | `hpc.delete(ref, *, workspace=None)` | `hpc delete` |
 | `hpc.events(ref, *, workspace=None, reason=None, instance=None, workload_level=False, limit=100)` | `hpc events` |
@@ -219,6 +222,7 @@ with InspireClient(catalog_ttl=60) as client:
 
 | SDK 方法 | CLI 子命令 |
 |---|---|
+| `ray.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None)` | `ray shell（非交互执行）` |
 | `ray.create(spec, *, operation_id=None)` | `ray create` |
 | `ray.delete(ref, *, workspace=None)` | `ray delete` |
 | `ray.events(ref, *, workspace=None, type=None, reason=None, instance=None, workload_level=False, limit=100)` | `ray events` |
@@ -241,6 +245,7 @@ with InspireClient(catalog_ttl=60) as client:
 
 | SDK 方法 | CLI 子命令 |
 |---|---|
+| `servings.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None)` | `serving shell（非交互执行）` |
 | `servings.api(ref, *, affinity_key=None, workspace=None)` | `serving api` |
 | `servings.api_metrics(ref, *, metric=None, window='1h', interval=None, workspace=None)` | `serving api-metrics` |
 | `servings.configs(workspace)` | `serving configs` |
@@ -264,6 +269,40 @@ with InspireClient(catalog_ttl=60) as client:
 | `servings.stop(ref, *, workspace=None)` | `serving stop` |
 | `servings.versions(ref, *, workspace=None)` | `serving versions` |
 | `servings.wait(ref, *, timeout=3600, poll_interval=10, raise_on_failure=False, workspace=None, target='RUNNING')` | `serving start / create（状态等待）` |
+
+### 远程执行（exec）
+
+Notebook、Job、HPC、Ray 和 Serving 都提供同步 `exec`，返回 frozen dataclass `ExecResult`，可从 `inspire` 或 `inspire.sdk` 导入。遵循统一签名契约，`ref` 之后的参数（包括 `command`）只接受关键字。
+
+```python
+result = client.notebooks.exec(
+    notebook.ref,
+    command="python -u check.py",
+    cwd="/inspire/ssd/project/example/public/work",
+    env={"MODE": "check"},
+    timeout=120,
+    transport="auto",
+    on_output=lambda chunk: print(chunk, end="", flush=True),
+)
+print(result.returncode, result.completed, result.transport)
+
+result = client.jobs.exec(job.ref, command="hostname", instance="rank=0")
+result = client.hpc.exec(hpc_job.ref, command="hostname")       # launcher
+result = client.ray.exec(ray_job.ref, command="hostname")       # head
+result = client.servings.exec(serving.ref, command="hostname")  # 首个运行中副本
+```
+
+Notebook 支持两种不依赖浏览器的传输：`jupyter` 通过 Jupyter terminal websocket 执行；`ssh` 只使用当前 Client 账号下已缓存、Notebook ID 与工作区 ID 均匹配且可达的 rtunnel 桥。`auto` 优先使用符合这些条件的 SSH 桥，否则选择 Jupyter。显式 `ssh` 找不到可用桥时抛 `ValidationError`，提示先运行 `inspire notebook connection refresh <name>`。创建或刷新 SSH 桥仍为 CLI-only，SDK 不会隐式启动 Chromium 建桥。
+
+Job/HPC/Ray/Serving 使用原始 PTY websocket。Job 的 `instance` 接受实例名、`rank=N`、裸数字或角色；不指定时要求恰好一个运行中实例，多实例会抛出列出候选的 `ValidationError`。HPC 默认选择 `launcher`，Ray 默认选择 `head`；默认角色不存在或匹配多个运行中实例时需要显式指定。Serving 默认选第一个运行中副本。显式实例名或工作负载公开标签必须匹配一个运行中实例；角色匹配多个副本同样报歧义。
+
+命令按以下顺序组合：Client 配置的 `remote_env`、调用者的 `env`、可选的 `cd "<cwd>" && `，最后是 `command`。调用者的同名变量覆盖配置值；`env` 值按字面量引用，空字符串保留为空，不从本机环境补值。SSH 沿用 `bash -l` 执行方式。
+
+`ExecResult` 字段为 `returncode`、`output`、`stdout`、`stderr`、`completed`、`transport` 和 `instance`。`transport` 为 `ssh`、`jupyter` 或 `pty`；工作负载 PTY 的 `instance` 是选中的实例名。SSH 保留独立 stdout/stderr，`output = stdout + stderr`，此拼接不表示跨流时间顺序。PTY 的 stdout/stderr 已由远端终端合并，`stdout == output`、`stderr == ""`。结果会去除已识别的输入回显前缀，通过唯一完成 marker 提取退出码；普通非零退出码直接返回结果。
+
+`on_output` 在读取时按顺序接收解码后的字符串块。PTY 回调收到原始终端流，可能包含提示符、输入回显、ANSI 控制符及完成 marker；最终 `output` 才是解析后的输出。命令默认没有交互 stdin，需使用命令内的管道或远端文件重定向；人工交互仍用 CLI shell。
+
+执行等待超时或连接在完成 marker 出现前结束时，返回 `returncode=124`、`completed=False`，尽可能保留已捕获输出；它不证明远端进程已停止。命令自己返回 124 且 marker 完整时，`completed=True`。SDK 的总 operation 时间预算也会限制传输等待；名称解析和实例查询沿用现有 SDK 错误约定。websocket 握手 401 可在命令发送前续期一次并重试，不经过 `Transport.request` 或 `single_send`，已发送的命令不会因执行失败自动重放。
 
 ### tensorboards
 
@@ -497,7 +536,7 @@ SDK 错误（包括 `NotebookFailedError`）均从 `InspireError` 派生。配�
 - 本机初始化、配置、安装与缓存：`init`、`config *`、`update`、`uninstall`、`cache *`，以及账号本地管理 `account add/use/rename/remove/list`。
 - `api-key export` 的文件格式、权限和 stdout 渲染，以及 `api-key run` 的子进程和环境处理；平台密钥读写由 `client.api_keys` 提供。
 - 所有工作负载的 JSON/TOML `batch`；SDK 应用自行循环或编排。
-- Notebook 的 `ssh/shell/exec/scp/ssh-config/ssh-proxy/connection */install-deps/proxy-url`、创建后的 `--post-start/--post-start-script`，以及 `job/hpc/ray/serving shell`。
+- Notebook 的 exec 由 SDK 提供；`ssh/shell/scp/ssh-config/ssh-proxy/connection */install-deps/proxy-url` 仍为 CLI-only，创建后的 `--post-start/--post-start-script` 及 `job/hpc/ray/serving shell` 也仅保留在 CLI。
 - 日志 SSH 文件来源选项 `--path/--remote-log-path/--notebook/--source`，及终端专用格式、字符展示预算；SDK 使用平台日志来源并返回结构化记录。
 - 指标 `--plot/--open/--sparkline` 和 TensorBoard 终端趋势渲染；SDK 返回样本或标量摘要。
 - `serving api --format` 的 shell 格式输出；SDK 返回共享 access 核心的结构化 endpoint / invocation 信息。

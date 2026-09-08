@@ -1,6 +1,8 @@
 """Notebook discovery, submission, lifecycle and image snapshots."""
 
 from __future__ import annotations
+from typing import Callable
+from inspire.services.remote_exec import ExecResult
 import builtins
 import math
 import time
@@ -69,6 +71,56 @@ def _duration(value: float) -> None:
 
 
 class Notebooks(Service):
+
+    @operation
+    def exec(
+        self,
+        ref: str | NotebookRef,
+        *,
+        command: str,
+        workspace: str | WorkspaceRef | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float = 120,
+        transport: str = "auto",
+        on_output: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        from inspire.services import remote_exec as core
+        from .remote_exec import shaped_command, authenticated_exec
+
+        if transport not in ("auto", "jupyter", "ssh"):
+            raise ValidationError("transport must be auto, jupyter, or ssh.")
+        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        resolved = self._resolve(ref, workspace)
+        bridge = None
+        if transport != "jupyter":
+            bridge = core.cached_notebook_bridge(
+                notebook_id=resolved.key,
+                workspace_id=resolved.workspace_id,
+                account=self.client.account,
+            )
+        if bridge is not None:
+            return core.exec_in_notebook_ssh(
+                bridge_name=bridge,
+                account=self.client.account,
+                command=command,
+                timeout=min(timeout, self.client._transport.remaining()),
+                on_output=on_output,
+            )
+        if transport == "ssh":
+            raise ValidationError(
+                "No reachable cached SSH bridge. Run "
+                f"`inspire notebook connection refresh {resolved.name}` first."
+            )
+        return authenticated_exec(
+            self,
+            core.exec_in_notebook_jupyter,
+            timeout=timeout,
+            notebook_id=resolved.key,
+            command=command,
+            on_output=on_output,
+        )
+
     def _notebook(self, data, workspace_id, ref=None):
         view = public_notebook(data, fallback_name=ref.name if ref else "")
         raw = str(data.get("status") or "")

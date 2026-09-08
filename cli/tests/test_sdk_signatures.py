@@ -36,7 +36,7 @@ def test_all_facade_signatures(client):
               "events", "logs", "metrics", "wait", "scale", "rollback", "save_image",
               "follow_events", "follow_logs", "realtime_metrics", "lifecycle",
               "estimate_image_size", "cancel_save_image", "wait_image_ready", "wait_ready",
-              "set_visibility", "deploy_config", "plaintext"}
+              "set_visibility", "deploy_config", "plaintext", "exec"}
     discovered = set()
     for facade, method, bound in facade_methods(client):
         discovered.add(facade)
