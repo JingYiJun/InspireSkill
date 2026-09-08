@@ -43,6 +43,7 @@ class Transport:
         self._browser: Any = None
         self.deadline: float | None = None
         self._write: dict[str, Any] | None = None
+        self._last_success: float | None = None
 
     def check(self) -> None:
         if (self._pid, self._thread) != (os.getpid(), threading.get_ident()):
@@ -78,6 +79,13 @@ class Transport:
         self.check()
         if self._write is not None:
             raise _SingleSendViolation("single_send blocks cannot be nested.")
+        if self._last_success is None or time.monotonic() - self._last_success >= 60:
+            from inspire.platform.web.session.auth import USER_DETAIL_PATH
+            from inspire.platform.web.session.envelope import _v2_result
+
+            _v2_result(self.request("POST", USER_DETAIL_PATH, body={}))
+        # The probe is a READ. Once dispatched, a write (including a 401)
+        # remains uncertain and must never be replayed.
         state = {"operation_id": operation_id, "create": create, "used": False, "sent": False}
         self._write = state
         try:
@@ -121,37 +129,64 @@ class Transport:
                 self._refresh()
         return self._session
 
+    def _adopt_session(self, session):
+        from inspire.platform.web.session.requests import _configure
+
+        self._session = self._validate_session(session)
+        if self._http is not None:
+            _configure(self._http, self._session, self.base_url)
+
     def _refresh(self):
-        if not self.allow_browser:
-            raise AuthenticationError(
-                "Authentication requires browser access; allow_browser is False."
-            )
         from inspire.platform.web.session.models import WebSession
         from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
-        from inspire.platform.web.session.auth import get_web_session
+        from inspire.platform.web.session import auth
 
         previous = self._session.created_at if self._session else None
         try:
             with exclusive_session_refresh(self.account, timeout=self.remaining()):
-                cached = WebSession.load(allow_expired=True, account=self.account)
-                if cached and cached.created_at != previous:
-                    try:
-                        self._session = self._validate_session(cached)
+                try:
+                    cached = WebSession.load(allow_expired=True, account=self.account)
+                    if cached and (previous is None or cached.created_at > previous):
+                        self._adopt_session(cached)
                         return
-                    except AuthenticationError:
-                        pass
-                self._session = self._validate_session(
-                    get_web_session(force_refresh=True, account=self.account)
-                )
+                except Exception as error:
+                    if getattr(error, "retry_at", None) is not None:
+                        raise
+                try:
+                    if self._session is not None:
+                        renewed = auth.renew_web_session_without_credentials(self._session)
+                        if renewed is not None:
+                            self._validate_session(renewed)
+                            auth._persist(renewed, account=self.account)
+                            self._adopt_session(renewed)
+                            return
+                except Exception as error:
+                    if getattr(error, "retry_at", None) is not None:
+                        raise
+                try:
+                    username, password = auth.get_credentials(self.account)
+                    self._adopt_session(
+                        auth.login_without_browser(
+                            username, password, base_url=self.base_url, account=self.account
+                        )
+                    )
+                except Exception as error:
+                    if (
+                        not self.allow_browser
+                        or getattr(error, "retry_at", None) is not None
+                        or isinstance(error.__cause__, auth._CasVerificationRequired)
+                    ):
+                        raise
+                    self._adopt_session(
+                        auth.get_web_session(force_refresh=True, account=self.account)
+                    )
         except AuthenticationError:
             raise
         except Exception as error:
             retry_at = getattr(error, "retry_at", None)
             if isinstance(retry_at, (int, float)):
                 raise AuthenticationCooldownError(retry_at) from None
-            raise AuthenticationError(
-                "Account refresh failed or is cooling down; inspect account authentication."
-            ) from None
+            raise AuthenticationError(str(error)) from error
         finally:
             if self._browser is not None:
                 self._browser.close()
@@ -237,6 +272,7 @@ class Transport:
                         str(error.get("Code") or "")
                     ):
                         raise TransientAPIError(str(error.get("Message") or error.get("Code")))
+                self._last_success = time.monotonic()
                 return payload
             except Exception as error:
                 if state is not None:
@@ -244,7 +280,7 @@ class Transport:
                         self._uncertain(state, error)
                     raise
                 if isinstance(error, SessionExpiredError):
-                    if refreshed or not self.allow_browser:
+                    if refreshed:
                         raise AuthenticationError(str(error)) from error
                     self._refresh()
                     refreshed = True

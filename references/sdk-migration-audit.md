@@ -27,7 +27,7 @@
 | login_guard 文件 | guarded_credential_submission | 保留现有冷却；新增 retry_at 属性，无新登录绕路 |
 | Client pid/thread/deadline/session/http/browser | Transport.check/scope/close；SDK facade 仅持有 Client 引用 | 跨线程/fork 拒绝；嵌套 deadline 使用较早者 |
 
-认证路径继续调用既有 auth.get_web_session，未重写底层登录。浏览器登录的固定内部超时无法提供硬取消；公开文档明确这一限制。状态与同步检查见 SDK 隔离测试，账号锁与 guard 的进程级合同继续由现有测试覆盖；新 SDK 多进程真实刷新尚未联调。
+认证路径在账号刷新锁内依次重读更新缓存、SSO Cookie 续期、受登录 guard 保护的 requests CAS 登录；仅 allow_browser=True 时回退既有 auth.get_web_session。验证码要求直接暴露为 AuthenticationError，冷却保留 retry_at。浏览器登录的固定内部超时无法提供硬取消；公开文档明确这一限制。状态与同步检查见 SDK 隔离测试，账号锁与 guard 的进程级合同继续由现有测试覆盖；新 SDK 多进程真实刷新尚未联调。
 
 ## 3. 调用方声明的传输策略与写路径重放审计
 
@@ -35,9 +35,9 @@
 
 | 入口 | READ | single_send |
 |---|---|---|
-| 缓存加载 / 显式允许登录 | 发送前认证 | 失败保持原类型，不包装为已发送不确定 |
+| 缓存加载 / 无浏览器续期 | 发送前认证；Chromium 仅限 allow_browser=True | 从未成功或空闲满 60 秒时，先以 READ GetUserDetail 探测；失败不发送写入、不包装为已发送不确定 |
 | requests 异常 | 三次总尝试；allow_browser=True 才能换通道 | 已发送失败，不重放 |
-| HTTP 401/3xx | allow_browser=True 才允许一次刷新，否则 AuthenticationError | 不刷新、不重发 |
+| HTTP 401/3xx | 不受 allow_browser 限制，先无浏览器续期并重试一次；再次失效抛 AuthenticationError | 发送前探测按 READ 续期；实际写入发出后不刷新、不重发，创建为 SubmissionUncertainError，其他变更为 MutationUncertainError |
 | HTTP 429/5xx | 三次总尝试，共享 deadline 和退避预算 | 不重试 |
 | v2 transient envelope | 仅按共享 `_is_transient_v2_error_code` 判定是否重试 | JSON 原样交给 browser_api；解包失败由 block 映射为不确定 |
 | v1 / 任意 JSON 形状 | 原样返回，无形状门控 | 原样返回 |

@@ -1152,6 +1152,25 @@ def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
     return username, password
 
 
+def login_without_browser(
+    username: str,
+    password: str,
+    *,
+    base_url: str,
+    account: Optional[str] = None,
+) -> WebSession:
+    """Submit credentials through CAS requests only, sharing its persistence and guard."""
+    try:
+        with guarded_credential_submission(username, password, account=account):
+            return _login_with_cas_requests(
+                username, password, base_url=base_url, account=account
+            )
+    except _CasVerificationRequired as error:
+        # No credentials were submitted: convert outside the guard so this
+        # human challenge does not record a rejected password.
+        raise AuthenticationError(str(error)) from error
+
+
 def login_with_playwright(
     username: str,
     password: str,
@@ -1163,8 +1182,8 @@ def login_with_playwright(
 
     The login flow: qz/login -> CAS (Keycloak broker) -> Keycloak -> qz.
 
-    This is the only function in the CLI that submits credentials, which is why
-    the cross-process guard sits here rather than at the callers: a wrapper that
+    Both login entry points guard credential submission here rather than
+    at the callers: a wrapper that
     bounds its own retries still adds one submission to whatever the wrapper
     below it already spent. See :mod:`.login_guard`.
     """

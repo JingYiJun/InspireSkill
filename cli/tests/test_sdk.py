@@ -53,6 +53,8 @@ def client(tmp_path, monkeypatch):
         login_username="test",
         base_url=c.base_url,
     )
+    # Most tests exercise dispatch on an already active transport.
+    c._transport._last_success = time.monotonic()
     yield c
     c.close()
 
@@ -169,14 +171,6 @@ def test_envelope_read_retries_but_create_does_not(client, monkeypatch):
             _v2_result(client._transport.request("POST", "/api/v2/train?Action=CreateJobConsole"))
     assert calls == [1]
 
-
-def test_browser_disabled_on_expiry(client, monkeypatch):
-    monkeypatch.setattr(
-        client._transport, "_once", lambda *a, **k: (_ for _ in ()).throw(SessionExpiredError("x"))
-    )
-    monkeypatch.setattr(client._transport, "_refresh", lambda: pytest.fail("browser invoked"))
-    with pytest.raises(AuthenticationError):
-        client._transport.request("POST", "/api/v2/train?Action=ListJobs")
 
 
 def test_invalid_ref_and_cursor_rejected(client):
@@ -579,7 +573,7 @@ def test_refresh_cooldown_has_structured_deadline(client, monkeypatch):
 
     deadline = time.time() + 60
 
-    def fail(**kw):
+    def fail(*args, **kw):
         error = PlatformAuthError("private login detail")
         error.retry_at = deadline
         raise error
@@ -589,7 +583,8 @@ def test_refresh_cooldown_has_structured_deadline(client, monkeypatch):
         "inspire.platform.web.session.refresh_lock.exclusive_session_refresh",
         lambda *a, **kw: nullcontext(),
     )
-    monkeypatch.setattr("inspire.platform.web.session.auth.get_web_session", fail)
+    monkeypatch.setattr("inspire.platform.web.session.auth.renew_web_session_without_credentials", lambda _: None)
+    monkeypatch.setattr("inspire.platform.web.session.auth.login_without_browser", fail)
     client._transport.allow_browser = True
     with pytest.raises(AuthenticationCooldownError) as caught:
         client._transport._refresh()
@@ -1074,3 +1069,210 @@ def test_metrics_rejects_invalid_interval(client, monkeypatch, interval):
     with pytest.raises(ValidationError) as error:
         client.jobs.metrics("job", interval=interval)
     assert all(choice in str(error.value) for choice in INTERVAL_CHOICES)
+
+
+@pytest.fixture
+def renewal(client, monkeypatch):
+    from dataclasses import replace
+    from inspire.platform.web.session import auth
+
+    transport = client._transport
+    old = transport.session
+    new = replace(old, created_at=old.created_at + 1,
+                  storage_state={"cookies": [{"name": "x", "value": "renewed"}]})
+    monkeypatch.setattr(WebSession, "load", lambda **kw: old)
+    monkeypatch.setattr(auth, "get_web_session", lambda **kw: pytest.fail("browser login invoked"))
+    monkeypatch.setattr("inspire.sdk.transport.time.sleep", lambda _: None)
+    return auth, old, new
+
+
+def fake_platform(client, monkeypatch, statuses):
+    import requests
+
+    calls = []
+    replies = iter(statuses)
+    http = requests.Session()
+
+    def request(method, url, **kwargs):
+        calls.append((url, http.cookies.get("x"), client._transport._write is not None))
+        return SimpleNamespace(status_code=next(replies), json=lambda: {"Result": {"id": "user"}})
+
+    monkeypatch.setattr(http, "request", request)
+    client._transport._http = http
+    return calls
+
+
+def test_read_renews_sso_and_persists(client, monkeypatch, renewal):
+    auth, old, new = renewal
+    persisted, closed = [], []
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda current: new if current is old else None)
+    monkeypatch.setattr(auth, "_persist", lambda session, **kw: persisted.append((session, kw)))
+    monkeypatch.setattr(auth, "_login_with_cas_requests", lambda *a, **kw: pytest.fail("credentials submitted"))
+    client._transport._browser = SimpleNamespace(close=lambda: closed.append(True))
+    calls = fake_platform(client, monkeypatch, [401, 200])
+    assert client._transport.request("POST", "/read")["Result"]["id"] == "user"
+    assert [c[1] for c in calls] == ["fake", "renewed"]
+    assert persisted == [(new, {"account": "alpha"})]
+    assert closed == [True] and client._transport._browser is None
+
+
+def test_read_credential_login_uses_guard(client, monkeypatch, renewal):
+    from contextlib import contextmanager
+
+    auth, _, new = renewal
+    events = []
+
+    @contextmanager
+    def guard(username, password, *, account):
+        assert (username, password, account) == ("test", "unused", "alpha")
+        events.append("guard")
+        yield
+        events.append("success")
+
+    def login(*args, **kwargs):
+        assert events == ["guard"]
+        events.append("cas")
+        return new
+
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda _: None)
+    monkeypatch.setattr(auth, "guarded_credential_submission", guard)
+    monkeypatch.setattr(auth, "_login_with_cas_requests", login)
+    calls = fake_platform(client, monkeypatch, [401, 200])
+    client._transport.request("POST", "/read")
+    assert events == ["guard", "cas", "success"]
+    assert len(calls) == 2 and client._transport.session is new
+
+
+@pytest.mark.parametrize("allow_browser", [False, True])
+@pytest.mark.parametrize("sso_raises", [False, True])
+def test_refresh_failure_browser_gate(client, monkeypatch, renewal, allow_browser, sso_raises):
+    auth, _, new = renewal
+    browser_calls = []
+    client._transport.allow_browser = allow_browser
+
+    def renew(_):
+        if sso_raises:
+            raise RuntimeError("SSO unavailable")
+        return None
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("CAS unavailable")
+
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", renew)
+    monkeypatch.setattr(auth, "login_without_browser", fail)
+    monkeypatch.setattr(auth, "get_web_session", lambda **kw: browser_calls.append(kw) or new)
+    calls = fake_platform(client, monkeypatch, [401, 200])
+    if allow_browser:
+        client._transport.request("POST", "/read")
+        assert browser_calls == [{"force_refresh": True, "account": "alpha"}]
+        assert len(calls) == 2
+    else:
+        with pytest.raises(AuthenticationError, match="CAS unavailable"):
+            client._transport.request("POST", "/read")
+        assert browser_calls == [] and len(calls) == 1
+
+
+@pytest.mark.parametrize("allow_browser", [False, True])
+def test_real_login_guard_blocks_repeated_sdk_login(client, monkeypatch, renewal, allow_browser):
+    from inspire.sdk import AuthenticationCooldownError
+
+    auth, _, _ = renewal
+    attempts = []
+    client._transport.allow_browser = allow_browser
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda _: None)
+
+    def fail(*args, **kwargs):
+        attempts.append(1)
+        raise auth.AuthenticationError("CAS rejected submission")
+
+    monkeypatch.setattr(auth, "_login_with_cas_requests", fail)
+    with pytest.raises(AuthenticationCooldownError) as first:
+        client._transport._refresh()
+    with pytest.raises(AuthenticationCooldownError) as second:
+        client._transport._refresh()
+    assert first.value.retry_at == second.value.retry_at
+    assert first.value.retry_at > time.time()
+    assert attempts == [1]
+
+
+@pytest.mark.parametrize("allow_browser", [False, True])
+def test_browser_free_verification_error(client, monkeypatch, renewal, allow_browser):
+    auth, _, _ = renewal
+    client._transport.allow_browser = allow_browser
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda _: None)
+
+    def challenge(*args, **kwargs):
+        raise auth._CasVerificationRequired("The platform is asking for a verification code")
+
+    monkeypatch.setattr(auth, "_login_with_cas_requests", challenge)
+    with pytest.raises(AuthenticationError, match="asking for a verification code"):
+        client._transport._refresh()
+    from inspire.platform.web.session.login_guard import block_file
+    assert not block_file("alpha").exists()
+
+
+@pytest.mark.parametrize("idle", [None, 61, 60, 59])
+def test_single_send_probes_only_when_idle(client, monkeypatch, idle):
+    monkeypatch.setattr("inspire.sdk.transport.time.monotonic", lambda: 1000)
+    client._transport._last_success = None if idle is None else 1000 - idle
+    probe = idle is None or idle >= 60
+    calls = fake_platform(client, monkeypatch, [200, 200] if probe else [200])
+    with client._transport.single_send(create=True):
+        client._transport.request("POST", "/write")
+    assert [c[0].removeprefix(client.base_url) for c in calls] == (
+        ["/api/v2/user?Action=GetUserDetail", "/write"] if probe else ["/write"]
+    )
+    assert [c[2] for c in calls] == ([False, True] if probe else [True])
+    assert client._transport._last_success == 1000
+
+
+def test_single_send_probe_renews_before_only_write(client, monkeypatch, renewal):
+    auth, _, new = renewal
+    client._transport._last_success = None
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda _: new)
+    calls = fake_platform(client, monkeypatch, [401, 200, 200])
+    with client._transport.single_send(create=True):
+        client._transport.request("POST", "/write")
+    assert [c[1:] for c in calls] == [("fake", False), ("renewed", False), ("renewed", True)]
+    assert [c[0].split("?")[-1] for c in calls[:2]] == ["Action=GetUserDetail"] * 2
+
+
+@pytest.mark.parametrize("newer", [False, True])
+def test_refresh_adopts_only_newer_cache(client, monkeypatch, renewal, newer):
+    from dataclasses import replace
+
+    auth, old, new = renewal
+    cached = new if newer else replace(old, created_at=old.created_at - 1)
+    monkeypatch.setattr(WebSession, "load", lambda **kw: cached)
+    renewed = []
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda current: renewed.append(current) or new)
+    client._transport._refresh()
+    assert client._transport.session is new
+    assert renewed == ([] if newer else [old])
+
+
+def test_failed_probe_does_not_dispatch_write(client, monkeypatch, renewal):
+    auth, _, _ = renewal
+    client._transport._last_success = None
+    monkeypatch.setattr(auth, "renew_web_session_without_credentials", lambda _: None)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("login failed")
+
+    monkeypatch.setattr(auth, "login_without_browser", fail)
+    calls = fake_platform(client, monkeypatch, [401])
+    with pytest.raises(AuthenticationError, match="login failed"):
+        with client._transport.single_send(create=True):
+            pytest.fail("write body entered after failed probe")
+    assert len(calls) == 1 and calls[0][2] is False
+    assert client._transport._write is None
+
+
+def test_write_401_after_successful_probe_is_still_uncertain(client, monkeypatch):
+    client._transport._last_success = None
+    calls = fake_platform(client, monkeypatch, [200, 401])
+    monkeypatch.setattr(client._transport, "_refresh", lambda: pytest.fail("write refreshed"))
+    with pytest.raises(SubmissionUncertainError):
+        with client._transport.single_send(create=True):
+            client._transport.request("POST", "/write")
+    assert [c[2] for c in calls] == [False, True]

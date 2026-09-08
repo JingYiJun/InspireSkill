@@ -19,7 +19,7 @@ SDK 面向能访问平台的本机或控制节点。CPU 节点需满足网络、
 
 先通过 CLI 初始化账号并准备有效登录缓存。导入和构造不联网，第一次资源操作才使用会话。构造时固定账号、平台来源和配置，后续切换 CLI 默认账号不影响已有 Client。
 
-`InspireClient(account=None, *, allow_browser=False, timeout=30, operation_timeout=120)` 默认使用 CLI 当前账号；`allow_browser=False` 禁止自动登录和浏览器通道，缓存失效抛 `AuthenticationError`。显式设为 True 才允许既有登录流程，且需按 CLI 安装说明准备 Chromium。SDK 模块导入不加载 Click、Rich 或 Playwright。
+`InspireClient(account=None, *, allow_browser=False, timeout=30, operation_timeout=120)` 默认使用 CLI 当前账号；`allow_browser=False` 仍允许无浏览器续期：平台会话约每 15 分钟失效，即使持续请求也不会延长。SDK 在账号刷新锁内先重读更新的缓存，再尝试 SSO Cookie 续期，最后通过账号登录 guard 保护的 requests CAS 凭据登录。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道，且需按 CLI 安装说明准备 Chromium。验证码要求保留原提示并抛出 `AuthenticationError`，不会转入浏览器重试；登录冷却通过 `AuthenticationCooldownError.retry_at` 暴露。SDK 模块导入不加载 Click、Rich 或 Playwright。
 
 一个 Client 只在创建它的进程和线程中使用；线程 worker 或 fork 子进程各自创建 Client。使用 `with` 或 `close()` 释放自有 HTTP／浏览器连接。账号磁盘缓存、刷新锁和登录冷却与 CLI 共用。`account_info` 查询账号平台信息；本地账号管理仍用 CLI。`api_keys.plaintext(ref)` 显式返回密钥值，其他密钥视图只包含元数据。
 
@@ -454,12 +454,14 @@ Notebook 没有平台程序日志接口；`metrics` 返回 `tuple[MetricGroup, .
 
 ## 错误与时间预算
 
+写入开始时，若从未收到成功的平台响应，或距上次成功响应已满 60 秒，SDK 先通过普通 READ 路径执行一次 `GetUserDetail` 探测，必要时先续期再发送写入；60 秒内已有成功响应则省略探测。探测共享时间预算，其刷新与重试不计入写请求的单次发送。探测失败时不发送写入；写入发出后即使收到 401 也绝不重放，创建抛 `SubmissionUncertainError`，其他变更抛 `MutationUncertainError`。
+
 
 SDK 错误（包括 `NotebookFailedError`）均从 `InspireError` 派生。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
 
 `timeout` 控制单次请求预算，`operation_timeout` 控制普通操作的协作式总预算，`wait(timeout=...)` 设置整个等待预算；嵌套调用使用更早截止时间。请求、退避和刷新锁等待共享剩余预算。同步网络库的底层调用和已有浏览器登录流程不能被强制抢占，显式允许浏览器时登录可能超出总预算；这些参数不是硬实时取消保证。需要硬隔离的编排器应使用独立进程，并在超时后核查任何可能已发送的写请求。
 
-传输策略由调用方声明：普通 `operation` 进入 `Transport.scope(timeout=...)`，按 READ 处理。READ 对 requests 异常、HTTP 429/5xx、共享 `_is_transient_v2_error_code` 判定的 v2 暂时错误最多尝试三次，退避与请求共用截止时间。HTTP 401/3xx 仅在 allow_browser=True 时允许一次会话刷新，否则抛 AuthenticationError；requests 层失败也只有显式允许浏览器才可换通道。
+传输策略由调用方声明：普通 `operation` 进入 `Transport.scope(timeout=...)`，按 READ 处理。READ 对 requests 异常、HTTP 429/5xx、共享 `_is_transient_v2_error_code` 判定的 v2 暂时错误最多尝试三次，退避与请求共用截止时间。HTTP 401/3xx 无论 allow_browser 设置均允许一次上述会话刷新，重试仍失效则抛 AuthenticationError；requests 层失败也只有显式允许浏览器才可换通道。
 
 真正写入的 browser_api 调用必须包在 `transport.single_send(operation_id, create=True)` 或 `transport.single_send()` 中。一个 block 最多允许一次 request，第二次调用抛 RuntimeError；create 参数显式区分创建与其他变更。发送后不刷新、不重试、不换通道，错误分别映射为 SubmissionUncertainError / MutationUncertainError。Transport 不按 URL、Action 或 HTTP 动词猜测幂等性，也不校验信封形状或自动解包；解析后的 JSON 原样交给 browser_api。READ 的一般 HTTP 4xx 返回包含状态码和最多约 500 字符正文的 ValidationError，业务错误保留原消息。
 
