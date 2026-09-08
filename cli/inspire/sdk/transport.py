@@ -24,6 +24,24 @@ class _SingleSendViolation(RuntimeError):
     pass
 
 
+def _classify_after_dispatch(error: Exception) -> Exception | None:
+    """Return a definite rejection, or None when the write outcome is unknown."""
+    from inspire.platform.web.session.models import TransientAPIError
+
+    if isinstance(error, (AuthenticationError, TransportError)):
+        return error
+    # TransientAPIError is also a ValueError; classify it before business errors.
+    if isinstance(error, TransientAPIError):
+        if error.status in (None, 429) or str(error).startswith("API error:"):
+            return TransportError(str(error))
+        return None
+    if isinstance(error, ValidationError) or (
+        isinstance(error, ValueError) and str(error).startswith("API error:")
+    ):
+        return ValidationError(str(error))
+    return None
+
+
 class Transport:
     def __init__(
         self,
@@ -84,16 +102,26 @@ class Transport:
             from inspire.platform.web.session.envelope import _v2_result
 
             _v2_result(self.request("POST", USER_DETAIL_PATH, body={}))
-        # The probe is a READ. Once dispatched, a write (including a 401)
-        # remains uncertain and must never be replayed.
+        # The probe is a READ. A dispatched write must never be replayed;
+        # only failures without a definite rejection remain uncertain.
         state = {"operation_id": operation_id, "create": create, "used": False, "sent": False}
         self._write = state
         try:
             yield
-        except (SubmissionUncertainError, MutationUncertainError, _SingleSendViolation):
+        except (
+            SubmissionUncertainError,
+            MutationUncertainError,
+            _SingleSendViolation,
+            ValidationError,
+            AuthenticationError,
+            TransportError,
+        ):
             raise
         except Exception as error:
             if state["sent"]:
+                classified = _classify_after_dispatch(error)
+                if classified is not None:
+                    raise classified from error
                 self._uncertain(state, error)
             raise
         finally:
@@ -277,6 +305,11 @@ class Transport:
             except Exception as error:
                 if state is not None:
                     if state["sent"]:
+                        classified = _classify_after_dispatch(error)
+                        if classified is error:
+                            raise
+                        if classified is not None:
+                            raise classified from error
                         self._uncertain(state, error)
                     raise
                 if isinstance(error, SessionExpiredError):

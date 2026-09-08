@@ -87,13 +87,17 @@ def test_single_dispatch(client, catalog, monkeypatch, action, outcome):
         result = invoke()
         if action == "create":
             assert result.ref == ref
+    elif outcome == "platform":
+        with pytest.raises(ValidationError) as exc:
+            invoke()
+        assert "API error: InvalidParameter" in str(exc.value)
+        assert "平台原始错误" in str(exc.value)
+        assert "平台原始错误" in str(exc.value.__cause__)
     else:
         with pytest.raises(
             SubmissionUncertainError if action == "create" else MutationUncertainError
         ) as exc:
             invoke()
-        if outcome == "platform":
-            assert "平台原始错误" in str(exc.value.__cause__)
     assert len(calls) == 1
     assert calls[0][0].endswith("Action=" + action.title() + "Tensorboard")
     if action == "create":

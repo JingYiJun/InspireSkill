@@ -9,7 +9,7 @@ import requests
 from click.testing import CliRunner
 from test_sdk import client as client
 from test_sdk_hpc import catalog as base_catalog  # noqa: F401
-from inspire import ServingCreateSpec, ServingRef, ServingFailedError
+from inspire import ServingCreateSpec, ServingRef, ServingFailedError, ValidationError
 from inspire import SubmissionUncertainError, MutationUncertainError, AmbiguousResourceError
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.servings import ServingInfo
@@ -186,13 +186,17 @@ def test_single_dispatch(client, catalog, monkeypatch, action, outcome):
 
     if outcome == "ok":
         invoke()
+    elif outcome == "platform":
+        with pytest.raises(ValidationError) as exc:
+            invoke()
+        assert "API error: InvalidParameter" in str(exc.value)
+        assert "平台原始错误" in str(exc.value)
+        assert "平台原始错误" in str(exc.value.__cause__)
     else:
         with pytest.raises(
             SubmissionUncertainError if action == "create" else MutationUncertainError
         ) as exc:
             invoke()
-        if outcome == "platform":
-            assert "平台原始错误" in str(exc.value.__cause__)
     assert len(calls) == 1
     expected = {
         "create": "CreateServingConsole",

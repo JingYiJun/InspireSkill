@@ -272,7 +272,13 @@ def check_write(kind, action, outcome, client, catalog, monkeypatch):
             return service.create(getattr(catalog, kind), operation_id="caller/diagnostic")
         return getattr(service, action)(ref)
 
-    if outcome != "ok":
+    if outcome == "platform" and kind == "hpc":
+        with pytest.raises(ValidationError) as caught:
+            invoke()
+        assert "API error: InvalidParameter" in str(caught.value)
+        assert "平台原始错误" in str(caught.value)
+        assert "平台原始错误" in str(caught.value.__cause__)
+    elif outcome != "ok":
         error = SubmissionUncertainError if action == "create" else MutationUncertainError
         with pytest.raises(error) as caught:
             invoke()

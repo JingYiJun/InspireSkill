@@ -38,17 +38,19 @@
 | 缓存加载 / 无浏览器续期 | 发送前认证；Chromium 仅限 allow_browser=True | 从未成功或空闲满 60 秒时，先以 READ GetUserDetail 探测；失败不发送写入、不包装为已发送不确定 |
 | requests 异常 | 三次总尝试；allow_browser=True 才能换通道 | 已发送失败，不重放 |
 | HTTP 401/3xx | 不受 allow_browser 限制，先无浏览器续期并重试一次；再次失效抛 AuthenticationError | 发送前探测按 READ 续期；实际写入发出后不刷新、不重发，创建为 SubmissionUncertainError，其他变更为 MutationUncertainError |
-| HTTP 429/5xx | 三次总尝试，共享 deadline 和退避预算 | 不重试 |
-| v2 transient envelope | 仅按共享 `_is_transient_v2_error_code` 判定是否重试 | JSON 原样交给 browser_api；解包失败由 block 映射为不确定 |
+| HTTP 429/5xx | 三次总尝试，共享 deadline 和退避预算 | 429 为 TransportError（retryable=True，可由调用方安全重试）；5xx 为不确定；均不自动重试 |
+| v2 transient envelope | 仅按共享 `_is_transient_v2_error_code` 判定是否重试 | JSON 原样交给 browser_api；已解析信封的 InternalError／Throttling 等映射为 TransportError（retryable=True，可由调用方安全重试），保留消息 |
 | v1 / 任意 JSON 形状 | 原样返回，无形状门控 | 原样返回 |
 | JSON 解析失败 | TransportError，requests 异常仍遵循上面的请求异常策略 | 不确定 |
-| 一般 HTTP 4xx | ValidationError，保留状态和约 500 字符正文 | 已发送失败映射为不确定 |
+| 一般 HTTP 4xx（401/403/429 除外） | ValidationError，保留状态和约 500 字符正文 | ValidationError，保留状态和约 500 字符正文；平台已明确拒绝 |
+| HTTP 403 | AuthenticationError | AuthenticationError 原样透传，明确无权限 |
+| v2 业务错误（如 Conflict） | 保留业务错误消息 | ValidationError，保留 API error: 开头的平台消息，明确拒绝 |
 | 创建返回缺少 ID | 不适用 | Job/HPC/Ray/Serving 为 SubmissionUncertainError；Notebook/TensorBoard 使用共享只读确认，失败不重提；API key 成功返回 ref=None |
 | 同一 block 第二次 request | 不适用 | RuntimeError，禁止第二次发送 |
 
 Notebook 保存镜像与可见性更新是两个明确的 single_send；模型删除的引用／pending 预检位于写入前，force 只跳过该预检。
 
-发送后的创建失败为 `SubmissionUncertainError(operation_id)`，其他变更失败为 `MutationUncertainError`。operation_id 是任意非空本地诊断字符串，默认 uuid4().hex，不是服务器幂等键。普通 ValueError 和平台错误映射保留 `str(error)`，并继续搜索原因链中的 SDK 错误。
+发送后仅未知结果（响应丢失／无效、认证过期、5xx）映射为不确定：创建为 `SubmissionUncertainError(operation_id)`，其他变更为 `MutationUncertainError`，均保持 `retryable=False`，须先查询确认。明确拒绝为 `ValidationError`，明确拒绝执行／限流为 `TransportError`（可安全重试，但不会自动重放）。`request()` 写分支与 `single_send` 共用 `_classify_after_dispatch`，转换通过 `from error` 保留原因链；block 内的 `ValidationError`／`AuthenticationError`／`TransportError` 原样透传。operation_id 是任意非空本地诊断字符串，默认 uuid4().hex，不是服务器幂等键。普通 ValueError 和平台错误映射保留 `str(error)`，并继续搜索原因链中的 SDK 错误。
 
 ## 4. 共享服务、替身落点与 AST 门禁
 

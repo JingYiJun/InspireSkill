@@ -77,13 +77,17 @@ def test_single_dispatch(client, catalog, monkeypatch, kind, action, outcome):
         result = invoke()
         if action == "register":
             assert result.ref.key == ("image-test" if kind == "images" else "model-test")
+    elif outcome == "platform":
+        with pytest.raises(ValidationError) as exc:
+            invoke()
+        assert "API error: InvalidParameter" in str(exc.value)
+        assert "平台原始错误" in str(exc.value)
+        assert "平台原始错误" in str(exc.value.__cause__)
     else:
         with pytest.raises(
             SubmissionUncertainError if action == "register" else MutationUncertainError
         ) as exc:
             invoke()
-        if outcome == "platform":
-            assert "平台原始错误" in str(exc.value.__cause__)
     assert len(calls) == 1
     if kind == "images" and action == "register":
         assert calls[0][1]["add_method"] == 2

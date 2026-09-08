@@ -424,6 +424,17 @@ finished = client.jobs.wait(handle.ref, raise_on_failure=True)
 
 每次实际写请求显式进入 `single_send`，最多发送一次；发送后失败不刷新、不重试、不换通道。创建／注册无法确认结果时抛 `SubmissionUncertainError(operation_id)`，其他变更抛 `MutationUncertainError`。operation_id 默认生成，允许任意非空诊断字符串，**不是服务器幂等键**。遇到不确定结果，先显式查询确认，再决定后续动作。
 
+写请求发出后，由 `request()` 与 `single_send` 共用分类逻辑区分明确答复和未知结果；所有分支都不会自动补发：
+
+| 写入结果 | SDK 异常 | 调用方后续处理 |
+|---|---|---|
+| 明确拒绝：一般 HTTP 4xx（401/403/429 除外）、v2 业务错误（如 Conflict） | ValidationError，保留平台消息；HTTP 错误包含状态和最多约 500 字符正文 | 修正参数或资源状态 |
+| 明确无权限：HTTP 403 | AuthenticationError | 检查权限 |
+| 明确拒绝执行／限流：已解析信封中的 InternalError、Throttling 等 TransientAPIError，或 HTTP 429 | TransportError，retryable=True，保留消息 | 可由调用方安全重试；SDK 不自动重试 |
+| 结果未知：发送后 HTTP 401/3xx、HTTP 5xx、网络异常、超时、JSON 解码失败或无效响应 | 创建为 SubmissionUncertainError，其他变更为 MutationUncertainError；retryable=False | 先查询确认，避免重复写入 |
+
+分类转换以 `from error` 保留原因链；block 内已抛出的 ValidationError、AuthenticationError、TransportError 原样透传。
+
 Job/HPC/Ray/Serving 创建响应缺少 ID 直接报不确定。Notebook 和 TensorBoard 复用 CLI 创建后的只读确认，确认失败不会重新创建。API key 创建成功响应没有 ID，因此返回 `ref=None`，之后可显式 `get(name)`。已发送写入的确认读取位于 single_send 外，不能触发重提。
 
 Notebook 保存镜像先尽力估算大小，估算失败不阻止保存；镜像 ID 暂不可查时返回 `ref=None`。可见性是确认镜像 ID 后的独立单次写入，其失败通过 handle.warning 保留；`wait_image_ready` 需要已确认引用，不会重复保存；与 `images.wait_ready` 一样返回 browser_api 的 `CustomImageInfo`。Models.delete 默认检查所有版本引用和 pending 部署，force=True 跳过同一预检。
@@ -463,7 +474,7 @@ SDK 错误（包括 `NotebookFailedError`）均从 `InspireError` 派生。配�
 
 传输策略由调用方声明：普通 `operation` 进入 `Transport.scope(timeout=...)`，按 READ 处理。READ 对 requests 异常、HTTP 429/5xx、共享 `_is_transient_v2_error_code` 判定的 v2 暂时错误最多尝试三次，退避与请求共用截止时间。HTTP 401/3xx 无论 allow_browser 设置均允许一次上述会话刷新，重试仍失效则抛 AuthenticationError；requests 层失败也只有显式允许浏览器才可换通道。
 
-真正写入的 browser_api 调用必须包在 `transport.single_send(operation_id, create=True)` 或 `transport.single_send()` 中。一个 block 最多允许一次 request，第二次调用抛 RuntimeError；create 参数显式区分创建与其他变更。发送后不刷新、不重试、不换通道，错误分别映射为 SubmissionUncertainError / MutationUncertainError。Transport 不按 URL、Action 或 HTTP 动词猜测幂等性，也不校验信封形状或自动解包；解析后的 JSON 原样交给 browser_api。READ 的一般 HTTP 4xx 返回包含状态码和最多约 500 字符正文的 ValidationError，业务错误保留原消息。
+真正写入的 browser_api 调用必须包在 `transport.single_send(operation_id, create=True)` 或 `transport.single_send()` 中。一个 block 最多允许一次 request，第二次调用抛 RuntimeError；create 参数显式区分创建与其他变更。发送后不刷新、不重试、不换通道；明确拒绝映射为 ValidationError，明确限流／拒绝执行映射为可重试的 TransportError，HTTP 403 保留 AuthenticationError，仅未知结果映射为 SubmissionUncertainError / MutationUncertainError。Transport 不按 URL、Action 或 HTTP 动词猜测幂等性，也不校验信封形状或自动解包；解析后的 JSON 原样交给 browser_api。READ 的一般 HTTP 4xx 返回包含状态码和最多约 500 字符正文的 ValidationError，业务错误保留原消息。
 
 工作负载 wait 的 raise_on_failure=True 抛对应 SDK 失败异常，携带最终资源快照：Job/HPC/Ray 使用 `.job`，Notebook 使用 `.notebook`，Serving 使用 `.serving`，TensorBoard 使用 `.tensorboard`。Job/HPC/Ray 等待终态；Notebook、Serving、TensorBoard 等待目标状态，具体默认目标见方法表。超时统一抛 WaitTimeoutError。
 

@@ -22,6 +22,7 @@ from inspire.sdk import (
     ClientClosedError,
     ClientThreadError,
     SubmissionUncertainError,
+    TransportError,
     AuthenticationError,
     WaitTimeoutError,
 )
@@ -121,7 +122,7 @@ def test_close_is_owned_and_idempotent(client):
     "error",
     [
         SessionExpiredError("expired"),
-        TransientAPIError("busy"),
+        TransientAPIError("busy", status=500),
         ValueError("bad JSON"),
         __import__("requests").exceptions.ReadTimeout("timeout"),
     ],
@@ -164,7 +165,7 @@ def test_envelope_read_retries_but_create_does_not(client, monkeypatch):
         return {"ResponseMetadata": {"Error": {"Code": "InternalError", "Message": "fake"}}}
 
     monkeypatch.setattr(client._transport, "_once", busy)
-    with pytest.raises(SubmissionUncertainError):
+    with pytest.raises(TransportError, match="API error: InternalError: fake"):
         with client._transport.single_send(create=True):
             from inspire.platform.web.session.envelope import _v2_result
 
@@ -542,7 +543,6 @@ def test_plan_rejects_unsupported_group(client, planned, monkeypatch):
 
 
 def test_declared_mutation_is_not_replayed(client, monkeypatch):
-    from inspire.sdk import MutationUncertainError
 
     calls = []
 
@@ -552,7 +552,7 @@ def test_declared_mutation_is_not_replayed(client, monkeypatch):
         raise TransientAPIError("busy")
 
     monkeypatch.setattr(client._transport, "_once", fail)
-    with pytest.raises(MutationUncertainError):
+    with pytest.raises(TransportError, match="busy"):
         with client._transport.single_send():
             client._transport.request("GET", "/api/v2/train?Action=GetUnknownSideEffect")
     assert calls == [1]
@@ -602,7 +602,7 @@ def test_http_create_errors_do_not_replay(client, monkeypatch, status):
 
     client._transport._http = SimpleNamespace(request=request, close=lambda: None)
     monkeypatch.setattr("inspire.platform.web.session.requests._configure", lambda *a: None)
-    with pytest.raises(SubmissionUncertainError):
+    with pytest.raises(TransportError if status == 429 else SubmissionUncertainError):
         with client._transport.single_send(create=True):
             from inspire.platform.web.session.envelope import _v2_result
 
@@ -796,8 +796,7 @@ def test_metrics_extraction(client, monkeypatch):
     ) == (1800, 3600, 60)
 
 
-def test_read_http_message_and_write_uncertainty(client, monkeypatch):
-    from inspire import MutationUncertainError
+def test_read_and_write_http_validation_message(client, monkeypatch):
 
     client._transport._http = SimpleNamespace(
         request=lambda *a, **kw: SimpleNamespace(
@@ -809,7 +808,7 @@ def test_read_http_message_and_write_uncertainty(client, monkeypatch):
     with pytest.raises(ValidationError, match="HTTP 422: platform detail") as error:
         client._transport.request("POST", "/v1/anything")
     assert len(str(error.value)) < 520
-    with pytest.raises(MutationUncertainError):
+    with pytest.raises(ValidationError, match="HTTP 422: platform detail"):
         with client._transport.single_send():
             client._transport.request("POST", "/v1/anything")
 
@@ -1276,3 +1275,93 @@ def test_write_401_after_successful_probe_is_still_uncertain(client, monkeypatch
         with client._transport.single_send(create=True):
             client._transport.request("POST", "/write")
     assert [c[2] for c in calls] == [False, True]
+
+
+@pytest.mark.parametrize("create", [False, True])
+@pytest.mark.parametrize(
+    "outcome",
+    ["Conflict", "InternalError", "Throttling", 400, 403, 429, 401, 302, 500,
+     "timeout", "bad-json", "invalid-response"],
+)
+def test_write_outcome_classification(client, monkeypatch, create, outcome):
+    import requests
+    from inspire.sdk import MutationUncertainError, TransportError
+    from inspire.platform.web.session.envelope import _v2_result
+
+    messages = {
+        "Conflict": "当前状态（运行中）无法删除，请先停止后再删除",
+        "InternalError": "模型源路径不存在或访问异常",
+        "Throttling": "请求过于频繁",
+    }
+    calls = []
+    causes = []
+    http = requests.Session()
+
+    def decode():
+        if outcome == "bad-json":
+            raise requests.exceptions.JSONDecodeError("Invalid JSON", "<html>", 0)
+        if outcome == "invalid-response":
+            raise ValueError("Invalid response")
+        return {"ResponseMetadata": {"Error": {
+            "Code": outcome, "Message": messages[outcome],
+        }}}
+
+    def request(*args, **kwargs):
+        calls.append((args, kwargs))
+        if outcome == "timeout":
+            raise requests.exceptions.ReadTimeout("Response lost")
+        return SimpleNamespace(
+            status_code=outcome if isinstance(outcome, int) else 200,
+            text="platform rejection detail",
+            json=decode,
+        )
+
+    monkeypatch.setattr(http, "request", request)
+    monkeypatch.setattr(client._transport, "_http", http)
+    monkeypatch.setattr(client._transport, "_refresh", lambda: pytest.fail("write refreshed"))
+    client._transport.allow_browser = True
+    uncertain = SubmissionUncertainError if create else MutationUncertainError
+    expected = (
+        ValidationError if outcome in ("Conflict", 400)
+        else AuthenticationError if outcome == 403
+        else TransportError if outcome in ("InternalError", "Throttling", 429)
+        else uncertain
+    )
+    with pytest.raises(expected) as caught:
+        with client._transport.single_send("f5-operation", create=create):
+            payload = client._transport.request("POST", "/write")
+            try:
+                _v2_result(payload)
+            except Exception as error:
+                causes.append(error)
+                raise
+
+    assert type(caught.value) is expected
+    assert caught.value.retryable is (expected is TransportError)
+    assert len(calls) == 1
+    assert client._transport._write is None
+    if outcome in messages:
+        assert str(caught.value) == f"API error: {outcome}: {messages[outcome]}"
+        assert caught.value.__cause__ is causes[0]
+    elif outcome == 400:
+        assert str(caught.value) == "HTTP 400: platform rejection detail"
+        assert isinstance(caught.value.__cause__, ValidationError)
+    elif expected is uncertain:
+        assert caught.value.__cause__ is not None
+        if create:
+            assert caught.value.operation_id == "f5-operation"
+
+
+@pytest.mark.parametrize("error_name", ["ValidationError", "AuthenticationError", "TransportError"])
+@pytest.mark.parametrize("create", [False, True])
+def test_single_send_preserves_definite_body_errors(client, monkeypatch, error_name, create):
+    import inspire.sdk as sdk
+
+    error = getattr(sdk, error_name)("already classified")
+    calls = fake_platform(client, monkeypatch, [200])
+    with pytest.raises(type(error)) as caught:
+        with client._transport.single_send(create=create):
+            client._transport.request("POST", "/write")
+            raise error
+    assert caught.value is error
+    assert len(calls) == 1
