@@ -431,7 +431,7 @@ def check_discovery(kind, client, catalog, monkeypatch):
         service.get("item100", workspace="Workspace")
     monkeypatch.setattr(module, f"list_{kind}_jobs", lambda **kw: (rows[:100], 201))
     with pytest.raises(ResolutionIncompleteError):
-        service.list("Workspace")
+        service.list("Workspace", limit=200)
     assert service.quotas("Workspace").items[0].quota == Quota(0, 8, 32)
 
 
@@ -580,19 +580,108 @@ def test_hpc_list_respects_action_page_size(client, catalog, monkeypatch):
 
 
 @pytest.mark.parametrize("kind,size", [("hpc", 50), ("ray", 20)])
-def test_workload_expands_first_page_once(client, catalog, monkeypatch, kind, size):
+def test_workload_server_paging(client, catalog, monkeypatch, kind, size):
     module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
-    platform = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
-    info = platform.HPCJobInfo if kind == "hpc" else platform.RayJobInfo
+    info = module.HPCJobInfo if kind == "hpc" else module.RayJobInfo
     key = "job_id" if kind == "hpc" else "ray_job_id"
     rows = [info.from_api_response({key: f"key-{i}", "name": f"job-{i}"})
-            for i in range(73)]
+            for i in range(200)]
     calls = []
 
     def fetch(**kwargs):
-        calls.append((kwargs["page_num"], kwargs["page_size"]))
-        return rows[:kwargs["page_size"]], len(rows)
+        page, count = kwargs["page_num"], kwargs["page_size"]
+        assert count == size
+        calls.append((page, count))
+        return rows[(page - 1) * count:page * count], len(rows)
 
     monkeypatch.setattr(module, f"list_{kind}_jobs", fetch)
-    assert len(getattr(client, kind).list(catalog.ws.ref, limit=100).items) == 73
-    assert calls == [(1, size), (1, 73)]
+    service = getattr(client, kind)
+    first = service.list(catalog.ws.ref, limit=5)
+    assert [row.name for row in first.items] == [f"job-{i}" for i in range(5)]
+    assert first.total == 200 and calls == [(1, size)]
+    second = service.list(catalog.ws.ref, limit=size, cursor=first.next_cursor)
+    assert [row.name for row in second.items] == [f"job-{i}" for i in range(5, size + 5)]
+    assert calls == [(1, size), (1, size), (2, size)]
+    calls.clear()
+    assert len(tuple(service.iter(catalog.ws.ref, max_items=60))) == 60
+    assert calls == [(i, size) for i in range(1, (60 + size - 1) // size + 1)]
+    filtered = service.list(catalog.ws.ref, keyword="job-19", limit=5)
+    assert filtered.total is None
+    assert [row.name for row in filtered.items] == ["job-19", *[f"job-{i}" for i in range(190, 194)]]
+
+
+@pytest.mark.parametrize("kind,size", [("hpc", 50), ("ray", 20)])
+def test_workload_name_scan_is_bounded(client, catalog, monkeypatch, kind, size):
+    module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    info = module.HPCJobInfo if kind == "hpc" else module.RayJobInfo
+    key = "job_id" if kind == "hpc" else "ray_job_id"
+    calls = []
+
+    def fetch(**kwargs):
+        page = kwargs["page_num"]
+        assert kwargs["page_size"] == size
+        assert "keyword" not in kwargs  # Not supported by either Action.
+        calls.append(page)
+        return [info.from_api_response({key: f"{page}-{i}", "name": "other"})
+                for i in range(size)], 89593
+
+    monkeypatch.setattr(module, f"list_{kind}_jobs", fetch)
+    with pytest.raises(ResolutionIncompleteError, match="100 pages"):
+        getattr(client, kind).get("name", workspace="Workspace")
+    assert calls == list(range(1, 101))
+
+
+@pytest.mark.parametrize("kind,size", [("hpc", 50), ("ray", 20)])
+def test_workload_name_candidates_and_duplicate_ids(client, catalog, monkeypatch, kind, size):
+    module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    info = module.HPCJobInfo if kind == "hpc" else module.RayJobInfo
+    key = "job_id" if kind == "hpc" else "ray_job_id"
+    rows = [info.from_api_response({key: f"key-{i}", "name": "prefix-name"})
+            for i in range(size)]
+    rows += [info.from_api_response({key: "chosen", "name": "name"})] * 2
+
+    def fetch(**kwargs):
+        page = kwargs["page_num"]
+        return rows[(page - 1) * size:page * size], len(rows)
+
+    monkeypatch.setattr(module, f"list_{kind}_jobs", fetch)
+    monkeypatch.setattr(module, f"get_{kind}_job_detail", lambda *a, **kw: {
+        key: "chosen", "name": "name", "status": "RUNNING",
+    })
+    service = getattr(client, kind)
+    assert service.get("name", workspace="Workspace").ref.key == "chosen"
+    rows.append(info.from_api_response({key: "other", "name": "NAME"}))
+    with pytest.raises(AmbiguousResourceError) as error:
+        service.get("name", workspace="Workspace")
+    assert {row.ref.key for row in error.value.candidates} == {"chosen", "other"}
+
+
+@pytest.mark.parametrize("kind,size", [("hpc", 50), ("ray", 20)])
+def test_workload_filtered_cursor_and_missing_page(client, catalog, monkeypatch, kind, size):
+    module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    info = module.HPCJobInfo if kind == "hpc" else module.RayJobInfo
+    key = "job_id" if kind == "hpc" else "ray_job_id"
+    rows = [info.from_api_response({key: f"key-{i}", "name": f"job-{i}",
+            "status": "RUNNING" if i % 3 == 0 else "STOPPED",
+            "created_by": {"name": "owner"}}) for i in range(200)]
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        page = kwargs["page_num"]
+        return rows[(page - 1) * size:page * size], len(rows)
+
+    monkeypatch.setattr(module, f"list_{kind}_jobs", fetch)
+    service = getattr(client, kind)
+    first = service.list("Workspace", status="running", keyword="owner", limit=5)
+    second = service.list("Workspace", status="running", keyword="owner", limit=5,
+                          cursor=first.next_cursor)
+    assert [r.name for r in first.items + second.items] == [f"job-{i}" for i in range(0, 30, 3)]
+    assert first.total is second.total is None
+    if kind == "hpc":
+        assert calls[0]["status"] == "RUNNING"
+    with pytest.raises(ValidationError, match="Cursor"):
+        service.list("Workspace", status="stopped", cursor=first.next_cursor)
+    monkeypatch.setattr(module, f"list_{kind}_jobs", lambda **kw: ([], 200))
+    with pytest.raises(ResolutionIncompleteError, match="omitted"):
+        service.list("Workspace")

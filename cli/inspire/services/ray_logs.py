@@ -15,7 +15,8 @@ def clamped_window(
     since_minutes: int | None,
 ) -> tuple[int, int, bool]:
     """Pick the query window, then hold it inside the platform's month cap."""
-    start_ms, end_ms = _web_log_time_range(detail, since_minutes)
+    # Apply the Ray cap here so the CLI can still report that it shortened the window.
+    start_ms, end_ms = _web_log_time_range(detail, since_minutes, max_window_ms=None)
     clamped = end_ms - start_ms > RAY_LOG_MAX_WINDOW_MS
     if clamped:
         start_ms = end_ms - RAY_LOG_MAX_WINDOW_MS

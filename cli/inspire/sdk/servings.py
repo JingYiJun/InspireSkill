@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from uuid import uuid4
 from datetime import datetime
 from typing import Any, Iterator, Sequence
@@ -48,7 +48,6 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
     _failure = ServingFailedError
     _binding = WorkloadBinding[ServingInstanceView](
         list_page_size=20,
-        expand_list=True,
         list_jobs=core.list_servings,
         get_detail=api.get_serving_detail,
         start=api.start_serving,
@@ -79,27 +78,12 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         data["job_id"] = data.get("inference_serving_id") or data.get("id") or ""
         return super()._job(data, ws, ref)
 
-    def _all(self, ws, project=None, keyword=None):
-        project_id = self._project(ws, project).ref.key if project is not None else None
-        rows = self._collect_pages(
-            lambda **paging: api.list_servings(
-                workspace_id=ws.ref.key,
-                project_ids=[project_id] if project_id else None,
-                keyword=keyword,
-                session=self.session,
-                **paging,
-            ),
-            lambda row: row.inference_serving_id,
-            page_size=self._binding.list_page_size,
-            expand_list=self._binding.expand_list,
+    def _fetch(self, ws, page, page_size, *, keyword=None, project=None, status=None):
+        return api.list_servings(
+            workspace_id=ws.ref.key, page=page, page_size=page_size,
+            project_ids=[project] if project else None,
+            keyword=keyword, statuses=[status] if status else None, session=self.session,
         )
-        return [
-            self._job(
-                dict(row.raw or {}, **{k: v for k, v in asdict(row).items() if k != "raw"}),
-                ws.ref.key,
-            )
-            for row in rows
-        ]
 
     def _project(self, ws, selector):
         from .models import ProjectRef
@@ -132,13 +116,10 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         cursor: str | None = None,
     ) -> Page[Serving]:
         ws = self.client.workspaces.get(workspace)
-        rows = [
-            r
-            for r in self._all(ws, project, keyword)
-            if statuses.matches_status(r.raw_status, status)
-        ]
-        return self._page(
-            rows, limit=limit, cursor=cursor, query=(ws.ref.key, project, status, keyword)
+        project_id = self._project(ws, project).ref.key if project is not None else None
+        return self._list(
+            ws, status=status, keyword=keyword, limit=limit, cursor=cursor, project=project_id,
+            local_keyword=False,
         )
 
     def iter(
@@ -150,7 +131,11 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         cursor: str | None = None
         seen: set[str] = set()
         while True:
-            page = self.list(workspace, project=project, status=status, keyword=keyword, cursor=cursor)
+            page = self.list(
+                workspace, project=project, status=status, keyword=keyword, cursor=cursor,
+                limit=min(self._binding.list_page_size, max_items - len(seen))
+                if max_items is not None else self._binding.list_page_size,
+            )
             for row in page.items:
                 if row.ref.key not in seen:
                     seen.add(row.ref.key)

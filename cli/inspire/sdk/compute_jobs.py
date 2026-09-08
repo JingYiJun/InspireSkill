@@ -26,7 +26,7 @@ from .models import (
     MetricGroup,
 )
 from .models_compute import WorkloadJob
-from .exceptions import ValidationError, ResourceNotFoundError
+from .exceptions import ValidationError, ResourceNotFoundError, ResolutionIncompleteError
 
 
 R = TypeVar("R", bound=ResourceRef)
@@ -47,7 +47,6 @@ V = TypeVar("V", bound=InstanceView)
 @dataclass(frozen=True)
 class WorkloadBinding(Generic[V]):
     list_page_size: int
-    expand_list: bool
     list_jobs: Callable[..., tuple[Sequence[Any], int]]
     get_detail: Callable[..., dict[str, Any]]
     stop: Callable[..., object]
@@ -113,23 +112,62 @@ class ComputeJobs(Service, Generic[R, J, V]):
             view,
         )
 
-    def _all(self, ws):
-        items = self._collect_pages(
-            lambda page, page_size: self._binding.list_jobs(
-                workspace_id=ws.ref.key, page_num=page, page_size=page_size, session=self.session
-            ),
-            lambda row: getattr(row, "job_id", None) or getattr(row, "ray_job_id", None),
-            page_size=self._binding.list_page_size,
-            expand_list=self._binding.expand_list,
+    def _list_job(self, row, ws):
+        data = asdict(row)
+        raw = data.pop("raw", None) or {}
+        return self._job(dict(raw, **data), ws.ref.key)
+
+    def _fetch(self, ws, page, page_size, *, keyword=None, project=None, status=None):
+        return self._binding.list_jobs(
+            workspace_id=ws.ref.key, page_num=page, page_size=page_size,
+            session=self.session,
         )
-        return [
-            self._job(
-                dict(x.raw, **{k: v for k, v in asdict(x).items() if k != "raw"})
-                if hasattr(x, "raw") else asdict(x),
-                ws.ref.key,
+
+    def _all(self, ws, *, keyword):
+        # Only exact candidates are retained; the scan must prove uniqueness.
+        rows, seen, previous = [], set(), None
+        size = self._binding.list_page_size
+        for page in range(1, 101):
+            items, total = self._fetch(ws, page, size, keyword=keyword)
+            jobs = [self._list_job(row, ws) for row in items]
+            keys = tuple(job.ref.key for job in jobs)
+            if keys and keys == previous:
+                raise ResolutionIncompleteError("Platform repeated a job page.")
+            previous = keys
+            for job in jobs:
+                if job.name.casefold() == keyword.strip().casefold() and job.ref.key not in seen:
+                    rows.append(job)
+                    seen.add(job.ref.key)
+            if len(rows) > 1:
+                exact(rows, keyword, self._ref_type, self.client, ws.ref.key)
+            if (page - 1) * size + len(items) >= total:
+                return rows
+            if len(items) < size:
+                raise ResolutionIncompleteError("Platform omitted a job page.")
+        raise ResolutionIncompleteError("Job name scan exceeded 100 pages; narrow the query.")
+
+    def _list(self, ws, *, status, keyword, limit, cursor, project=None, local_keyword=True):
+        needle = keyword.strip().casefold() if keyword and local_keyword else ""
+
+        def matches(row):
+            return self._binding.matches_status(row.raw_status, status) and (
+                not needle or any(
+                    needle in str(value or "").casefold()
+                    for value in (
+                        row.name, row.raw_status, row.project, ws.name,
+                        row.raw.get("entrypoint"), row.raw.get("compute_group_name"),
+                        row.raw.get("created_by_name"),
+                    )
+                )
             )
-            for x in items
-        ]
+
+        return self._server_page(
+            lambda page, size: self._fetch(ws, page, size, keyword=keyword, project=project, status=status),
+            lambda row: self._list_job(row, ws),
+            page_size=self._binding.list_page_size, limit=limit, cursor=cursor,
+            query=(ws.ref.key, project, status, keyword),
+            matches=matches if status is not None or needle else None,
+        )
 
     @operation
     def list(
@@ -142,27 +180,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         cursor: str | None = None,
     ) -> Page[J]:
         ws = self.client.workspaces.get(workspace)
-        rows = self._all(ws)
-        rows = [r for r in rows if self._binding.matches_status(r.raw_status, status)]
-        if keyword:
-            needle = keyword.strip().casefold()
-            rows = [
-                r
-                for r in rows
-                if any(
-                    needle in str(v).casefold()
-                    for v in (
-                        r.name,
-                        r.raw_status,
-                        r.project,
-                        ws.name,
-                        r.raw.get("entrypoint"),
-                        r.raw.get("compute_group_name"),
-                        r.raw.get("created_by_name"),
-                    )
-                )
-            ]
-        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
+        return self._list(ws, status=status, keyword=keyword, limit=limit, cursor=cursor)
 
     def iter(
         self,
@@ -174,9 +192,14 @@ class ComputeJobs(Service, Generic[R, J, V]):
     ) -> Iterator[J]:
         if max_items is not None:
             positive(max_items, "max_items", 100000)
-        cursor, seen = None, set()
+        cursor = None
+        seen: set[str] = set()
         while True:
-            page = self.list(workspace, status=status, keyword=keyword, cursor=cursor)
+            page = self.list(
+                workspace, status=status, keyword=keyword, cursor=cursor,
+                limit=min(self._binding.list_page_size, max_items - len(seen))
+                if max_items is not None else self._binding.list_page_size,
+            )
             for item in page.items:
                 if item.ref.key not in seen:
                     seen.add(item.ref.key)
@@ -197,8 +220,10 @@ class ComputeJobs(Service, Generic[R, J, V]):
             return selector
         if workspace is None:
             raise ValidationError("workspace is required when selecting a job by name.")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ValidationError("Use a non-empty name or the matching resource reference.")
         ws = self.client.workspaces.get(workspace)
-        return exact(self._all(ws), selector, self._ref_type, self.client, ws.ref.key).ref
+        return exact(self._all(ws, keyword=selector), selector, self._ref_type, self.client, ws.ref.key).ref
 
     @operation
     def get(self, ref: str | R, *, workspace: str | WorkspaceRef | None = None) -> J:

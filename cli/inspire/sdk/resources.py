@@ -129,15 +129,52 @@ class Service:
         next_cursor = self._encode_cursor(end, query) if end < len(items) else None
         return Page(tuple(items[offset:end]), next_cursor, len(items))
 
-    def _collect_pages(self, fetch, identity, *, page_size=100, expand_list=False):
+    def _server_page(
+        self, fetch, convert, *, page_size, limit, cursor, query, matches=None,
+    ):
+        """Page by platform row offsets, applying optional filters after fetching."""
+        positive(limit)
+        offset, fingerprint = self._cursor_offset(cursor, query)
+        rows, seen, previous = [], set(), None
+        for _ in range(100):
+            page_num, skip = divmod(offset, page_size)
+            items, total = fetch(page_num + 1, page_size)
+            values = [convert(item) for item in items]
+            keys = tuple(item.ref.key for item in values)
+            if keys and keys == previous:
+                raise ResolutionIncompleteError("Platform repeated a resource page.")
+            previous = keys
+            if len(items) <= skip and total is not None and offset < total:
+                raise ResolutionIncompleteError("Platform omitted a resource page.")
+            exhausted = (
+                (page_num * page_size + len(items) >= total)
+                if total is not None else len(items) < page_size
+            )
+            for item in values[skip:]:
+                offset += 1
+                if item.ref.key not in seen and (matches is None or matches(item)):
+                    rows.append(item)
+                    seen.add(item.ref.key)
+                    if len(rows) == limit:
+                        more = offset < page_num * page_size + len(items) or not exhausted
+                        return Page(
+                            tuple(rows),
+                            self._encode_cursor(offset, fingerprint) if more else None,
+                            total if matches is None else None,
+                        )
+            if exhausted:
+                return Page(tuple(rows), None, total if matches is None else None)
+            if len(items) < page_size:
+                raise ResolutionIncompleteError("Platform omitted a resource page.")
+            offset = (page_num + 1) * page_size
+        raise ResolutionIncompleteError("Resource scan exceeded 100 pages; narrow the query.")
+
+    def _collect_pages(self, fetch, identity, *, page_size=100):
         """Enumerate before local paging or exact selection; never hide a partial catalog."""
         items = []
         seen = set()
         for page in range(1, 101):
             rows, total = fetch(page=page, page_size=page_size)
-            if expand_list and total > len(rows):
-                rows, expanded_total = fetch(page=1, page_size=max(total, len(rows), 1))
-                total = max(total, expanded_total, len(rows))
             for row in rows:
                 key = identity(row)
                 if not key:
@@ -148,7 +185,7 @@ class Service:
                 items.append(row)
             if len(items) >= total:
                 return items
-            if expand_list or not rows:
+            if not rows:
                 break
         raise ResolutionIncompleteError("Resource catalog enumeration is incomplete.")
 

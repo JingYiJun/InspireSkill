@@ -41,9 +41,15 @@ def metric_group(detail: object) -> str | None:
 
 
 class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
+    def _fetch(self, ws, page, page_size, *, keyword=None, project=None, status=None):
+        return self._binding.list_jobs(
+            workspace_id=ws.ref.key, page_num=page, page_size=page_size,
+            status=self._binding.normalize_status(status) if status else None,
+            session=self.session,
+        )
+
     _binding = WorkloadBinding[HPCInstanceView](
         list_page_size=50,
-        expand_list=True,
         list_jobs=lambda **kwargs: api.list_hpc_jobs(**kwargs),
         get_detail=lambda key, **kwargs: api.get_hpc_job_detail(key, **kwargs),
         stop=lambda key, **kwargs: api.stop_hpc_job(key, **kwargs),

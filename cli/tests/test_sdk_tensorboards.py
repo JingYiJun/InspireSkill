@@ -186,3 +186,16 @@ def test_batch_status_and_failed_wait(client, catalog, monkeypatch):
     with pytest.raises(TensorboardFailedError) as error:
         client.tensorboards.wait(ref, raise_on_failure=True)
     assert error.value.tensorboard.ref == ref
+
+
+def test_name_resolution_sends_keyword(client, catalog, monkeypatch):
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        return [board()], 1
+
+    monkeypatch.setattr(api, "list_tensorboards", fetch)
+    monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board())
+    assert client.tensorboards.get("board", workspace="Workspace").ref.key == "tb-test"
+    assert len(calls) == 1 and calls[0]["keyword"] == "board"

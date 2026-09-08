@@ -27,9 +27,9 @@ SDK 面向能访问平台的本机或控制节点。CPU 节点需满足网络、
 
 集合接口为 `list(workspace, *, ...filters, limit=20, cursor=None)`、`iter(workspace, *, ...filters, max_items=None)` 和 `quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)`；无工作区的目录保留其首个选择参数或无参数。以工作区为主要操作对象的方法（包括 `resources.availability/policy/usage`、`account_info.permissions` 和 `servings.configs`）将 `workspace` 作为首参数，接受位置或关键字传入，其余参数仅接受关键字；`account_info.permissions(workspace=None)` 的工作区可省略。其他方法中的工作区筛选参数仅接受关键字。单资源操作第一参数统一叫 `ref`，其余参数只接受关键字；批量 `status(refs, *, workspace=None)` 接受名称或类型化引用的序列，按输入顺序返回元组，空序列返回空元组。
 
-`Page` 提供 `items`、`next_cursor`、`total`，通过相同过滤条件与 `cursor=page.next_cursor` 继续。`total=None` 表示没有可靠总数。游标绑定账号、门面及查询条件，不是平台快照。迭代器对身份去重，`max_items` 控制产出数。目录可能先完整枚举再做本地分页，limit 不等于底层请求条数。
+`Page` 提供 `items`、`next_cursor`、`total`，通过相同过滤条件与 `cursor=page.next_cursor` 继续。Jobs、Notebook、HPC、Ray、Serving 的列表采用服务端分页，按需取页直到收集到 `limit` 项或目录结束；游标记录平台行偏移，并绑定账号、门面及查询条件，不是平台快照。迭代器沿游标继续并对身份去重，`max_items` 控制产出数。Notebook、HPC、Ray、Serving 列表未应用本地过滤时，`total` 使用平台报告的总数；应用本地状态或关键词过滤时为 `None`，平台未提供可靠总数时也为 `None`。其他目录（包括 TensorBoard）仍可能先有界枚举再做本地分页。
 
-HPC、Ray、Serving 的初始列表请求分别为 50、20、20 项；总数超过首批时，与各自 CLI 完整列表路径一样，在第 1 页按 `max(total, len(rows), 1)` 扩大请求一次。扩大后仍未覆盖总数时抛 `ResolutionIncompleteError`。其他分页目录同样不会把缺页或超过扫描上限的结果当作完整目录。
+HPC、Ray、Serving 的请求页大小固定为 50、20、20，Notebook 为 100；不会按总数扩大请求。缺页、重复页或单次扫描超过 100 页时抛 `ResolutionIncompleteError`。Serving、Notebook、TensorBoard 名称解析先发送 `keyword` 再精确匹配；当前 HPC/Ray ListJobs 合同不支持关键词过滤，名称解析最多扫描 100 页，无法确认唯一性时抛 `ResolutionIncompleteError`，可使用已有类型化引用直接查询。
 
 名称按完整名称消歧，多个候选抛 `AmbiguousResourceError`，候选引用在 `.candidates`。名称查询工作负载、计算组、镜像和模型时显式给 workspace；已有类型化 Ref 可省略。Ref 校验类型、账号、来源以及显式工作区；`.to_dict()` / `XRef.from_dict()` 可用于保存和恢复，不能跨账号套用。项目目录默认是全局范围；模型 list 和账号 permissions 支持 `workspace="all"`，resources 查询只接受单工作区。
 
@@ -154,6 +154,8 @@ statuses = client.jobs.status([job.ref for job in page.items])
 | `jobs.status(refs, *, workspace=None)` | `job status` |
 | `jobs.stop(ref, *, workspace=None)` | `job stop` |
 | `jobs.wait(ref, *, workspace=None, timeout=3600, poll_interval=10, raise_on_failure=False)` | `job wait` |
+
+`jobs.logs()` 的默认时间范围及显式 `window` 最长为 30 天：保留结束时间并向后移动开始时间；CLI `job logs` 复用同一截断逻辑。
 
 ### notebooks
 

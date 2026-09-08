@@ -33,7 +33,6 @@ from .exceptions import ValidationError, RayJobFailedError, SubmissionUncertainE
 class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
     _binding = WorkloadBinding[RayInstanceView](
         list_page_size=20,
-        expand_list=True,
         list_jobs=lambda **kwargs: api.list_ray_jobs(**kwargs),
         get_detail=lambda key, **kwargs: api.get_ray_job_detail(key, **kwargs),
         stop=lambda key, **kwargs: api.stop_ray_job(key, **kwargs),

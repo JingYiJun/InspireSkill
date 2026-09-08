@@ -22,6 +22,7 @@ _EXPORTS = {
     "list_task_usage": (".availability", "list_task_usage"),
     "JobInfo": (".jobs", "JobInfo"),
     "MAX_JOB_PAGE_SIZE": (".jobs", "MAX_JOB_PAGE_SIZE"),
+    "JOB_LOG_MAX_WINDOW_MS": (".jobs", "JOB_LOG_MAX_WINDOW_MS"),
     "TrainScheduleCapabilities": (".jobs", "TrainScheduleCapabilities"),
     "create_training_job": (".jobs", "create_training_job"),
     "delete_job": (".jobs", "delete_job"),
@@ -186,6 +187,7 @@ _EXPORTS = {
 __all__ = [
     "JobInfo",
     "MAX_JOB_PAGE_SIZE",
+    "JOB_LOG_MAX_WINDOW_MS",
     "TrainScheduleCapabilities",
     "create_training_job",
     "delete_job",
@@ -393,6 +395,7 @@ if TYPE_CHECKING:
     from .jobs import (
         JobInfo,
         MAX_JOB_PAGE_SIZE,
+        JOB_LOG_MAX_WINDOW_MS,
         TrainScheduleCapabilities,
         create_training_job,
         delete_job,

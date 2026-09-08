@@ -82,7 +82,7 @@ class Tensorboards(Service):
         if workspace is None:
             raise ValidationError("workspace is required when selecting a TensorBoard by name.")
         ws = self.client.workspaces.get(workspace)
-        return exact(self._all(ws), ref, TensorboardRef, self.client, ws.ref.key).ref
+        return exact(self._all(ws, keyword=ref), ref, TensorboardRef, self.client, ws.ref.key).ref
 
     @operation
     def get(

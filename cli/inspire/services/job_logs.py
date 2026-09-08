@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from inspire.platform.web.browser_api.jobs import JOB_LOG_MAX_WINDOW_MS
+
 _SUBSECOND_RE = re.compile(r"\.(\d+)")
 
 
@@ -49,10 +51,16 @@ def coerce_epoch_ms(value: object) -> int | None:
         return None
 
 
-def web_log_time_range(job_data: dict, since_minutes: int | None) -> tuple[int, int]:
+def web_log_time_range(
+    job_data: dict, since_minutes: int | None, *,
+    max_window_ms: int | None = JOB_LOG_MAX_WINDOW_MS,
+) -> tuple[int, int]:
     now_ms = int(time.time() * 1000)
     if since_minutes is not None:
-        return now_ms - since_minutes * 60 * 1000, now_ms
+        window_ms = since_minutes * 60 * 1000
+        if max_window_ms is not None:
+            window_ms = min(window_ms, max_window_ms)
+        return now_ms - window_ms, now_ms
 
     created_ms = coerce_epoch_ms(job_data.get("created_at"))
     finished_ms = coerce_epoch_ms(job_data.get("finished_at"))
@@ -60,8 +68,11 @@ def web_log_time_range(job_data: dict, since_minutes: int | None) -> tuple[int, 
         return now_ms - 24 * 60 * 60 * 1000, now_ms
 
     start_ms = max(0, created_ms - 10 * 60 * 1000)
-    end_ms = (finished_ms or now_ms) + 10 * 60 * 1000
-    return start_ms, max(end_ms, start_ms + 1)
+    end_ms = finished_ms + 10 * 60 * 1000 if finished_ms else now_ms
+    end_ms = max(end_ms, start_ms + 1)
+    if max_window_ms is not None:
+        start_ms = max(start_ms, end_ms - max_window_ms)
+    return start_ms, end_ms
 
 
 def web_log_sub_ms(item: dict) -> int:

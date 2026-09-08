@@ -392,21 +392,76 @@ def test_binding_adapts_serving_paging(client, monkeypatch):
 
 
 @pytest.mark.parametrize("incomplete", [False, True])
-def test_list_expands_first_page_once(client, catalog, monkeypatch, incomplete):
+def test_list_pages_without_expansion(client, catalog, monkeypatch, incomplete):
     from inspire import ResolutionIncompleteError
 
-    rows = [ServingInfo(f"s{i}", f"service-{i}", "running") for i in range(35)]
+    rows = [ServingInfo(f"s{i}", f"service-{i}", "running") for i in range(200)]
     calls = []
 
     def fetch(**kwargs):
-        calls.append((kwargs["page"], kwargs["page_size"]))
-        count = min(kwargs["page_size"], 20) if incomplete else kwargs["page_size"]
-        return rows[:count], len(rows)
+        page, size = kwargs["page"], kwargs["page_size"]
+        assert size == 20
+        calls.append((page, size))
+        return (rows[:size] if incomplete else rows[(page - 1) * size:page * size]), len(rows)
 
     monkeypatch.setattr(api, "list_servings", fetch)
     if incomplete:
         with pytest.raises(ResolutionIncompleteError):
             client.servings.list("Workspace", limit=50)
+        assert calls == [(1, 20), (2, 20)]
     else:
-        assert len(client.servings.list("Workspace", limit=50).items) == 35
-    assert calls == [(1, 20), (1, 35)]
+        first = client.servings.list("Workspace", limit=5)
+        assert first.total == 200 and calls == [(1, 20)]
+        second = client.servings.list("Workspace", limit=20, cursor=first.next_cursor)
+        assert [r.name for r in second.items] == [f"service-{i}" for i in range(5, 25)]
+        assert calls == [(1, 20), (1, 20), (2, 20)]
+        calls.clear()
+        assert len(tuple(client.servings.iter("Workspace", max_items=60))) == 60
+        assert calls == [(1, 20), (2, 20), (3, 20)]
+
+
+def test_name_resolution_filters_pages_and_deduplicates(client, catalog, monkeypatch):
+    from inspire import AmbiguousResourceError
+
+    rows = [ServingInfo(f"s{i}", "prefix-name", "running") for i in range(20)]
+    rows += [ServingInfo("chosen", "name", "running")] * 2
+    calls = []
+
+    def fetch(**kwargs):
+        assert kwargs["keyword"] == "name"
+        page, size = kwargs["page"], kwargs["page_size"]
+        calls.append((page, size))
+        return rows[(page - 1) * size:page * size], len(rows)
+
+    monkeypatch.setattr(api, "list_servings", fetch)
+    monkeypatch.setattr(client.servings, "_binding", replace(
+        client.servings._binding, get_detail=lambda *a, **kw: {
+            "inference_serving_id": "chosen", "name": "name", "status": "running",
+        },
+    ))
+    assert client.servings.get("name", workspace="Workspace").ref.key == "chosen"
+    assert calls == [(1, 20), (2, 20)]
+    rows.append(ServingInfo("other", "name", "running"))
+    with pytest.raises(AmbiguousResourceError) as error:
+        client.servings.get("name", workspace="Workspace")
+    assert {row.ref.key for row in error.value.candidates} == {"chosen", "other"}
+
+
+def test_name_lookup_queries_only_keyword_results(client, catalog, monkeypatch):
+    rows = [ServingInfo(f"s{i}", f"service-{i}", "running") for i in range(200)]
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["page_size"] == 20
+        matches = [r for r in rows if kwargs["keyword"] in r.name]
+        return matches, len(matches)
+
+    monkeypatch.setattr(api, "list_servings", fetch)
+    monkeypatch.setattr(client.servings, "_binding", replace(
+        client.servings._binding, get_detail=lambda *a, **kw: {
+            "inference_serving_id": "s199", "name": "service-199", "status": "running",
+        },
+    ))
+    assert client.servings.get("service-199", workspace="Workspace").ref.key == "s199"
+    assert len(calls) == 1 and calls[0]["keyword"] == "service-199"

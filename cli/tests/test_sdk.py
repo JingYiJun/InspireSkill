@@ -33,6 +33,10 @@ from inspire.platform.web.session.models import WebSession, SessionExpiredError,
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    def reject_http(*args, **kwargs):
+        raise AssertionError("SDK tests must mock all HTTP requests.")
+
+    monkeypatch.setattr("requests.sessions.Session.send", reject_http)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / ".inspire"
     for name in ("alpha", "beta"):

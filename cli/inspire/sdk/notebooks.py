@@ -128,14 +128,19 @@ class Notebooks(Service):
         cursor: str | None = None,
     ) -> Page[Notebook]:
         ws = self.client.workspaces.get(workspace)
-        rows = self._all(ws, keyword=keyword, status=status)
-        if status:
-            rows = [
-                r
-                for r in rows
-                if status.casefold() in (r.status.casefold(), r.raw_status.casefold())
-            ]
-        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
+        user_ids = core.current_user_ids(self.session)
+        return self._server_page(
+            lambda page, size: browser_api.list_notebooks(
+                ws.ref.key, user_ids=user_ids, keyword=keyword or "",
+                status=[status.upper()] if status else None,
+                page=page, page_size=size, session=self.session,
+            ),
+            lambda row: self._notebook(row, ws.ref.key),
+            page_size=100, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword),
+            matches=(lambda row: status.casefold() in (
+                row.status.casefold(), row.raw_status.casefold(),
+            )) if status else None,
+        )
 
     def iter(
         self,
@@ -147,9 +152,13 @@ class Notebooks(Service):
     ) -> Iterator[Notebook]:
         if max_items is not None:
             positive(max_items, "max_items", 100000)
-        cursor, seen = None, set()
+        cursor = None
+        seen: set[str] = set()
         while True:
-            page = self.list(workspace, status=status, keyword=keyword, cursor=cursor)
+            page = self.list(
+                workspace, status=status, keyword=keyword, cursor=cursor,
+                limit=min(100, max_items - len(seen)) if max_items is not None else 100,
+            )
             for item in page.items:
                 if item.ref.key not in seen:
                     seen.add(item.ref.key)

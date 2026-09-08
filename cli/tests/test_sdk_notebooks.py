@@ -566,3 +566,28 @@ def test_plan_with_image_reference_or_selector(client, catalog, monkeypatch, sel
     assert plan.create_kwargs["image_url"] == image.url
     assert plan.create_kwargs["project_id"] == catalog.project.project_id
     assert plan.create_kwargs["project_name"] == catalog.project.name
+
+
+@pytest.mark.parametrize("known_total", [True, False])
+def test_notebook_server_paging(client, catalog, monkeypatch, known_total):
+    rows = [{"notebook_id": f"nb-{i}", "name": f"nb-{i}", "status": "RUNNING"}
+            for i in range(205)]
+    calls = []
+
+    def fetch(*args, **kwargs):
+        page, size = kwargs["page"], kwargs["page_size"]
+        calls.append((page, size))
+        assert size == 100
+        return rows[(page - 1) * size:page * size], len(rows) if known_total else None
+
+    monkeypatch.setattr(api, "list_notebooks", fetch)
+    first = client.notebooks.list("Workspace", limit=5)
+    assert len(first.items) == 5 and calls == [(1, 100)]
+    assert first.total == (205 if known_total else None)
+    second = client.notebooks.list("Workspace", limit=100, cursor=first.next_cursor)
+    assert [r.name for r in second.items] == [f"nb-{i}" for i in range(5, 105)]
+    assert calls == [(1, 100), (1, 100), (2, 100)]
+    calls.clear()
+    assert len(tuple(client.notebooks.iter("Workspace", max_items=150))) == 150
+    assert calls == [(1, 100), (2, 100)]
+    assert client.notebooks.list("Workspace", status="running", limit=5).total is None
