@@ -336,6 +336,7 @@ def _active_account_name() -> str | None:
 
         return current_account()
     except Exception:
+        _log.debug("Active account lookup for rtunnel failed; trying next strategy", exc_info=True)
         return None
 
 
@@ -369,6 +370,10 @@ def get_rtunnel_state_file(
             if account_exists(account):
                 return account_dir(account) / f"{_CACHE_BASENAME}.json"
         except Exception:
+            _log.debug(
+                "Account rtunnel cache path lookup failed; trying next strategy",
+                exc_info=True,
+            )
             pass
 
     root = cache_dir or _default_cache_dir()
@@ -745,6 +750,7 @@ def _response_body_prefix(response: Any, *, limit: int = 400) -> str:
                 break
         return "".join(chunks)[:limit]
     except Exception:
+        _log.debug("Proxy response body prefix read failed; trying next strategy", exc_info=True)
         return ""
 
 
@@ -787,6 +793,10 @@ def _candidate_urls_from_ide_port_forward(
             timeout=max(10, int(timeout_s)),
         )
     except Exception:
+        _log.debug(
+            "Notebook port forward URL discovery failed; trying next strategy",
+            exc_info=True,
+        )
         return []
     return [proxy_url] if proxy_url else []
 
@@ -831,6 +841,7 @@ def _ssh_probe_rtunnel_proxy_url(
         )
         return result.returncode == 0
     except Exception:
+        _log.debug("SSH readiness probe failed; trying next strategy", exc_info=True)
         return False
 
 
@@ -918,6 +929,7 @@ def probe_existing_rtunnel_proxy_url(
                     continue
                 resp = http.get(url, timeout=(5, 5), stream=True)
             except Exception:
+                _log.debug("Candidate proxy HTTP probe failed; trying next strategy", exc_info=True)
                 continue
             try:
                 body = _response_body_prefix(resp)

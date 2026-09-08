@@ -1286,6 +1286,10 @@ def _submit_credentials(
                     pass_locator.fill(password)
                     return pass_locator
                 except Exception:
+                    logger.debug(
+                        "Login form selector fill failed; trying next strategy",
+                        exc_info=True,
+                    )
                     continue
             return None
 
@@ -1294,11 +1298,19 @@ def _submit_credentials(
                 pass_locator.press("Enter", timeout=3000)
                 return
             except Exception:
+                logger.debug(
+                    "Login form submission via Enter failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             try:
                 pass_locator.evaluate("el => el.form && el.form.submit()")
                 return
             except Exception:
+                logger.debug(
+                    "Login form submission via form.submit() failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             try:
                 pass_locator.evaluate(
@@ -1311,6 +1323,10 @@ def _submit_credentials(
                     """
                 )
             except Exception:
+                logger.debug(
+                    "Login form submission via button click failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
 
         pass_locator = _fill_login_form()
@@ -1319,6 +1335,10 @@ def _submit_credentials(
                 page.get_by_text("Account login", exact=True).click(timeout=3000, force=True)
                 page.wait_for_timeout(500)
             except Exception:
+                logger.debug(
+                    "Account login tab selection failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             pass_locator = _fill_login_form()
 
@@ -1377,6 +1397,10 @@ def _submit_credentials(
                     if resp.status == 200:
                         return
                 except Exception:
+                    logger.debug(
+                        "Login API authentication probe failed; trying next strategy",
+                        exc_info=True,
+                    )
                     pass
                 page.wait_for_timeout(500)
             if credentials_submitted:
