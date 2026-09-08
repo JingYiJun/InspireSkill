@@ -25,7 +25,7 @@ from .resources import Service, operation, exact
 class AccountInformation(Service):
     @operation
     def current(self) -> AccountInfo:
-        user = browser_api.get_current_user(session=self.session)
+        user = self._current_user()
         return AccountInfo(
             self.client.account,
             self.client._config.username,
@@ -63,7 +63,18 @@ class AccountInformation(Service):
     @operation
     def context(self, *, limit: int | None = None) -> AccountContext:
         data = account_context.collect_context(
-            self.client._config, session=self.session, account=self.client.account
+            self.client._config,
+            session=self.session,
+            account=self.client.account,
+            workspaces_loader=lambda: {
+                row.ref.key: row.name for row in self.client.workspaces._all()
+            },
+            projects_loader=lambda: [row[1] for row in self.client.projects._all()],
+            groups_loader=lambda key: self._catalog(
+                "compute_groups",
+                (key,),
+                lambda: browser_api.list_compute_groups(workspace_id=key, session=self.session),
+            ),
         )
         return AccountContext.from_view(account_context.bound_context(data, limit))
 

@@ -69,6 +69,25 @@ def catalog(client, monkeypatch):
     monkeypatch.setattr(
         "inspire.services.ray_submission.resolve_image_id", lambda value, **kw: "image-test"
     )
+    from inspire.platform.web.browser_api.images import CustomImageInfo
+
+    monkeypatch.setattr(
+        api,
+        "list_images_by_source",
+        lambda **kw: [
+            CustomImageInfo(
+                "image-test",
+                "registry/image:v1",
+                "Image",
+                "",
+                "v1",
+                "SOURCE_PRIVATE",
+                "READY",
+                "",
+                "",
+            )
+        ],
+    )
     hpc = HPCJobCreateSpec(
         "example", "srun echo hello", "Workspace", "Project", "Group", Quota(0, 8, 32), "Image"
     )

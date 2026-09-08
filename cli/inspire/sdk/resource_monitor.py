@@ -83,7 +83,10 @@ class Resources(Service):
         label = usage_views.display_name(ws.name, fallback="(workspace name unavailable)")
         groups = (
             usage_views.resolve_group_ids(
-                session=self.session, workspace_id=ws.ref.key, keyword=group
+                session=self.session,
+                workspace_id=ws.ref.key,
+                keyword=group,
+                groups_loader=lambda: [row[1] for row in self.client.compute_groups._all(ws)],
             )
             if group
             else []
@@ -116,7 +119,10 @@ class Resources(Service):
             else:
                 tasks = browser_api.list_task_usage(ws.ref.key, session=self.session)
             tasks = usage_views.filter_tasks(tasks, project=project, user=user, task=task)
-            fair = usage_views.fair_scheduling_or_unknown(self.session, ws.ref.key)
+            try:
+                fair = self._fair_scheduling(ws)
+            except Exception:
+                fair = None
             rows = (
                 usage_views.task_rows(tasks, workspace=label)
                 if details

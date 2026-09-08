@@ -29,8 +29,7 @@ def catalog(client, monkeypatch):
     monkeypatch.setattr(client.workspaces, "get", lambda _: ws)
     monkeypatch.setattr(client.projects, "get", lambda *a, **kw: project)
     monkeypatch.setattr(
-        api,
-        "list_compute_groups",
+        "inspire.platform.web.browser_api.availability.list_compute_groups",
         lambda **kw: [
             {"id": "group-test", "name": "Group", "support_job_type_list": ["tensorboard"]}
         ],

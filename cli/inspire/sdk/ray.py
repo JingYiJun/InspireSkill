@@ -7,7 +7,6 @@ from uuid import uuid4
 from inspire.services import ray_submission as core
 from inspire.services.metrics import metric_group
 from inspire.services.ray_instances import RayInstanceView, fetch_ray_instances, ray_instance_views
-from inspire.services.task_priority import resolve_workspace_task_priority
 from inspire.platform.web.browser_api import ray_jobs as api
 from inspire.services import ray_status as statuses, ray_logs as log_core
 from inspire.services.ray_output import public_ray_status
@@ -82,7 +81,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         def resolve_image(raw):
             if image is not None and raw == image_text:
                 return image.ref.key
-            return core.resolve_image_id(raw, session=self.session, workspace_id=ws.ref.key)
+            return self.client.images.get(raw, workspace=ws.ref).ref.key
 
         body = core.assemble_create_body(
             workspace_id=ws.ref.key,
@@ -90,9 +89,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             head_quota=head,
             resolve_quota=lambda triple, group: self._quota(ws, group, triple),
             resolve_image=resolve_image,
-            resolve_priority=lambda requested: resolve_workspace_task_priority(
-                requested, session=self.session, workspace_id=ws.ref.key, project_id=project.ref.key
-            ),
+            resolve_priority=lambda requested: self._resolve_priority(requested, ws, project),
             name=spec.name,
             command=spec.command,
             description=spec.description,
@@ -125,12 +122,16 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             project=project,
             group=Resource(
                 head.compute_group_name,
-                self._make_ref(ComputeGroupRef, head.compute_group_name,
-                         head.logic_compute_group_id, ws.ref.key),
+                self._make_ref(
+                    ComputeGroupRef,
+                    head.compute_group_name,
+                    head.logic_compute_group_id,
+                    ws.ref.key,
+                ),
             ),
             quota=Quota(head.gpu_count, head.cpu_count, head.memory_gib),
-            image=body['head_node']['mirror_id'],
-            priority=body['task_priority'],
+            image=body["head_node"]["mirror_id"],
+            priority=body["task_priority"],
             create_kwargs=body,
             payload=payload,
             workers=tuple(core.parse_worker_spec(raw) for raw in spec.workers),

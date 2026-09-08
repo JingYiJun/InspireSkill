@@ -23,7 +23,7 @@ class Models(Service):
             if workspace == "all"
             else [self.client.workspaces.get(workspace)]
         )
-        user_id = views.current_user_id(self.session)
+        user_id = self._current_user_id()
         items: list[tuple[ModelInfo, Any]] = []
         matched = project is None
         for ws in workspaces:

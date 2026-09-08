@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from inspire.config import Config
 from inspire.services.raw_ids import scrub_raw_ids
@@ -17,7 +17,13 @@ _CONTEXT_COLLECTION_KEYS = (
 
 
 def collect_context(
-    cfg: Config, *, session: Any = None, account: str | None = None
+    cfg: Config,
+    *,
+    session: Any = None,
+    account: str | None = None,
+    workspaces_loader: Callable[[], dict[str, str]] | None = None,
+    projects_loader: Callable[[], list[Any]] | None = None,
+    groups_loader: Callable[[str], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     from inspire.accounts import current_account
     from inspire.config.workspaces import workspace_name_map
@@ -35,7 +41,9 @@ def collect_context(
     ws_name_for_id: dict[str, str] = {}
     try:
         session = session if session is not None else get_web_session()
-        for workspace_id, raw_name in workspace_name_map(session).items():
+        for workspace_id, raw_name in (
+            workspaces_loader() if workspaces_loader else workspace_name_map(session)
+        ).items():
             name = scrub_raw_ids(raw_name)
             if name:
                 ws_name_for_id[workspace_id] = name
@@ -50,7 +58,11 @@ def collect_context(
         try:
             project_names = {
                 scrub_raw_ids(str(getattr(project, "name", "") or "").strip())
-                for project in browser_api_module.list_all_projects(session=session)
+                for project in (
+                    projects_loader()
+                    if projects_loader
+                    else browser_api_module.list_all_projects(session=session)
+                )
             }
             projects_view = [{"name": name} for name in sorted(project_names) if name]
         except Exception:
@@ -67,9 +79,13 @@ def collect_context(
             key=lambda item: (item[1], item[0]),
         ):
             try:
-                groups = browser_api_module.list_compute_groups(
-                    workspace_id=workspace_id,
-                    session=session,
+                groups = (
+                    groups_loader(workspace_id)
+                    if groups_loader
+                    else browser_api_module.list_compute_groups(
+                        workspace_id=workspace_id,
+                        session=session,
+                    )
                 )
             except Exception:
                 failed_workspace_count += 1

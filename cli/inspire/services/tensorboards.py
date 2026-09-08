@@ -57,6 +57,7 @@ def resolve_group_id(
     workspace_id: str,
     group: str,
     select=None,
+    groups_loader=None,
 ) -> str:
     """Resolve a compute group name that can actually run a TensorBoard.
 
@@ -65,9 +66,13 @@ def resolve_group_id(
     platform as `已选择的计算类型组不支持此类型任务` at create time.
     """
     group = validate_compute_group_name(group)
-    groups = browser_api_module.list_compute_groups(
-        workspace_id=workspace_id,
-        session=session,
+    groups = (
+        groups_loader()
+        if groups_loader
+        else browser_api_module.list_compute_groups(
+            workspace_id=workspace_id,
+            session=session,
+        )
     )
     named = [
         candidate
@@ -144,8 +149,10 @@ def await_status(
     return status
 
 
-def job_candidates(*, session, name: str, workspace_id: str) -> list[dict[str, Any]]:
-    user_id = current_user_id(session)
+def job_candidates(
+    *, session, name: str, workspace_id: str, user_id_loader=None
+) -> list[dict[str, Any]]:
+    user_id = user_id_loader() if user_id_loader else current_user_id(session)
     jobs, _ = browser_api_module.list_jobs(
         workspace_id=workspace_id,
         created_by=user_id,

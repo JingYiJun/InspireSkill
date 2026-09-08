@@ -101,8 +101,10 @@ def test_account_metadata_check_context_permissions(client, catalog, monkeypatch
     assert "must-not-escape" not in repr(check)
     with pytest.raises(FrozenInstanceError):
         info.alias = "other"
-    monkeypatch.setattr(api, "list_all_projects", lambda **kw: [SimpleNamespace(name="Project")])
-    monkeypatch.setattr(api, "list_compute_groups", lambda **kw: [{"name": "GPU"}])
+    monkeypatch.setattr(
+        api, "list_all_projects", lambda **kw: [PlatformProject("p", "Project", "ws-test")]
+    )
+    monkeypatch.setattr(api, "list_compute_groups", lambda **kw: [{"id": "g", "name": "GPU"}])
     context = client.account_info.context(limit=1)
     assert context.to_dict() == cli_json("account", "context", "--limit", "1")
     assert account_context.bound_context(context.to_dict(), None) == context.to_dict()
@@ -424,6 +426,13 @@ def test_resources_usage_sections_match_cli(client, catalog, monkeypatch, detail
     tasks = [_task(name="train", user="Ada", project="Vision", gpus=8, nodes=("node-a",))]
     monkeypatch.setattr(api, "list_task_usage", lambda *a, **kw: tasks)
     monkeypatch.setattr(resource_usage, "is_fair_scheduling_workspace", lambda *a: False)
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.workspaces.is_fair_scheduling_workspace", lambda *a: False
+    )
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.availability.list_compute_groups",
+        lambda **kw: [{"id": "group", "name": "H200"}],
+    )
     monkeypatch.setattr(api, "list_compute_groups", lambda **kw: [{"id": "group", "name": "H200"}])
     monkeypatch.setattr(
         api,

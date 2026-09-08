@@ -32,11 +32,9 @@ from .models import (
     ProjectRef,
     ComputeGroupRef,
     ImageRef,
-    Image,
     QuotaRef,
     Quota,
     QuotaOption,
-    ImageSelector,
     DatasetMount,
     Resource,
     EventResult,
@@ -87,7 +85,7 @@ class Notebooks(Service):
         )
 
     def _all(self, ws, *, keyword=None, status=None):
-        user_ids = core.current_user_ids(self.session)
+        user_ids = self._current_user_ids()
         rows, seen, previous = [], set(), None
         for page in range(1, 101):
             items, total = browser_api.list_notebooks(
@@ -128,18 +126,33 @@ class Notebooks(Service):
         cursor: str | None = None,
     ) -> Page[Notebook]:
         ws = self.client.workspaces.get(workspace)
-        user_ids = core.current_user_ids(self.session)
+        user_ids = self._current_user_ids()
         return self._server_page(
             lambda page, size: browser_api.list_notebooks(
-                ws.ref.key, user_ids=user_ids, keyword=keyword or "",
+                ws.ref.key,
+                user_ids=user_ids,
+                keyword=keyword or "",
                 status=[status.upper()] if status else None,
-                page=page, page_size=size, session=self.session,
+                page=page,
+                page_size=size,
+                session=self.session,
             ),
             lambda row: self._notebook(row, ws.ref.key),
-            page_size=100, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword),
-            matches=(lambda row: status.casefold() in (
-                row.status.casefold(), row.raw_status.casefold(),
-            )) if status else None,
+            page_size=100,
+            limit=limit,
+            cursor=cursor,
+            query=(ws.ref.key, status, keyword),
+            matches=(
+                lambda row: (
+                    status.casefold()
+                    in (
+                        row.status.casefold(),
+                        row.raw_status.casefold(),
+                    )
+                )
+            )
+            if status
+            else None,
         )
 
     def iter(
@@ -207,26 +220,45 @@ class Notebooks(Service):
         return tuple(self.get(name, workspace=workspace) for name in refs)
 
     def _groups(self, ws):
-        return browser_api.list_notebook_compute_groups(
-            workspace_id=ws.ref.key, session=self.session
+        return self._catalog(
+            "compute_groups",
+            (ws.ref.key,),
+            lambda: browser_api.list_notebook_compute_groups(
+                workspace_id=ws.ref.key, session=self.session
+            ),
         )
 
     def _prices(self, ws, group):
-        return browser_api.get_resource_prices(
-            workspace_id=ws.ref.key,
-            logic_compute_group_id=group,
-            schedule_config_type="SCHEDULE_CONFIG_TYPE_DSW",
-            session=self.session,
+        return self._catalog(
+            "prices",
+            (
+                ws.ref.key,
+                group,
+                "SCHEDULE_CONFIG_TYPE_DSW",
+            ),
+            lambda: browser_api.get_resource_prices(
+                workspace_id=ws.ref.key,
+                logic_compute_group_id=group,
+                schedule_config_type="SCHEDULE_CONFIG_TYPE_DSW",
+                session=self.session,
+            ),
         )
 
     def _priority_levels(self, ws):
         from inspire.platform.web.browser_api.availability import QUOTA_PRIORITY_SPEC_FIELDS
 
         try:
-            return browser_api.get_quota_priority_levels(
-                workspace_id=ws.ref.key,
-                spec_field=QUOTA_PRIORITY_SPEC_FIELDS["notebook"],
-                session=self.session,
+            return self._catalog(
+                "priority_levels",
+                (
+                    ws.ref.key,
+                    QUOTA_PRIORITY_SPEC_FIELDS["notebook"],
+                ),
+                lambda: browser_api.get_quota_priority_levels(
+                    workspace_id=ws.ref.key,
+                    spec_field=QUOTA_PRIORITY_SPEC_FIELDS["notebook"],
+                    session=self.session,
+                ),
             )
         except Exception:
             return None
@@ -291,7 +323,6 @@ class Notebooks(Service):
     def _plan(self, spec):
         from inspire.services.datasets import parse_dataset_specs, resolve_dataset_info
         from inspire.task_priority import resolve_task_priority
-        from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 
         if not isinstance(spec, NotebookCreateSpec):
             raise ValidationError("Pass a NotebookCreateSpec.")
@@ -348,7 +379,11 @@ class Notebooks(Service):
                 self._priority_levels(ws), quota.quota_id, workload="notebook"
             ),
         )
-        projects = browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
+        projects = self._catalog(
+            "projects",
+            (ws.ref.key,),
+            lambda: browser_api.list_projects(workspace_id=ws.ref.key, session=self.session),
+        )
         project_values = [
             Resource(p.name, self._make_ref(ProjectRef, p.name, p.project_id, ws.ref.key))
             for p in projects
@@ -364,35 +399,11 @@ class Notebooks(Service):
         )
         priority = resolve_task_priority(
             spec.priority,
-            fair_scheduling=is_fair_scheduling_workspace(self.session, ws.ref.key),
+            fair_scheduling=self._fair_scheduling(ws),
             project_limit=project.priority_name,
         )
         ensure_priority_allowed(quota, priority, quota_command="inspire notebook quota")
-        if isinstance(spec.image, (ImageRef, ImageSelector)):
-            image = self.client.images.get(spec.image, workspace=ws.ref)
-        else:
-            images = browser_api.list_images(workspace_id=ws.ref.key, session=self.session)
-            if not core.find_image_match(images, spec.image):
-                from inspire.platform.web.session import TransientAPIError
-
-                for source in ("SOURCE_PUBLIC", "SOURCE_PRIVATE"):
-                    try:
-                        images += browser_api.list_images(
-                            workspace_id=ws.ref.key, source=source, session=self.session
-                        )
-                    except TransientAPIError:
-                        raise
-                    except Exception:
-                        continue
-                    if core.find_image_match(images, spec.image):
-                        break
-            selected_image = core.resolve_notebook_image(images, spec.image)
-            image = Image(
-                selected_image.name,
-                self._make_ref(ImageRef, selected_image.name, selected_image.image_id, ws.ref.key),
-                "",
-                selected_image.url,
-            )
+        image = self.client.images.get(spec.image, workspace=ws.ref)
         mounts = parse_dataset_specs(
             [
                 f"{x.dataset}:{x.version}" if isinstance(x, DatasetMount) else x
@@ -465,12 +476,17 @@ class Notebooks(Service):
         with self.client._transport.single_send(identifier, create=True):
             result = browser_api.create_notebook(**plan.create_kwargs, session=session)
         key = core.extract_notebook_id(result) or core.resolve_created_notebook_id(
-            name=plan.name, workspace_id=plan.workspace.ref.key, session=session
+            name=plan.name,
+            workspace_id=plan.workspace.ref.key,
+            session=session,
+            user_ids_loader=self._current_user_ids,
         )
         if not key:
             raise SubmissionUncertainError(identifier)
         return NotebookHandle(
-            plan.name, self._make_ref(NotebookRef, plan.name, key, plan.workspace.ref.key), identifier
+            plan.name,
+            self._make_ref(NotebookRef, plan.name, key, plan.workspace.ref.key),
+            identifier,
         )
 
     def wait(
@@ -681,6 +697,7 @@ class Notebooks(Service):
                 f"Notebook {resolved.name} is not running, so there is nothing to snapshot."
             )
         session = self.session
+        self._invalidate_images(resolved.workspace_id)
         with self.client._transport.single_send():
             result = browser_api.save_notebook_as_image(
                 notebook_id=resolved.key,
@@ -694,7 +711,9 @@ class Notebooks(Service):
             result, name=name, version=version, workspace_id=resolved.workspace_id, session=session
         )
         image_ref = (
-            self._make_ref(ImageRef, f"{name}:{version}", key, resolved.workspace_id) if key else None
+            self._make_ref(ImageRef, f"{name}:{version}", key, resolved.workspace_id)
+            if key
+            else None
         )
         warning = None
         if visibility_value and key:

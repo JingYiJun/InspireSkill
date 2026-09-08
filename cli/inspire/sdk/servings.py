@@ -19,7 +19,6 @@ from inspire.services.serving_instances import (
 )
 from inspire.services.serving_access import invocation_info
 from inspire.services.serving_events import serving_events
-from inspire.services.task_priority import resolve_workspace_task_priority
 from inspire.services.workload_quota import ensure_priority_allowed
 from .compute_jobs import ComputeJobs, WorkloadBinding, duration
 from inspire.services.metrics import metric_group
@@ -31,8 +30,6 @@ from .models import (
     Page,
     ComputeGroupRef,
     Quota,
-    ImageRef,
-    ImageSelector,
     EventResult,
     LogResult,
 )
@@ -148,8 +145,15 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     def _priority_levels(self, ws):
         try:
-            return api.get_quota_priority_levels(
-                workspace_id=ws.ref.key, spec_field="serving_quota", session=self.session
+            return self._catalog(
+                "priority_levels",
+                (
+                    ws.ref.key,
+                    "serving_quota",
+                ),
+                lambda: api.get_quota_priority_levels(
+                    workspace_id=ws.ref.key, spec_field="serving_quota", session=self.session
+                ),
             )
         except Exception:
             return None
@@ -193,9 +197,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         ws = self.client.workspaces.get(spec.workspace)
         project = self._project(ws, spec.project)
         quota = self._quota(ws, spec.group, spec.quota)
-        from inspire.services.models import current_user_id
 
-        user_id = current_user_id(self.session)
+        user_id = self._current_user_id()
         if isinstance(spec.model, ModelRef):
             model = self.client.models.get(spec.model, ws.ref)
             model_id, model_label = model.ref.key, model.name
@@ -208,7 +211,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 return exact(
                     [
                         Resource(
-                            row["name"], self._make_ref(ModelRef, row["name"], row["id"], ws.ref.key)
+                            row["name"],
+                            self._make_ref(ModelRef, row["name"], row["id"], ws.ref.key),
                         )
                         for row in candidates
                     ],
@@ -229,16 +233,9 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         version = spec.model_version or latest
         if version is None:
             raise ValidationError("Could not infer model version. Pass --model-version explicitly.")
-        if isinstance(spec.image, (ImageRef, ImageSelector)):
-            image = self.client.images.get(spec.image, workspace=ws.ref)
-            image_id, image_label = image.ref.key, image.name
-        else:
-            image_id, image_label = core.resolve_image_for_create(
-                spec.image, session=self.session, workspace_id=ws.ref.key
-            )
-        priority = resolve_workspace_task_priority(
-            spec.priority, session=self.session, workspace_id=ws.ref.key, project_id=project.ref.key
-        )
+        image = self.client.images.get(spec.image, workspace=ws.ref)
+        image_id, image_label = image.ref.key, image.name
+        priority = self._resolve_priority(spec.priority, ws, project)
         ensure_priority_allowed(quota, priority, quota_command="inspire serving quota")
         kwargs = dict(
             name=spec.name,

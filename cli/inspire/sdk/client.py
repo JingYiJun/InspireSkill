@@ -6,6 +6,7 @@ import math
 
 from .exceptions import ConfigurationError, ValidationError
 from .transport import Transport
+from .cache import CatalogCache
 from .resources import Workspaces, Projects, ComputeGroups, Images
 
 
@@ -17,10 +18,13 @@ class InspireClient:
         allow_browser: bool = False,
         timeout: float = 30,
         operation_timeout: float = 120,
+        catalog_ttl: float = 60,
     ):
         from inspire.accounts import current_account, account_exists, validate_name
         from inspire.config import Config
 
+        self.cache = CatalogCache(catalog_ttl)
+        self._catalog_context: dict[str, bool] | None = None
         for value in (timeout, operation_timeout):
             if (
                 isinstance(value, bool)

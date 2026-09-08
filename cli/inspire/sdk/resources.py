@@ -36,6 +36,9 @@ def operation(fn: F) -> F:
     @wraps(fn)
     def wrapped(self, *args, **kwargs):
         with self.client._transport.scope(timeout=self.client.operation_timeout):
+            outer = self.client._catalog_context is None
+            if outer:
+                self.client._catalog_context = {}
             try:
                 return fn(self, *args, **kwargs)
             except InspireError:
@@ -51,6 +54,9 @@ def operation(fn: F) -> F:
                 if type(error).__module__.startswith("inspire.platform"):
                     raise ResolutionIncompleteError(str(error)) from None
                 raise
+            finally:
+                if outer:
+                    self.client._catalog_context = None
 
     return cast(F, wrapped)
 
@@ -83,6 +89,84 @@ class Service:
     @property
     def session(self):
         return self.client._transport.session
+
+    def _catalog(self, kind: str, scope: tuple[Any, ...], load: Callable[[], Any]) -> Any:
+        def complete() -> Any:
+            rows = load()
+            identity_fields = {
+                "workspaces": ("id",),
+                "projects": ("project_id",),
+                "compute_groups": ("id", "logic_compute_group_id"),
+                "prices": ("quota_id", "spec_id"),
+                "images": ("image_id",),
+            }.get(kind)
+            if identity_fields:
+                for row in rows:
+                    if not any(
+                        row.get(field) if isinstance(row, dict) else getattr(row, field, None)
+                        for field in identity_fields
+                    ):
+                        raise ResolutionIncompleteError("Catalog omitted a resource identity.")
+            if kind == "current_user" and not (rows.get("id") or rows.get("user_id")):
+                raise ResolutionIncompleteError("Cannot determine the current user.")
+            return rows
+
+        return self.client.cache._get(
+            (kind, self.client.account, self.client.base_url, *scope), complete
+        )
+
+    def _current_user(self) -> dict[str, Any]:
+        from inspire.platform.web import browser_api
+
+        return self._catalog(
+            "current_user",
+            (),
+            lambda: browser_api.get_current_user(session=self.session, refresh=True),
+        )
+
+    def _current_user_id(self) -> str:
+        user = self._current_user()
+        return str(user.get("id") or user.get("user_id")).strip()
+
+    def _current_user_ids(self) -> list[str]:
+        return [self._current_user_id()]
+
+    def _fair_scheduling(self, ws: Resource[WorkspaceRef]) -> bool:
+        from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
+
+        def load() -> bool:
+            flags = self.client._catalog_context or {}
+            if ws.ref.key in flags:
+                return flags[ws.ref.key]
+            # The browser API also keeps flags on the session, without a TTL.
+            # Only reuse GetRoutes data from this operation; otherwise refresh it.
+            session = self.session
+            session_flags = getattr(session, "all_workspace_fair_scheduling", None)
+            if session_flags is not None:
+                session_flags.pop(ws.ref.key, None)
+            return is_fair_scheduling_workspace(session, ws.ref.key)
+
+        return self._catalog("fair_scheduling", (ws.ref.key,), load)
+
+    def _resolve_priority(self, requested: int | None, ws: Resource[WorkspaceRef], project: Any) -> int:
+        from inspire.services.task_priority import resolve_workspace_task_priority
+
+        return resolve_workspace_task_priority(
+            requested,
+            session=self.session,
+            workspace_id=ws.ref.key,
+            project_id=project.ref.key,
+            fair_scheduling_loader=lambda: self._fair_scheduling(ws),
+            projects_loader=lambda: [row[1] for row in self.client.projects._all(ws)],
+        )
+
+    def _invalidate_images(self, workspace_id: str | None = None) -> None:
+        self.client.cache._invalidate(
+            "images",
+            self.client.account,
+            self.client.base_url,
+            *((workspace_id,) if workspace_id else ()),
+        )
 
     def _make_ref(self, cls, name, key, workspace_id=""):
         if not key:
@@ -191,12 +275,29 @@ class Service:
 
 
 class Workspaces(Service):
-    def _all(self):
+    def _routes(self) -> list[dict[str, Any]]:
         from inspire.platform.web.browser_api.workspaces import try_enumerate_workspaces
 
-        rows = try_enumerate_workspaces(self.session, base_url=self.client.base_url)
+        rows = self._catalog(
+            "workspaces",
+            (),
+            lambda: try_enumerate_workspaces(self.session, base_url=self.client.base_url),
+        )
+        if self.client._catalog_context is not None:
+            self.client._catalog_context.update(
+                {
+                    row["id"]: row["is_fair_workspace"] is True
+                    for row in rows
+                    if "is_fair_workspace" in row
+                }
+            )
+        return rows
+
+    def _all(self):
+        rows = self._routes()
         return [
-            Resource(x["name"], self._make_ref(WorkspaceRef, x["name"], x["id"], x["id"])) for x in rows
+            Resource(x["name"], self._make_ref(WorkspaceRef, x["name"], x["id"], x["id"]))
+            for x in rows
         ]
 
     @operation
@@ -205,6 +306,9 @@ class Workspaces(Service):
 
     @operation
     def get(self, ref: str | WorkspaceRef) -> Resource[WorkspaceRef]:
+        if isinstance(ref, WorkspaceRef):
+            self.client._validate_ref(ref, WorkspaceRef)
+            return Resource(ref.name, ref)
         return exact(self._all(), ref, WorkspaceRef, self.client)
 
 
@@ -215,9 +319,15 @@ class Projects(Service):
         from .models_resources import ProjectInfo
 
         rows = (
-            browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
+            self._catalog(
+                "projects",
+                (ws.ref.key,),
+                lambda: browser_api.list_projects(workspace_id=ws.ref.key, session=self.session),
+            )
             if ws
-            else browser_api.list_all_projects(session=self.session)
+            else self._catalog(
+                "projects", (None,), lambda: browser_api.list_all_projects(session=self.session)
+            )
         )
         return [
             (
@@ -303,7 +413,11 @@ class ComputeGroups(Service):
     def _all(self, ws):
         from inspire.platform.web.browser_api.availability import list_compute_groups
 
-        rows = list_compute_groups(workspace_id=ws.ref.key, session=self.session)
+        rows = self._catalog(
+            "compute_groups",
+            (ws.ref.key,),
+            lambda: list_compute_groups(workspace_id=ws.ref.key, session=self.session),
+        )
         return [
             (
                 Resource(
@@ -355,22 +469,29 @@ class Images(Service):
         from inspire.platform.web import browser_api
         from inspire.services import images
 
-        if source in (None, "all"):
-            rows, failed = images.load_image_sources(
-                source_keys=self.SOURCES,
-                session=self.session,
-                workspace_id=ws.ref.key,
-                concurrent=False,
-            )
-            rows = images.dedupe_images_by_id(rows)
-            if failed and require_complete:
-                raise ResolutionIncompleteError("An image catalog could not be read.")
-            if not rows and failed:
-                raise ResolutionIncompleteError("Image catalog is unavailable.")
-        else:
-            rows = browser_api.list_images_by_source(
-                source=source, workspace_id=ws.ref.key, session=self.session
-            )
+        sources = self.SOURCES if source in (None, "all") else (source.lower(),)
+        rows, failed = [], []
+        for key in sources:
+            def load_source(source: str = key) -> list[CustomImageInfo]:
+                return browser_api.list_images_by_source(
+                    source=source, workspace_id=ws.ref.key, session=self.session
+                )
+
+            try:
+                rows.extend(
+                    self._catalog(
+                        "images",
+                        (ws.ref.key, key),
+                        load_source,
+                    )
+                )
+            except Exception as error:
+                if len(sources) == 1:
+                    raise
+                failed.append(error)
+        if failed and (require_complete or not rows):
+            raise ResolutionIncompleteError("An image catalog could not be read.") from failed[0]
+        rows = images.dedupe_images_by_id(rows)
         return [
             Image(
                 images.image_label(x),
@@ -411,13 +532,43 @@ class Images(Service):
             if not isinstance(ref, ImageRef):
                 raise ValidationError("workspace is required when selecting by name.")
             self.client._validate_ref(ref, ImageRef)
-            workspace = WorkspaceRef("", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id)
+            workspace = WorkspaceRef(
+                "", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id
+            )
         ws = self.client.workspaces.get(workspace)
+        if isinstance(ref, ImageRef):
+            from inspire.platform.web import browser_api
+            from inspire.services import images
+
+            self.client._validate_ref(ref, ImageRef, ws.ref.key)
+            row = browser_api.get_image_detail(image_id=ref.key, session=self.session)
+            if not row:
+                raise ResourceNotFoundError("Image no longer exists or is not visible.")
+            return Image(
+                images.image_label(row),
+                ref,
+                images.image_visibility(row),
+                row.url,
+                row.status,
+                row.framework,
+                images.image_visibility(row),
+            )
+        if isinstance(ref, str) and "/" in ref:
+            return Image(ref, self._make_ref(ImageRef, ref, ref, ws.ref.key), "url", ref)
         source = ref.source if isinstance(ref, ImageSelector) else None
         name = ref.name if isinstance(ref, ImageSelector) else ref
-        return exact(
-            self._all(ws, source, require_complete=True), name, ImageRef, self.client, ws.ref.key
-        )
+        rows = self._all(ws, source, require_complete=True)
+        if isinstance(name, str) and ":" not in name:
+            rows = [
+                row
+                for row in rows
+                if row.name.split(":", 1)[0].casefold() == name.strip().casefold()
+            ]
+            if len(rows) > 1:
+                raise AmbiguousResourceError("Multiple resources match; select a reference.", rows)
+            if rows:
+                return rows[0]
+        return exact(rows, name, ImageRef, self.client, ws.ref.key)
 
     @operation
     def detail(
@@ -468,6 +619,7 @@ class Images(Service):
         session = self.session
         visibility_value = parse_visibility_value(visibility or "private")
         assert visibility_value is not None
+        self._invalidate_images()
         with self.client._transport.single_send(identifier, create=True):
             result = browser_api.create_image(
                 name=name,
@@ -526,6 +678,7 @@ class Images(Service):
 
         resolved = self._write_ref(ref, workspace)
         session = self.session
+        self._invalidate_images()
         with self.client._transport.single_send():
             browser_api.delete_image(image_id=resolved.key, session=session)
 
@@ -543,5 +696,6 @@ class Images(Service):
         resolved = self._write_ref(ref, workspace)
         value = parse_visibility_value(visibility)
         session = self.session
+        self._invalidate_images()
         with self.client._transport.single_send():
             browser_api.update_image(image_id=resolved.key, visibility=value, session=session)

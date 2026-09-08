@@ -365,6 +365,7 @@ def test_sdk_and_cli_payloads_match(client, planned, monkeypatch):
         "inspire.platform.web.browser_api.list_images_by_source",
         lambda source, **kw: [platform_image] if source == "private" else [],
     )
+    monkeypatch.setattr("inspire.platform.web.browser_api.get_image_detail", lambda **kw: platform_image)
     public, sdk_plan = client.jobs._plan(spec)
     from click.testing import CliRunner
     from inspire.cli.main import main as cli_main

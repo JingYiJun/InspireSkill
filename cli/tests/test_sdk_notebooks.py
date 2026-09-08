@@ -63,6 +63,21 @@ def catalog(client, monkeypatch):
     monkeypatch.setattr(api, "get_resource_prices", prices)
     monkeypatch.setattr(api, "list_projects", lambda **kw: [project])
     monkeypatch.setattr(api, "list_images", lambda **kw: [image])
+    from inspire.platform.web.browser_api.images import CustomImageInfo
+
+    catalog_image = CustomImageInfo(
+        "i",
+        image.url,
+        image.name,
+        image.framework,
+        image.version,
+        "SOURCE_PRIVATE",
+        "READY",
+        "",
+        "",
+    )
+    monkeypatch.setattr(api, "list_images_by_source", lambda **kw: [catalog_image])
+    monkeypatch.setattr(api, "get_image_detail", lambda **kw: catalog_image)
     monkeypatch.setattr(api, "get_quota_priority_levels", lambda **kw: {"q": ()})
     monkeypatch.setattr(api, "check_scheduling_health", lambda **kw: set())
     monkeypatch.setattr(
@@ -504,6 +519,7 @@ def test_priority_unknown_and_restricted(client, catalog, monkeypatch):
         raise ValueError("unavailable")
 
     monkeypatch.setattr(api, "get_quota_priority_levels", unavailable)
+    client.cache.clear()
     assert client.notebooks.plan(catalog.spec).priority == 4
 
 

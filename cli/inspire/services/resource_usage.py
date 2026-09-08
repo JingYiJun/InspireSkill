@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import re
 
 from inspire.services.raw_ids import scrub_raw_ids
@@ -120,6 +120,7 @@ def resolve_group_ids(
     session: Any,
     workspace_id: str,
     keyword: str,
+    groups_loader: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> list[tuple[str, str]]:
     """Match a compute-group keyword the way the sibling commands do.
 
@@ -127,7 +128,11 @@ def resolve_group_ids(
     generation, and answering it for only one of the three groups that carry
     that hardware would be a different, quieter answer.
     """
-    groups = browser_api_module.list_compute_groups(workspace_id=workspace_id, session=session)
+    groups = (
+        groups_loader()
+        if groups_loader
+        else browser_api_module.list_compute_groups(workspace_id=workspace_id, session=session)
+    )
     needle = keyword.casefold()
     matched: list[tuple[str, str]] = []
     for item in groups:

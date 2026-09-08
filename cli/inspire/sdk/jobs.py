@@ -189,11 +189,19 @@ class Jobs(Service):
         from inspire.platform.web.browser_api.notebooks import get_resource_prices
         from inspire.services.quotas import ResolvedQuota
 
-        rows = get_resource_prices(
-            workspace_id=ws.ref.key,
-            logic_compute_group_id=group.ref.key,
-            schedule_config_type="SCHEDULE_CONFIG_TYPE_TRAIN",
-            session=self.session,
+        rows = self._catalog(
+            "prices",
+            (
+                ws.ref.key,
+                group.ref.key,
+                "SCHEDULE_CONFIG_TYPE_TRAIN",
+            ),
+            lambda: get_resource_prices(
+                workspace_id=ws.ref.key,
+                logic_compute_group_id=group.ref.key,
+                schedule_config_type="SCHEDULE_CONFIG_TYPE_TRAIN",
+                session=self.session,
+            ),
         )
         result = []
         for row in rows:
@@ -286,7 +294,6 @@ class Jobs(Service):
         return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
 
     def _plan(self, spec):
-        from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
         from inspire.platform.web.browser_api.availability import get_quota_priority_levels
         from inspire.services.job_submission import build_training_job_plan
         from inspire.task_priority import resolve_task_priority
@@ -345,11 +352,18 @@ class Jobs(Service):
         public_quota, quota = matches[0]
         priority = resolve_task_priority(
             spec.priority,
-            fair_scheduling=is_fair_scheduling_workspace(self.session, ws.ref.key),
+            fair_scheduling=self._fair_scheduling(ws),
             project_limit=project_data.priority_name,
         )
-        levels = get_quota_priority_levels(
-            ws.ref.key, spec_field="predef_train_spec", session=self.session
+        levels = self._catalog(
+            "priority_levels",
+            (
+                ws.ref.key,
+                "predef_train_spec",
+            ),
+            lambda: get_quota_priority_levels(
+                ws.ref.key, spec_field="predef_train_spec", session=self.session
+            ),
         ).get(quota.quota_id)
         if levels and all(x in ("low", "high") for x in levels):
             if ("low" if priority <= 1 else "high") not in levels:

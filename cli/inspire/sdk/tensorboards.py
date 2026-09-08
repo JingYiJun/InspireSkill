@@ -130,7 +130,11 @@ class Tensorboards(Service):
             return exact(resources, spec.group, ComputeGroupRef, self.client, ws.ref.key).ref.key
 
         group_id = core.resolve_group_id(
-            self.session, workspace_id=ws.ref.key, group=group, select=select_group
+            self.session,
+            workspace_id=ws.ref.key,
+            group=group,
+            select=select_group,
+            groups_loader=lambda: [row[1] for row in self.client.compute_groups._all(ws)],
         )
         job_id = ""
         if isinstance(spec.job, JobRef):
@@ -138,11 +142,16 @@ class Tensorboards(Service):
             job_id = spec.job.key
         elif spec.job:
             candidates = core.job_candidates(
-                session=self.session, name=spec.job, workspace_id=ws.ref.key
+                session=self.session,
+                name=spec.job,
+                workspace_id=ws.ref.key,
+                user_id_loader=self._current_user_id,
             )
             job_id = exact(
                 [
-                    Resource(row["name"], self._make_ref(JobRef, row["name"], row["id"], ws.ref.key))
+                    Resource(
+                        row["name"], self._make_ref(JobRef, row["name"], row["id"], ws.ref.key)
+                    )
                     for row in candidates
                 ],
                 spec.job,
@@ -170,7 +179,9 @@ class Tensorboards(Service):
         if board is None or not board.tb_id:
             raise SubmissionUncertainError(identifier)
         return TensorboardHandle(
-            board.name, self._make_ref(TensorboardRef, board.name, board.tb_id, ws.ref.key), identifier
+            board.name,
+            self._make_ref(TensorboardRef, board.name, board.tb_id, ws.ref.key),
+            identifier,
         )
 
     def _mutate(self, ref, action, workspace):

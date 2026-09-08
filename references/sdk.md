@@ -19,7 +19,7 @@ SDK 面向能访问平台的本机或控制节点。CPU 节点需满足网络、
 
 先通过 CLI 初始化账号并准备有效登录缓存。导入和构造不联网，第一次资源操作才使用会话。构造时固定账号、平台来源和配置，后续切换 CLI 默认账号不影响已有 Client。
 
-`InspireClient(account=None, *, allow_browser=False, timeout=30, operation_timeout=120)` 默认使用 CLI 当前账号；`allow_browser=False` 仍允许无浏览器续期：平台会话约每 15 分钟失效，即使持续请求也不会延长。SDK 在账号刷新锁内先重读更新的缓存，再尝试 SSO Cookie 续期，最后通过账号登录 guard 保护的 requests CAS 凭据登录。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道，且需按 CLI 安装说明准备 Chromium。验证码要求保留原提示并抛出 `AuthenticationError`，不会转入浏览器重试；登录冷却通过 `AuthenticationCooldownError.retry_at` 暴露。SDK 模块导入不加载 Click、Rich 或 Playwright。
+`InspireClient(account=None, *, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60)` 默认使用 CLI 当前账号；`allow_browser=False` 仍允许无浏览器续期：平台会话约每 15 分钟失效，即使持续请求也不会延长。SDK 在账号刷新锁内先重读更新的缓存，再尝试 SSO Cookie 续期，最后通过账号登录 guard 保护的 requests CAS 凭据登录。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道，且需按 CLI 安装说明准备 Chromium。验证码要求保留原提示并抛出 `AuthenticationError`，不会转入浏览器重试；登录冷却通过 `AuthenticationCooldownError.retry_at` 暴露。SDK 模块导入不加载 Click、Rich 或 Playwright。
 
 一个 Client 只在创建它的进程和线程中使用；线程 worker 或 fork 子进程各自创建 Client。使用 `with` 或 `close()` 释放自有 HTTP／浏览器连接。账号磁盘缓存、刷新锁和登录冷却与 CLI 共用。`account_info` 查询账号平台信息；本地账号管理仍用 CLI。`api_keys.plaintext(ref)` 显式返回密钥值，其他密钥视图只包含元数据。
 
@@ -42,6 +42,19 @@ statuses = client.jobs.status([job.ref for job in page.items])
 ```
 
 资源结果通常为 frozen dataclass，嵌套字典并非递归冻结；`.to_dict()` 返回 CLI JSON 业务字段。镜像 `ImageSelector(name, source)` 可指定 official/public/project/private，跨来源同名会报歧义。镜像 list 可返回成功来源的目录，名称 get/detail 要求完整候选集。数据集 get 接受 code 或 DatasetRef，validate 接受 `"name:version"` 或 DatasetMount；applications 的单数据集扫描有界，不保证窗口之外的申请历史。
+
+### 缓存
+
+每个 `InspireClient` 有独立的进程内目录缓存，默认 TTL 为 60 秒，通过 `catalog_ttl` 设置（单位：秒；`0` 禁用）。缓存覆盖工作区路由、项目目录、计算组、各来源的镜像目录、配额价格与优先级、工作区公平调度标记和当前用户；按账号、平台地址及工作区／来源／调度类型等范围隔离。任务列表、资源详情、日志、事件、指标和实时用量不缓存。名称消歧仍检查全部候选，不缓存失败或不完整的目录结果。
+
+```python
+with InspireClient(catalog_ttl=60) as client:
+    # 重复的名称解析和 plan() 在 TTL 内复用目录。
+    print(client.cache.stats())  # {"hits": ..., "misses": ..., "entries": ...}
+    client.cache.clear()         # 清空目录；命中／未命中计数保留
+```
+
+镜像注册、删除、可见性修改和 Notebook 保存镜像会清理受影响的镜像目录；会话续期不清理目录。指定 `ImageSelector(source=...)` 只读取该来源，`ImageRef` 直接读取详情，registry URL 不枚举镜像目录。长时间运行且必须立即看到外部目录变更的进程，应设置 `catalog_ttl=0`，或在需要最新目录时先调用 `client.cache.clear()`。
 
 ## 各门面方法表
 

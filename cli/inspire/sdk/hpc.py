@@ -6,7 +6,6 @@ from typing import Sequence
 from uuid import uuid4
 from inspire.services import hpc_submission as core
 from inspire.services.hpc_instances import HPCInstanceView, fetch_hpc_instances, hpc_instance_views
-from inspire.services.task_priority import resolve_workspace_task_priority
 from inspire.services.quotas import build_resource_spec_price
 from inspire.platform.web.browser_api import hpc_jobs as api
 from inspire.services import hpc_status as statuses, hpc_logs as log_core
@@ -21,8 +20,6 @@ from .models import (
     ComputeGroupRef,
     Quota,
     WorkspaceRef,
-    ImageRef,
-    ImageSelector,
     DatasetMount,
     EventResult,
     LogResult,
@@ -107,12 +104,10 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         ws = self.client.workspaces.get(spec.workspace)
         project = self._project(ws, spec.project)
         quota = self._quota(ws, spec.group, spec.quota)
-        priority = resolve_workspace_task_priority(
-            spec.priority, session=self.session, workspace_id=ws.ref.key, project_id=project.ref.key
-        )
+        priority = self._resolve_priority(spec.priority, ws, project)
         image = (
             self.client.images.get(spec.image, workspace=ws.ref).url
-            if isinstance(spec.image, (ImageRef, ImageSelector))
+            if not isinstance(spec.image, str) or "/" not in spec.image
             else spec.image
         )
         layout = core.resolve_slurm_layout(
@@ -168,11 +163,15 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             project=project,
             group=Resource(
                 quota.compute_group_name,
-                self._make_ref(ComputeGroupRef, quota.compute_group_name,
-                         quota.logic_compute_group_id, ws.ref.key),
+                self._make_ref(
+                    ComputeGroupRef,
+                    quota.compute_group_name,
+                    quota.logic_compute_group_id,
+                    ws.ref.key,
+                ),
             ),
             quota=Quota(quota.gpu_count, quota.cpu_count, quota.memory_gib),
-            image=payload['image'],
+            image=payload["image"],
             priority=priority,
             create_kwargs=body,
             payload=payload,

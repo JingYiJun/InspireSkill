@@ -304,16 +304,28 @@ class ComputeJobs(Service, Generic[R, J, V]):
             time.sleep(interval)
 
     def _groups(self, ws):
-        return browser_api.list_notebook_compute_groups(
-            workspace_id=ws.ref.key, session=self.session
+        return self._catalog(
+            "compute_groups",
+            (ws.ref.key,),
+            lambda: browser_api.list_notebook_compute_groups(
+                workspace_id=ws.ref.key, session=self.session
+            ),
         )
 
     def _prices(self, ws, group):
-        return browser_api.get_resource_prices(
-            workspace_id=ws.ref.key,
-            logic_compute_group_id=group,
-            schedule_config_type=self._binding.schedule_config_type,
-            session=self.session,
+        return self._catalog(
+            "prices",
+            (
+                ws.ref.key,
+                group,
+                self._binding.schedule_config_type,
+            ),
+            lambda: browser_api.get_resource_prices(
+                workspace_id=ws.ref.key,
+                logic_compute_group_id=group,
+                schedule_config_type=self._binding.schedule_config_type,
+                session=self.session,
+            ),
         )
 
     def _priority_levels(self, ws):
@@ -354,9 +366,14 @@ class ComputeJobs(Service, Generic[R, J, V]):
         )
 
     def _project(self, ws, selector):
-        rows = browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
+        rows = self._catalog(
+            "projects",
+            (ws.ref.key,),
+            lambda: browser_api.list_projects(workspace_id=ws.ref.key, session=self.session),
+        )
         values = [
-            Resource(p.name, self._make_ref(ProjectRef, p.name, p.project_id, ws.ref.key)) for p in rows
+            Resource(p.name, self._make_ref(ProjectRef, p.name, p.project_id, ws.ref.key))
+            for p in rows
         ]
         return exact(values, selector, ProjectRef, self.client, ws.ref.key)
 
