@@ -1,8 +1,10 @@
 """Immutable public values. Resource references are identities, not credentials."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field, asdict
 from typing import Any, Generic, TypeVar, ClassVar
+
 from .exceptions import ValidationError
 from inspire.platform.web.browser_api.datasets import DatasetMount
 from inspire.platform.web.browser_api.metrics import MetricGroup as MetricGroup
@@ -69,6 +71,17 @@ class Resource(Generic[R]):
 class Image(Resource[ImageRef]):
     source: str
     url: str = field(repr=False)
+    status: str = ""
+    framework: str = ""
+    visibility: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "framework": self.framework,
+            "visibility": self.visibility,
+        }
 
 
 @dataclass(frozen=True)

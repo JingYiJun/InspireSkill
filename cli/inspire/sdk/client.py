@@ -1,7 +1,9 @@
 """Synchronous Python entry point; construction never authenticates or connects."""
 
 from __future__ import annotations
+
 import math
+
 from .exceptions import ConfigurationError, ValidationError
 from .transport import Transport
 from .resources import Workspaces, Projects, ComputeGroups, Images
@@ -49,6 +51,16 @@ class InspireClient:
         from .jobs import Jobs
 
         self.jobs = Jobs(self)
+        from .account import AccountInformation, APIKeys
+        from .datasets import Datasets
+        from .model_registry import Models
+        from .resource_monitor import Resources
+
+        self.account_info = AccountInformation(self)
+        self.api_keys = APIKeys(self)
+        self.datasets = Datasets(self)
+        self.models = Models(self)
+        self.resources = Resources(self)
 
     @property
     def account(self) -> str:
@@ -64,8 +76,11 @@ class InspireClient:
         if (
             not isinstance(ref.key, str)
             or not ref.key
-            or not ref.workspace_id
-            or (workspace_id is not None and ref.workspace_id != workspace_id)
+            or (
+                workspace_id is not None
+                and ref.workspace_id
+                and ref.workspace_id != workspace_id
+            )
         ):
             raise ValidationError("Reference does not match the requested workspace.")
 

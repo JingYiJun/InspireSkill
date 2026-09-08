@@ -31,9 +31,9 @@ with InspireClient(account="my-account") as client:
 | 服务 | 接口 | 约束 |
 |---|---|---|
 | `workspaces` | `list/get` | 完整名称匹配 |
-| `projects` | `list/get` | 必须指定 workspace |
+| `projects` | `list/get/detail/owners` | workspace 省略时查询全局项目；detail 含预算用量 |
 | `compute_groups` | `list/get` | 必须指定 workspace |
-| `images` | `list/get` | official/public/project/private；跨来源同名报歧义 |
+| `images` | `list/get/detail` | official/public/project/private；list 支持 keyword；跨来源同名报歧义 |
 | `jobs` | `quotas` | 指定 workspace；group 可省略以枚举所有支持训练的计算组 |
 | `jobs` | `list/iter/get` | 与 CLI 一样列出当前用户任务，无 owner 参数；名称 get 完整消歧 |
 
@@ -41,7 +41,7 @@ with InspireClient(account="my-account") as client:
 
 其他资源目录先完整枚举再切出有界返回页。游标是 JSON `{"offset": int, "query": [...]}` 的 urlsafe base64 编码。query 保存账号、服务端、服务和筛选条件；读取时按普通相等比较验证，不使用哈希或签名。它是当前列表的偏移标记，不是服务端快照；任务并发新增/删除时可能重复或遗漏。`jobs.iter(max_items=...)` 去重已经看到的引用，但不承诺快照完整性。
 
-使用 `.ref` 在后续操作中保持身份。引用可 `to_dict()` / `JobRef.from_dict()` 序列化；包含内部资源身份但不包含认证材料，默认 repr 隐藏 key。引用不授予权限，也不绕过服务器校验。跨账号、跨来源、跨工作区或资源类型不匹配会报错。公开选择器不接受裸 ID。
+使用 `.ref` 在后续操作中保持身份。引用可 `to_dict()` / `JobRef.from_dict()` 序列化；包含内部资源身份但不包含认证材料，默认 repr 隐藏 key。引用不授予权限，也不绕过服务器校验。跨账号、跨来源、跨工作区或资源类型不匹配会报错；空 workspace_id 表示未限定工作区，适用于所有引用类型。公开选择器不接受裸 ID。
 
 ```python
 from inspire import ImageSelector, Quota
@@ -55,6 +55,41 @@ quotas = client.jobs.quotas(workspace=workspace.ref, group="计算组名称")
 # 精确要求 1 GPU、20 CPU、200 GiB；不会自动选择相近规格。
 quota = Quota(gpu=1, cpu=20, memory_gib=200)
 ```
+
+## 资源查询方法（Phase B）
+
+下面的接口复用 CLI 的 browser_api／数据广场函数和共享 services，不通过 Click 执行命令。返回值为 frozen dataclass；有平台身份的目录记录提供对应类型的 `.ref`。项目、镜像、数据集、模型与 usage 等视图提供 `.to_dict()`，返回 CLI JSON 的业务字段，不含 SDK 引用；嵌套列表和字典保留平台视图结构，frozen 不表示递归冻结。
+
+| CLI | SDK 方法 | 返回值与范围 |
+|---|---|---|
+| account current | `account_info.current()` | AccountInfo：固定账号 alias、username、base_url、user_id、user_name；CLI current 的 name 对应 alias |
+| account check | `account_info.check()` | AccountCheck：ok、user、session_created_at、issues；共享占位主机和凭据校验，使用 `get_current_user(refresh=True)` 验证会话；不返回密码 |
+| account context | `account_info.context(limit=None)` | AccountContext；实时枚举项目、工作区、计算组及警告；None 不裁剪，指定 limit 时每类分别裁剪 |
+| account permissions | `account_info.permissions(workspace=None)` | tuple[Permission, ...]；None 或 `"all"` 遍历全部工作区，单个工作区可用名称或 WorkspaceRef |
+| account api-key list | `api_keys.list(limit=20, cursor=None)` | Page[APIKeyInfo]；只有名称、创建时间和 APIKeyRef |
+| account api-key export 的密钥读取 | `api_keys.get(name_or_ref)` / `api_keys.plaintext(name_or_ref)` | 元数据 APIKeyInfo / 显式返回明文 str；名称完整匹配，同名须选 Ref |
+| account api-key create / delete | `api_keys.create(name)` / `api_keys.delete(name_or_ref)` | APIKeyInfo；写入使用 single_send，无额外确认、预查重或写后重列循环 |
+| project list / detail / owners | `projects.list(workspace=None, limit=20, cursor=None)` / `projects.detail(name_or_ref, workspace=None)` / `projects.owners()` | Page[ProjectInfo] / ProjectDetail / tuple[ProjectOwner, ...]；全局列表使用 list_all_projects，详情预算用量不可读时与 CLI 一样保留其余详情 |
+| project 名称选择 | `projects.get(name_or_ref, workspace=None)` | ProjectInfo；可传工作区筛选，也可直接查询全局项目 |
+| image list / detail | `images.list(workspace, source=None, keyword=None, limit=20, cursor=None)` / `images.detail(name_or_ref, workspace)` | Page[Image] / ImageDetail；None 或 all 按 official/public/project/private 顺序读取、按 ID 保留首条；keyword 为名称子串 |
+| dataset list / show | `datasets.list(keyword=None, tag=None, limit=20, cursor=None)` / `datasets.get(name)` | Page[DatasetInfo] / DatasetDetail；tag 可为名称或名称序列；详情含 DatasetVersion 和可用的版本引用 |
+| dataset tags / applications | `datasets.tags()` / `datasets.applications(name=None, to_approve=False, keyword=None, limit=20, cursor=None)` | tuple[DatasetTag, ...] / Page[DatasetApplication]；指定 name 时复用 CLI 的单数据集申请详情查询，keyword 与 CLI 一样仅用于未指定 name 的列表 |
+| dataset validate | `datasets.validate(specs, workspace)` | tuple[DatasetValidation, ...]；接受 `"name:version"` 或 DatasetMount，复用解析及重复检测；平台拒绝以 mountable=False、reason 原文返回，格式错误抛 ValidationError |
+| model list / 名称选择 | `models.list(workspace, project=None, keyword=None, limit=20, cursor=None)` / `models.get(name_or_ref, workspace, project=None)` | Page[ModelInfo] / ModelInfo；当前用户模型；list 支持 workspace="all"，其余模型方法指定单工作区 |
+| model status | `models.status(name_or_ref, workspace, project=None)` | ModelStatus；与 CLI JSON 一致地组合详情、版本记录、vLLM、pending_serving、servings 和 other_versions_in_use；servings 保留 CLI 的 20 条窗口及截断字段 |
+| model versions / deploy-config | `models.versions(name_or_ref, workspace, project=None)` / `models.deploy_config(name_or_ref, workspace, project=None, version=None)` | tuple[ModelVersion, ...] / ModelDeployConfig；version 缺省时从目录版本推断 |
+| resources availability | `resources.availability(workspace, group=None, include_cpu=False)` | tuple[ResourceAvailability, ...]；共享 CLI 排序和公开字段，group 为名称子串 |
+| resources policy | `resources.policy(workspace, workload=None)` | tuple[WorkloadSchedulePolicy, ...]；包含平台原始调度声明、回收条件和时间限制 |
+| resources usage | `resources.usage(workspace, project=None, user=None, task=None, group=None, mine=False, details=False, limit=None)` | ResourceUsage；scope、filters、compute_groups、items 及裁剪元数据与 CLI 相同；三种 scope 为 project-user / task / mine，None 不裁剪 |
+| resources node-events | `resources.node_events(nodes, since=None, type=None, reason=None, limit=None, from_component=None)` | EventResult；nodes 为名称或名称序列，读取 CLI 同样的最新 1,000 条扫描窗口；items 保留事件原始字段；since 为 datetime 或 Unix 秒；limit 取过滤后最新 N 条 |
+
+API key 创建接口没有返回 ID 或创建时间，因此 `create()` 的成功结果只有 name，`ref=None`、`created_at=""`。之后可显式调用 `get(name)` 取得引用。SDK 不伪造 ID，也不让额外查询改变单次写入的结果。`plaintext()` 是唯一返回密钥值的接口；文件导出和子进程环境注入由调用方自行处理。
+
+目录分页使用公共 Page 和游标。数据集与模型目录按平台页完整枚举后切片；跨页重复身份会去重；总数仍有剩余却返回空页，或达到 100 页上限仍未完成枚举时抛 ResolutionIncompleteError。单数据集 applications 复用 CLI 的有界详情扫描，total=None，不承诺扫描窗口之外的完整申请历史。镜像 list 与 CLI 一样可返回成功来源的数据；名称 get/detail 仍要求完整候选集，避免漏掉其他来源的同名对象。
+
+resources availability、policy、usage 与 CLI 一样只接受单工作区；模型 list 和账号 permissions 支持工作区 fan-out。usage 的 project/user/task/group 都是 CLI 的子串过滤，mine 与 group/user/task/details 不可组合。
+
+CLI-only：账号本地管理 `account add/use/rename/remove/list`、`api-key export` 的文件格式／权限／stdout 和 `api-key run` 的子进程及环境处理、`init/update/uninstall/cache`、YAML batch、SSH/shell/exec/scp/连接安装与代理入口，以及指标绘图和终端渲染。image/model 注册、更新和删除仍属于后续写操作阶段，尚未加入这些资源门面。
 
 ## 规划、提交和等待
 

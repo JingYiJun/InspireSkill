@@ -52,7 +52,12 @@ def client(tmp_path, monkeypatch):
 
 
 def test_imports_are_lazy():
-    script = 'import sys; from inspire import InspireClient; import inspire.sdk.jobs; assert not any(x.startswith(("playwright", "click")) for x in sys.modules)'
+    script = '''import sys, importlib, pkgutil
+import inspire.sdk
+for module in pkgutil.iter_modules(inspire.sdk.__path__):
+    importlib.import_module("inspire.sdk." + module.name)
+assert not any(x.startswith(("playwright", "click")) for x in sys.modules)
+'''
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
@@ -213,9 +218,11 @@ def test_images_do_not_choose_first_source(client, monkeypatch):
     ws = Resource("ws", WorkspaceRef("ws", "alpha", client.base_url, "ws-test", "ws-test"))
     monkeypatch.setattr(client.workspaces, "get", lambda _: ws)
     monkeypatch.setattr(
-        "inspire.platform.web.browser_api.images.list_images_by_source",
+        "inspire.platform.web.browser_api.list_images_by_source",
         lambda source, **kw: [
-            SimpleNamespace(name="image", version="v1", image_id=source, url="r/" + source)
+            SimpleNamespace(name="image", version="v1", image_id=source, url="r/" + source,
+                            source="SOURCE_OFFICIAL" if source == "official" else "SOURCE_PUBLIC",
+                            visibility="VISIBILITY_" + source.upper(), status="", framework="")
         ],
     )
     with pytest.raises(AmbiguousResourceError):
@@ -318,7 +325,8 @@ def test_sdk_and_cli_payloads_match(client, planned, monkeypatch):
         max_time_hours=2,
     )
     # Both adapters resolve the same catalog snapshot; only platform I/O is fake.
-    platform_project = SimpleNamespace(project_id="p", name="project", priority_name="HIGH")
+    platform_project = SimpleNamespace(project_id="p", name="project", priority_name="HIGH",
+                                       priority_level="", member_remain_budget=None, remain_budget=None)
     platform_group = {
         "id": "g", "name": "group", "support_job_type_list": '["distributed_training"]'
     }
@@ -326,16 +334,22 @@ def test_sdk_and_cli_payloads_match(client, planned, monkeypatch):
         "quota_id": "q", "gpu_count": 1, "cpu_count": 20, "memory_size_gib": 200,
         "gpu_info": {"gpu_type": "GPU"},
     }
-    platform_image = SimpleNamespace(name="image", version="v1", image_id="i", url="registry/image:v1")
+    platform_image = SimpleNamespace(name="image", version="v1", image_id="i", url="registry/image:v1",
+                                    source="SOURCE_PUBLIC", visibility="VISIBILITY_PRIVATE",
+                                    status="", framework="")
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.images.list_images_by_source",
+        lambda source, **kw: [platform_image] if source == "private" else [],
+    )
     monkeypatch.delattr(client.projects, "_all")
     monkeypatch.delattr(client.compute_groups, "_all")
     monkeypatch.delattr(client.jobs, "_quota_rows")
     monkeypatch.delattr(client.images, "get")
-    monkeypatch.setattr("inspire.platform.web.browser_api.projects.list_projects", lambda **kw: [platform_project])
+    monkeypatch.setattr("inspire.platform.web.browser_api.list_projects", lambda **kw: [platform_project])
     monkeypatch.setattr("inspire.platform.web.browser_api.availability.list_compute_groups", lambda **kw: [platform_group])
     monkeypatch.setattr("inspire.platform.web.browser_api.notebooks.get_resource_prices", lambda **kw: [platform_price])
     monkeypatch.setattr(
-        "inspire.platform.web.browser_api.images.list_images_by_source",
+        "inspire.platform.web.browser_api.list_images_by_source",
         lambda source, **kw: [platform_image] if source == "private" else [],
     )
     public, sdk_plan = client.jobs._plan(spec)
@@ -594,7 +608,7 @@ def test_partial_image_catalog_cannot_resolve_unique_name(client, monkeypatch):
             raise RuntimeError("unreadable")
         return [SimpleNamespace(name="image", version="v1", image_id="i", url="r/i")]
 
-    monkeypatch.setattr("inspire.platform.web.browser_api.images.list_images_by_source", listing)
+    monkeypatch.setattr("inspire.platform.web.browser_api.list_images_by_source", listing)
     with pytest.raises(ResolutionIncompleteError):
         client.images.get("image:v1", workspace=ws.ref)
 
@@ -960,7 +974,7 @@ def test_operation_keeps_original_validation_message(client, monkeypatch):
         client.workspaces.list()
 
 
-def test_services_and_sdk_do_not_import_cli():
+def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
     root = Path(__file__).resolve().parents[1] / "inspire"
     violations = []
     for package in ("services", "sdk"):
@@ -975,9 +989,14 @@ def test_services_and_sdk_do_not_import_cli():
                         parts = list(path.relative_to(root.parent).parts[:-1])
                         module = ".".join(parts[:len(parts) - node.level + 1] + [module]).rstrip(".")
                     modules = [module, *(f"{module}.{alias.name}" for alias in node.names)]
-                if any(name == "inspire.cli" or name.startswith("inspire.cli.") for name in modules):
+                forbidden = ("inspire.cli", "click", "rich", "playwright")
+                if any(
+                    name == prefix or name.startswith(prefix + ".")
+                    for name in modules
+                    for prefix in forbidden
+                ):
                     violations.append(f"{path.relative_to(root)}:{node.lineno}")
-    assert not violations, "CLI imports in shared layers: " + ", ".join(violations)
+    assert not violations, "CLI/UI imports in shared layers: " + ", ".join(violations)
 
 
 @pytest.mark.parametrize("allow_browser", [False, True])

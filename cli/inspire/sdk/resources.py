@@ -7,6 +7,7 @@ import json
 from functools import wraps
 from typing import Callable, TypeVar, cast, Any
 
+from .models_resources import ProjectInfo, ProjectDetail, ProjectOwner, ProjectOwnerRef, ImageDetail
 from .exceptions import (
     InspireError,
     ValidationError,
@@ -96,7 +97,10 @@ class Service:
     def cursor_offset(self, cursor, query):
         query = json.loads(
             json.dumps(
-                [self.client.account, self.client.base_url, type(self).__name__, query], default=str
+                [self.client.account, self.client.base_url, type(self).__name__, query],
+                default=lambda value: (
+                    value.to_dict() if isinstance(value, ResourceRef) else str(value)
+                ),
             )
         )
         offset = 0
@@ -124,6 +128,24 @@ class Service:
         next_cursor = self.encode_cursor(end, query) if end < len(items) else None
         return Page(tuple(items[offset:end]), next_cursor, len(items))
 
+    def collect_pages(self, fetch, identity):
+        """Enumerate before local paging or exact selection; never hide a partial catalog."""
+        items = []
+        seen = set()
+        for page in range(1, 101):
+            rows, total = fetch(page=page, page_size=100)
+            for row in rows:
+                key = identity(row)
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(row)
+            if len(items) >= total:
+                return items
+            if not rows:
+                break
+        raise ResolutionIncompleteError("Resource catalog enumeration is incomplete.")
+
 
 class Workspaces(Service):
     def _all(self):
@@ -144,29 +166,92 @@ class Workspaces(Service):
 
 
 class Projects(Service):
-    def _all(self, ws):
-        from inspire.platform.web.browser_api.projects import list_projects
+    def _all(self, ws=None):
+        from inspire.platform.web import browser_api
+        from inspire.services.projects import project_to_dict
+        from .models_resources import ProjectInfo
 
+        rows = (
+            browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
+            if ws
+            else browser_api.list_all_projects(session=self.session)
+        )
         return [
-            (Resource(x.name, self.ref(ProjectRef, x.name, x.project_id, ws.ref.key)), x)
-            for x in list_projects(workspace_id=ws.ref.key, session=self.session)
+            (
+                ProjectInfo.from_view(
+                    project_to_dict(x),
+                    ref=self.ref(ProjectRef, x.name, x.project_id, ws.ref.key if ws else ""),
+                ),
+                x,
+            )
+            for x in rows
         ]
 
     @operation
     def list(
-        self, *, workspace: str | WorkspaceRef, limit: int = 20, cursor: str | None = None
-    ) -> Page[Resource[ProjectRef]]:
-        ws = self.client.workspaces.get(workspace)
+        self,
+        workspace: str | WorkspaceRef | None = None,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> Page[ProjectInfo]:
+        ws = self.client.workspaces.get(workspace) if workspace is not None else None
         return self.page(
-            [x[0] for x in self._all(ws)], limit=limit, cursor=cursor, query=(ws.ref.key,)
+            [x[0] for x in self._all(ws)],
+            limit=limit,
+            cursor=cursor,
+            query=(ws.ref.key if ws else None,),
         )
 
     @operation
     def get(
-        self, selector: str | ProjectRef, *, workspace: str | WorkspaceRef
-    ) -> Resource[ProjectRef]:
-        ws = self.client.workspaces.get(workspace)
-        return exact([x[0] for x in self._all(ws)], selector, ProjectRef, self.client, ws.ref.key)
+        self, selector: str | ProjectRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> ProjectInfo:
+        ws = self.client.workspaces.get(workspace) if workspace is not None else None
+        return exact(
+            [x[0] for x in self._all(ws)],
+            selector,
+            ProjectRef,
+            self.client,
+            ws.ref.key if ws else None,
+        )
+
+    @operation
+    def detail(
+        self, name_or_ref: str | ProjectRef, workspace: str | WorkspaceRef | None = None
+    ) -> ProjectDetail:
+        from inspire.platform.web import browser_api
+        from inspire.services.projects import project_detail_view
+
+        if isinstance(name_or_ref, ProjectRef):
+            ws = self.client.workspaces.get(workspace) if workspace is not None else None
+            self.client._validate_ref(name_or_ref, ProjectRef, ws.ref.key if ws else None)
+            ref = name_or_ref
+        else:
+            ref = self.get(name_or_ref, workspace=workspace).ref
+        data = browser_api.get_project_detail(ref.key, session=self.session)
+        try:
+            usage = browser_api.get_project_budget_usage(ref.key, session=self.session)
+        except Exception:
+            usage = None
+        return ProjectDetail.from_view(project_detail_view(data, usage), ref=ref)
+
+    @operation
+    def owners(self) -> tuple[ProjectOwner, ...]:
+        from inspire.platform.web import browser_api
+        from inspire.services.projects import owner_views
+
+        rows = browser_api.list_project_owners(session=self.session)
+        return tuple(
+            ProjectOwner.from_view(
+                view,
+                ref=self.ref(ProjectOwnerRef, view["name"], row.get("id") or row.get("user_id"))
+                if row.get("id") or row.get("user_id")
+                else None,
+            )
+            for row in rows
+            for view in owner_views([row])
+        )
 
 
 class ComputeGroups(Service):
@@ -212,41 +297,56 @@ class ComputeGroups(Service):
 class Images(Service):
     SOURCES = ("official", "public", "project", "private")
 
-    def _all(self, ws, source=None):
-        from inspire.platform.web.browser_api.images import list_images_by_source
+    def _all(self, ws, source=None, keyword=None, *, require_complete=False):
+        from inspire.platform.web import browser_api
+        from inspire.services import images
 
-        if source is not None and source not in self.SOURCES:
-            raise ValidationError("Unknown image catalog source.")
-        images = {}
-        for catalog in (source,) if source else self.SOURCES:
-            try:
-                rows = list_images_by_source(catalog, workspace_id=ws.ref.key, session=self.session)
-            except InspireError:
-                raise
-            except Exception:
-                raise ResolutionIncompleteError("An image catalog could not be read.") from None
-            for x in rows:
-                label = f"{x.name}:{x.version}" if x.version else x.name
-                images[x.image_id] = Image(
-                    label,
-                    self.ref(ImageRef, label, x.image_id, ws.ref.key),
-                    catalog,
-                    x.url,
-                )
-        return list(images.values())
+        if source in (None, "all"):
+            rows, failed = images.load_image_sources(
+                source_keys=self.SOURCES,
+                session=self.session,
+                workspace_id=ws.ref.key,
+                concurrent=False,
+            )
+            rows = images.dedupe_images_by_id(rows)
+            if failed and require_complete:
+                raise ResolutionIncompleteError("An image catalog could not be read.")
+            if not rows and failed:
+                raise ResolutionIncompleteError("Image catalog is unavailable.")
+        else:
+            rows = browser_api.list_images_by_source(
+                source=source, workspace_id=ws.ref.key, session=self.session
+            )
+        return [
+            Image(
+                images.image_label(x),
+                self.ref(ImageRef, images.image_label(x), x.image_id, ws.ref.key),
+                images.image_visibility(x) or source or "",
+                x.url,
+                x.status,
+                x.framework,
+                images.image_visibility(x),
+            )
+            for x in rows
+            if not keyword or keyword.strip().casefold() in images.image_label(x).casefold()
+        ]
 
     @operation
     def list(
         self,
-        *,
         workspace: str | WorkspaceRef,
         source: str | None = None,
+        keyword: str | None = None,
+        *,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[Image]:
         ws = self.client.workspaces.get(workspace)
         return self.page(
-            self._all(ws, source), limit=limit, cursor=cursor, query=(ws.ref.key, source)
+            self._all(ws, source, keyword),
+            limit=limit,
+            cursor=cursor,
+            query=(ws.ref.key, source, keyword),
         )
 
     @operation
@@ -256,4 +356,22 @@ class Images(Service):
         ws = self.client.workspaces.get(workspace)
         source = selector.source if isinstance(selector, ImageSelector) else None
         name = selector.name if isinstance(selector, ImageSelector) else selector
-        return exact(self._all(ws, source), name, ImageRef, self.client, ws.ref.key)
+        return exact(
+            self._all(ws, source, require_complete=True), name, ImageRef, self.client, ws.ref.key
+        )
+
+    @operation
+    def detail(
+        self, name_or_ref: str | ImageRef | ImageSelector, workspace: str | WorkspaceRef
+    ) -> ImageDetail:
+        from inspire.platform.web import browser_api
+        from inspire.services.images import image_summary
+
+        ws = self.client.workspaces.get(workspace)
+        if isinstance(name_or_ref, ImageRef):
+            self.client._validate_ref(name_or_ref, ImageRef, ws.ref.key)
+            ref = name_or_ref
+        else:
+            ref = self.get(name_or_ref, workspace=ws.ref).ref
+        row = browser_api.get_image_detail(image_id=ref.key, session=self.session)
+        return ImageDetail.from_view(image_summary(row), ref=ref)

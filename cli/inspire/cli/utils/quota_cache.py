@@ -47,7 +47,6 @@ from inspire.platform.web.session import WebSession
 
 from inspire.services.compute_groups import (
     GROUP_JOB_TYPES_BY_WORKLOAD as GROUP_JOB_TYPES_BY_WORKLOAD,
-    _declared_job_types as _declared_job_types,
     group_supports_workload as group_supports_workload,
 )
 
