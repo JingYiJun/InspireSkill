@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from html.parser import HTMLParser
 import json
 import logging
@@ -920,10 +921,9 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
         _persist(renewed, account=account)
         return renewed
     finally:
-        try:
+        # HTTP cleanup must not replace the session renewal result.
+        with contextlib.suppress(Exception):
             http.close()
-        except Exception:
-            pass
 
 
 def _login_with_cas_requests(
@@ -1423,10 +1423,9 @@ def _submit_credentials(
         # start Chromium but crash while rendering the full Qizhi SPA because
         # fontconfig is incomplete; rendering the SPA is unnecessary for CLI
         # session capture.
-        try:
+        # Session capture can continue even if the page is already closed.
+        with contextlib.suppress(Exception):
             page.close()
-        except Exception:
-            pass
 
         user_detail: dict | None = None
         request_headers = {

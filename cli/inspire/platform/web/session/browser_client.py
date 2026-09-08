@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import threading
@@ -104,18 +105,15 @@ class _BrowserRequestClient:
             return
         self._closed = True
 
-        try:
+        # The context may already be closed; continue releasing browser resources.
+        with contextlib.suppress(Exception):
             self._context.close()
-        except Exception:
-            pass
-        try:
+        # The browser may already be closed; still stop the Playwright runtime.
+        with contextlib.suppress(Exception):
             self._browser.close()
-        except Exception:
-            pass
-        try:
+        # An already stopped Playwright runtime needs no further cleanup.
+        with contextlib.suppress(Exception):
             self._playwright.stop()
-        except Exception:
-            pass
 
 
 def _session_fingerprint(session: WebSession) -> str:
@@ -145,10 +143,9 @@ _BROWSER_CLIENT_CLOSE_TIMEOUT_SECONDS = 1.0
 def _get_thread_client() -> Optional[_BrowserRequestClient]:
     client = getattr(_BROWSER_CLIENT_TLS, "client", None)
     if client is not None and getattr(client, "_closed", False):
-        try:
+        # A stale thread-local entry must not prevent reporting that no client is available.
+        with contextlib.suppress(Exception):
             delattr(_BROWSER_CLIENT_TLS, "client")
-        except Exception:
-            pass
         return None
     return client
 
@@ -158,10 +155,9 @@ def _set_thread_client(client: _BrowserRequestClient) -> None:
 
 
 def _clear_thread_client() -> None:
-    try:
+    # The thread-local client may already be absent during cleanup.
+    with contextlib.suppress(Exception):
         delattr(_BROWSER_CLIENT_TLS, "client")
-    except Exception:
-        pass
 
 
 def _register_client(client: _BrowserRequestClient) -> None:

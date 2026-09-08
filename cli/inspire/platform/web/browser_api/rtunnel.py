@@ -6,6 +6,7 @@ around the sync flow).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -948,10 +949,9 @@ def probe_existing_rtunnel_proxy_url(
                     pass
                 return url
             finally:
-                try:
+                # Response cleanup must not replace the proxy probe result.
+                with contextlib.suppress(Exception):
                     resp.close()
-                except Exception:
-                    pass
         return None
     except (OSError, ValueError, RuntimeError, AttributeError):
         return None
@@ -1357,10 +1357,9 @@ def _probe_terminal_command_markers_via_ws(
 
         return markers.get(result)
     finally:
-        try:
+        # Temporary terminal cleanup must not replace the probe result.
+        with contextlib.suppress(Exception):
             _delete_terminal_via_api(context, lab_url=lab_frame.url, term_name=term_name)
-        except Exception:
-            pass
 
 
 def _check_rtunnel_present_via_ws(
@@ -2075,12 +2074,11 @@ def _send_rtunnel_setup_script(
     def _cleanup_browser_terminal() -> None:
         if not browser_term_name:
             return
-        try:
+        # A temporary terminal may already be gone when cleanup runs.
+        with contextlib.suppress(Exception):
             _delete_terminal_via_api(
                 context, lab_url=browser_term_lab_url, term_name=browser_term_name
             )
-        except Exception:
-            pass
 
     try:
         result, browser_term_name = _open_or_create_terminal(context, page, lab_frame)

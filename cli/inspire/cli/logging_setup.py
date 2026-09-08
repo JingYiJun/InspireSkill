@@ -6,6 +6,7 @@ attaches file handlers for all ``inspire.*`` loggers.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
@@ -126,10 +127,9 @@ def _remove_previous_debug_handlers(logger: logging.Logger) -> None:
     for handler in list(logger.handlers):
         if getattr(handler, _DEBUG_HANDLER_MARKER, False):
             logger.removeHandler(handler)
-            try:
+            # A detached debug handler must not prevent the remaining logging cleanup.
+            with contextlib.suppress(Exception):
                 handler.close()
-            except Exception:
-                pass
 
 
 def _stash_logger_state(logger: logging.Logger) -> None:

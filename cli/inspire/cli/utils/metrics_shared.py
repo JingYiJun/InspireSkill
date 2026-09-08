@@ -13,6 +13,7 @@ logic lives entirely in the shared renderer.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
@@ -390,7 +391,8 @@ def _default_plot_path(resource_name: str, task_name: str, end_ts: int) -> Path:
 
 
 def _open_file(path: Path) -> None:
-    try:
+    # Opening the saved chart is optional and must not fail metrics export.
+    with contextlib.suppress(Exception):
         if sys.platform == "darwin":
             subprocess.Popen(["open", str(path)])  # noqa: S603,S607
         elif sys.platform.startswith("linux"):
@@ -400,8 +402,6 @@ def _open_file(path: Path) -> None:
             # direct call fails type checking on POSIX and the ignore that
             # silences that becomes an unused-ignore error on Windows.
             getattr(os, "startfile")(str(path))
-    except Exception:  # pragma: no cover
-        pass
 
 
 # ---------------------------------------------------------------------------

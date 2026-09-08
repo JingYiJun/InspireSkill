@@ -14,6 +14,7 @@ place to change when the on-disk layout evolves.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -83,12 +84,11 @@ def _clear_process_account_caches() -> None:
     one account key. Changing only the saved default needs no invalidation:
     each runtime cache already includes the effective account in its key.
     """
-    try:
+    # Runtime caches are account-keyed, so clearing them is only eager cleanup.
+    with contextlib.suppress(Exception):
         from inspire.platform.web.browser_api.core import clear_browser_api_runtime_cache
 
         clear_browser_api_runtime_cache()
-    except Exception:
-        pass
 
 
 def validate_name(name: str) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -109,10 +110,9 @@ def _resolve_direct_lab_url(
         return direct_lab_url
     finally:
         if http is not None:
-            try:
+            # HTTP cleanup must not replace the resolved JupyterLab URL.
+            with contextlib.suppress(Exception):
                 http.close()
-            except Exception:
-                pass
     return direct_lab_url
 
 
@@ -531,10 +531,9 @@ def _is_ide_url_live(session: WebSession, ide_url: str, *, timeout_s: float = 8.
         return False
     finally:
         if http is not None:
-            try:
+            # HTTP cleanup must not replace the IDE reachability result.
+            with contextlib.suppress(Exception):
                 http.close()
-            except Exception:
-                pass
 
 
 def resolve_notebook_ide_url(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sys
@@ -177,12 +178,11 @@ def _job_not_found_message(job: str) -> str:
 
 
 def _close_web_client() -> None:
-    try:
+    # Browser cleanup must not replace the job command result.
+    with contextlib.suppress(Exception):
         from inspire.platform.web.session import _close_browser_client
 
         _close_browser_client()
-    except Exception:
-        pass
 
 
 def _resolve_explicit_workspace(workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001

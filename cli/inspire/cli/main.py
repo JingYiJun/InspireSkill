@@ -8,6 +8,7 @@ Usage:
     inspire resources availability --workspace <workspace>
 """
 
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -167,12 +168,11 @@ def main(
     # writes ~/.inspire/update-status.json, which the uninstall is on its way
     # to delete, and a detached child would outlive the venv it runs from.
     if not (len(sys.argv) > 1 and sys.argv[1] in {"update", "uninstall"}):
-        try:
+        # Optional update checks must not prevent the requested command from running.
+        with contextlib.suppress(Exception):
             if not json_output:
                 maybe_notify_update()
             maybe_spawn_check()
-        except Exception:
-            pass
 
 @click.command("_ensure-playwright-runtime", hidden=True)
 @click.option("--silent", is_flag=True, help="Suppress runtime setup output.")

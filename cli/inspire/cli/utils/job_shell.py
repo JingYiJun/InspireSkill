@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import os
 import re
@@ -509,14 +510,12 @@ class _WebSocketClient:
         sock = self.sock
         if sock is None:
             return
-        try:
+        # The peer may already be gone; still close the local socket.
+        with contextlib.suppress(Exception):
             self._send_frame(0x8)
-        except Exception:
-            pass
-        try:
+        # Socket cleanup must not prevent clearing the local socket reference.
+        with contextlib.suppress(Exception):
             sock.close()
-        except Exception:
-            pass
         self.sock = None
 
 
@@ -552,10 +551,9 @@ def run_remote_shell(
         ws.send_text(_stty_command())
 
         def announce_resize() -> None:
-            try:
+            # A missed resize notification must not interrupt the interactive shell.
+            with contextlib.suppress(Exception):
                 ws.send_text(_stty_command())
-            except Exception:
-                pass
 
         streams = ShellStreams(ws, stdin)
         with raw_terminal(stdin), watch_terminal_resize(stdin, announce_resize) as poll_resize:

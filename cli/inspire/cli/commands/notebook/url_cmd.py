@@ -12,6 +12,7 @@ all. There is no token-free form — the platform route on the console domain
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -113,10 +114,9 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
         return "no_service"
     finally:
         if http is not None:
-            try:
+            # HTTP cleanup must not replace the reachability probe result.
+            with contextlib.suppress(Exception):
                 http.close()
-            except Exception:
-                pass
 
     if 200 <= status < 400:
         return "reachable"
