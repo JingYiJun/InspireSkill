@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Generic, TypeVar, ClassVar
 from .exceptions import ValidationError
+from inspire.platform.web.browser_api.datasets import DatasetMount
+from inspire.platform.web.browser_api.metrics import MetricGroup as MetricGroup
 
 T = TypeVar("T")
 R = TypeVar("R", bound="ResourceRef")
@@ -84,7 +86,7 @@ class Quota:
 
 @dataclass(frozen=True)
 class QuotaOption(Resource[QuotaRef]):
-    quota: Quota
+    quota: Quota | None
     group: ComputeGroupRef
     gpu_type: str
 
@@ -135,6 +137,18 @@ class JobCreateSpec:
     priority: int | None = None
     max_time_hours: float | None = None
     description: str | None = field(default=None, repr=False)
+    framework: str = "pytorch"
+    auto_fault_tolerance: bool | None = None
+    fault_tolerance_max_retry: int | None = None
+    fault_tolerance_retry_interval_sec: int | None = None
+    datasets: list[str | DatasetMount] = field(default_factory=list)
+    envs: dict[str, str] = field(default_factory=dict, repr=False)
+    keep_after_success_hours: float | None = None
+    keep_after_failure_hours: float | None = None
+    public_path_readonly: bool | None = None
+    enable_notification: bool | None = None
+    exclude_nodes: list[str] = field(default_factory=list)
+    specified_nodes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -146,13 +160,21 @@ class JobPlan:
     image: Image
     quota: Quota
     priority: int
+    nodes: int = 1
+    datasets: tuple[DatasetMount, ...] = ()
+    envs_count: int = 0
+    description: str | None = None
+    max_time: str | None = None
+    shm: int | None = None
 
     @property
     def summary(self) -> str:
         return (
             f"{self.name}: {self.workspace.name} / {self.project.name} / "
             f"{self.group.name}; {self.quota}; image={self.image.name}; "
-            f"priority={self.priority}. No resources reserved."
+            f"priority={self.priority}; nodes={self.nodes}; datasets={self.datasets}; "
+            f"envs={self.envs_count}; description={self.description}; "
+            f"max_time={self.max_time}; shm={self.shm}. No resources reserved."
         )
 
 
@@ -164,10 +186,23 @@ class LogResult:
     end: str
     truncated: bool
     total: int | None = None
-    # The API has no verified cursor/order contract. Do not invent one.
+    items: tuple[dict[str, Any], ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
 class EventResult:
     items: tuple[dict[str, Any], ...] = field(repr=False)
     truncated: bool = False
+
+
+@dataclass(frozen=True)
+class JobInstance:
+    name: str
+    status: str = ""
+    node: str = ""
+    role: str = ""
+    rank: int | str | None = None
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+JobEvent = dict[str, Any]

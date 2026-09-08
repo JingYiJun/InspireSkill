@@ -1,4 +1,4 @@
-"""Public SDK errors. Messages never include server bodies or credentials."""
+"""Public SDK errors, preserving platform and validation messages."""
 
 
 class InspireError(Exception):

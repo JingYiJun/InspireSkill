@@ -29,22 +29,24 @@
 
 认证路径继续调用既有 auth.get_web_session，未重写底层登录。浏览器登录的固定内部超时无法提供硬取消；公开文档明确这一限制。状态与同步检查见 SDK 隔离测试，账号锁与 guard 的进程级合同继续由现有测试覆盖；新 SDK 多进程真实刷新尚未联调。
 
-## 3. 写路径重放审计
+## 3. 调用方声明的传输策略与写路径重放审计
 
-| 入口 | 发送前后判定 | SDK 合同/测试 |
+`operation` 的 `Transport.scope(timeout=...)` 默认 READ。实际写入调用显式进入 `single_send(operation_id, create=True)`（创建）或 `single_send()`（其他变更），create/mutation 由参数声明。已删除 `_READ_ACTIONS` 和 `operation_policy()`；URL、Action 和 HTTP 动词均不参与策略推断。
+
+| 入口 | READ | single_send |
 |---|---|---|
-| 缓存加载/显式允许登录 | 创建发送前 | 失败为认证错误，不包装为已发送不确定 |
-| requests RequestException / ReadTimeout | 已进入一次发送 | CREATE → SubmissionUncertainError；无换通道 |
-| HTTP 401/3xx | 已发送，未证明未执行 | CREATE 不刷新、不重发 |
-| HTTP 429/5xx | 已发送 | CREATE 不重试；READ 共用三次预算 |
-| JSON 无法解析/非 envelope | 服务端可能已执行 | CREATE 不确定 |
-| envelope 暂时错误 | 已发送 | READ 在同一预算内退避；CREATE 不确定 |
-| 明确参数/权限拒绝 | 已有拒绝证据 | 净化 ValidationError/AuthenticationError，无重放 |
-| create 返回缺少 ID | 可能成功但不可确认 | 不确定；不追加详情查询 |
-| browser 请求认证失败 | 已进入浏览器通道 | CREATE 不重建重放 |
-| 未知 Action / GET | 无已审计幂等合同 | 默认 MUTATION，单次发送；不从 HTTP 方法猜测 |
+| 缓存加载 / 显式允许登录 | 发送前认证 | 失败保持原类型，不包装为已发送不确定 |
+| requests 异常 | 三次总尝试；allow_browser=True 才能换通道 | 已发送失败，不重放 |
+| HTTP 401/3xx | allow_browser=True 才允许一次刷新，否则 AuthenticationError | 不刷新、不重发 |
+| HTTP 429/5xx | 三次总尝试，共享 deadline 和退避预算 | 不重试 |
+| v2 transient envelope | 仅按共享 `_is_transient_v2_error_code` 判定是否重试 | JSON 原样交给 browser_api；解包失败由 block 映射为不确定 |
+| v1 / 任意 JSON 形状 | 原样返回，无形状门控 | 原样返回 |
+| JSON 解析失败 | TransportError，requests 异常仍遵循上面的请求异常策略 | 不确定 |
+| 一般 HTTP 4xx | ValidationError，保留状态和约 500 字符正文 | 已发送失败映射为不确定 |
+| 创建返回缺少 ID | 不适用 | SubmissionUncertainError，不追加详情查询 |
+| 同一 block 第二次 request | 不适用 | RuntimeError，禁止第二次发送 |
 
-OperationPolicy 只允许显式已审计的只读 Action 自动重试。operation_id 为本地诊断 UUID，不是服务器幂等键。所有日志/错误去除服务端正文；业务程序主动打印日志不属于 SDK 自动诊断。
+发送后的创建失败为 `SubmissionUncertainError(operation_id)`，其他变更失败为 `MutationUncertainError`。operation_id 是任意非空本地诊断字符串，默认 uuid4().hex，不是服务器幂等键。普通 ValueError 和平台错误映射保留 `str(error)`，并继续搜索原因链中的 SDK 错误。
 
 ## 4. 业务抽取与测试替身清单
 
@@ -149,20 +151,16 @@ OperationPolicy 只允许显式已审计的只读 Action 自动重试。operatio
 | `test_workload_quota_and_resources.py` | browser_api | monkeypatch, import |
 | `test_workload_selector_contract.py` | job_commands | monkeypatch, import |
 
-## 日志协议探索
+## 日志与共享服务
 
-真实只读探针：同一已完成任务、一个实例、固定 24h 窗口，请求 5/10 条（SDK 内取 limit+1 以判断截断），返回 total 均为 10，较小样本是较大样本前缀。未读取或输出原始日志正文到审计文档；没有证明全局最近 N 条。多实例排序/重启实例保留、相同时间戳续读仍未建立平台合同，所以首版只发布 limit 样本，不发布 tail/follow/cursor。
+Phase A 将 CLI 已有的日志窗口解析、fetch 和 tail/head/limit 选择提取到 `services/job_logs.py`。SDK 默认不截断字符，CLI 保持默认字符预算及输出净化。两者共享底层拉取和排序选择，但不把有限平台样本宣称为全局最后 N 条或无损游标。SDK 新增轮询 follow，终态停止并为日志保留最后一轮读取。
+
+事件过滤、实例选择和合并查询在 `services/job_events.py`；指标选择和时间解析在 `services/metrics.py`，样本提取仍共用 browser_api.metrics；数据集语法和解析在 `services/datasets.py`，CLI 保留 re-export，原来 patch CLI 内部 validator 的测试已改为 patch 共享服务。状态集合集中到 `services/job_status.py`，CLI list --active / wait / logs 均从这里读取。
 
 ## 发布前剩余门禁
 
 真实受控创建→查询→日志→终态→清理尚未执行；CPU/GPU 环境不从本机测试外推；浏览器登录硬取消、多进程 SDK 真实刷新、动态列表快照语义均不作为已完成能力。安装、类型与回归检查见实现交付记录。
 
-## 本次检查结果
+## 检查记录
 
-- Ruff：通过。
-- mypy：220 个源码文件通过；外部 wheel 消费示例另行通过。
-- pytest：2944 passed，6 skipped；其中 SDK 合同测试 32 项。
-- uv build：wheel 和源码包构建成功，wheel 包含 SDK 与 py.typed。
-- 干净环境安装原依赖 wheel：SDK 惰性导入和 CLI --help 均通过。
-- pyproject 的 project 元数据、依赖与 CLI 入口与基线相同。
-- git diff --check：通过。
+首版基线曾通过 2944 项测试（6 skipped）。Phase A 的完整命令及结果以本次交付总结 `phase_a_summary.md` 为准；测试包括 caller-declared single_send、transient envelope、cursor 相等验证、日志窗口和 CLI 选择等价、完整创建 payload、批量状态、事件筛选、结构化实例和指标样本。真实平台受控创建闭环仍留在阶段 F。

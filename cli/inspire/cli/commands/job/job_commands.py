@@ -12,6 +12,12 @@ from typing import Any, Optional
 import click
 
 from inspire.services.job_status import RAW_TERMINAL_STATUSES as _JOB_TERMINAL_STATUSES
+from inspire.services.job_status import (
+    STATUS_ALIAS_MAP,
+    STATUS_API_ALIAS_MAP,
+    JOB_ACTIVE_API_STATUSES,
+    JOB_ACTIVE_STATUSES,
+)
 
 from inspire.cli.context import (
     Context,
@@ -74,32 +80,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_INSTANCE_SCAN_LIMIT = 500
 
-_STATUS_ALIAS_MAP = {
-    "PENDING": {"PENDING", "job_pending", "job_creating"},
-    "RUNNING": {"RUNNING", "job_running"},
-    "QUEUING": {"QUEUING", "job_queuing"},
-    "SUCCEEDED": {"SUCCEEDED", "job_succeeded"},
-    "FAILED": {"FAILED", "job_failed"},
-    "CANCELLED": {"CANCELLED", "job_cancelled", "job_stopped"},
-}
-_STATUS_API_ALIAS_MAP = {
-    "PENDING": ("job_pending", "job_creating"),
-    "RUNNING": ("job_running",),
-    "QUEUING": ("job_queuing",),
-    "SUCCEEDED": ("job_succeeded",),
-    "FAILED": ("job_failed",),
-    "CANCELLED": ("job_cancelled", "job_stopped"),
-}
-_JOB_ACTIVE_API_STATUSES = ("job_pending", "job_creating", "job_queuing", "job_running")
-_JOB_ACTIVE_STATUSES = {
-    "PENDING",
-    "job_pending",
-    "job_creating",
-    "QUEUING",
-    "job_queuing",
-    "RUNNING",
-    "job_running",
-}
 # A job never leaves any of these on its own, and `job` has no `start`: the
 # only way back to a running job is a new `job create`. Anything that waits on
 # a job must stop at this set, `job_stopped` included -- a job stopped by hand
@@ -119,7 +99,7 @@ def _expand_status_aliases(statuses: list[str] | tuple[str, ...] | None) -> set[
     expanded: set[str] = set()
     for value in statuses or ():
         key = str(value).upper()
-        expanded.update(_STATUS_ALIAS_MAP.get(key, {str(value)}))
+        expanded.update(STATUS_ALIAS_MAP.get(key, {str(value)}))
     return expanded
 
 
@@ -129,7 +109,7 @@ def _api_statuses_for_filter(status: Optional[str]) -> tuple[str, ...]:
         return ()
     if raw.startswith("job_"):
         return (raw,)
-    return _STATUS_API_ALIAS_MAP.get(raw.upper(), ())
+    return STATUS_API_ALIAS_MAP.get(raw.upper(), ())
 
 
 def _dedupe_job_rows(rows: list[dict]) -> list[dict]:
@@ -1083,7 +1063,7 @@ def _watch_jobs(
                 page_size=page_size,
                 max_pages=max_pages,
                 limit=limit,
-                api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,
+                api_statuses=JOB_ACTIVE_API_STATUSES if active and not status else None,
             )
             if exclude_statuses:
                 jobs = [j for j in jobs if j.get("status") not in exclude_statuses]
@@ -1232,11 +1212,11 @@ def list_jobs(
             page_size=_job_list_page_size(effective_limit),
             max_pages=50,
             limit=effective_limit,
-            api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,
+            api_statuses=JOB_ACTIVE_API_STATUSES if active and not status else None,
         )
 
         if active:
-            rows = [j for j in rows if j.get("status") in _JOB_ACTIVE_STATUSES]
+            rows = [j for j in rows if j.get("status") in JOB_ACTIVE_STATUSES]
 
         page = bound_collection(
             rows,

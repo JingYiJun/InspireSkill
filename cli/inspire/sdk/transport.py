@@ -5,9 +5,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from urllib.parse import urlsplit, parse_qs
-from typing import Any
-from enum import Enum
+from typing import Any, Callable, Iterator, NoReturn
 
 from .exceptions import (
     AuthenticationError,
@@ -22,42 +20,8 @@ from .exceptions import (
 )
 
 
-class OperationPolicy(Enum):
-    READ = "read"
-    CREATE = "create"
-    MUTATION = "mutation"
-
-
-# Reviewed SDK Actions only. Unknown endpoints never gain retries from their
-# HTTP verb or from a suggestive name. Add new read capabilities explicitly.
-_READ_ACTIONS = frozenset(
-    {
-        "GetRoutes",
-        "GetUserDetail",
-        "ListProjects",
-        "GetProjectForPage",
-        "GetProjectDetail",
-        "ListLogicComputeGroups",
-        "ListImages",
-        "GetLogicComputeGroupResourceSpecPrices",
-        "GetTrainScheduleConfig",
-        "GetScheduleConfig",
-        "ListJobs",
-        "GetJob",
-        "ListJobInstances",
-        "ListJobEvents",
-        "GetJobLog",
-    }
-)
-
-
-def operation_policy(path: str) -> OperationPolicy:
-    action = parse_qs(urlsplit(path).query).get("Action", [""])[0]
-    if action in _READ_ACTIONS:
-        return OperationPolicy.READ
-    if action == "CreateJobConsole":
-        return OperationPolicy.CREATE
-    return OperationPolicy.MUTATION
+class _SingleSendViolation(RuntimeError):
+    pass
 
 
 class Transport:
@@ -78,9 +42,9 @@ class Transport:
         self._http: Any = None
         self._browser: Any = None
         self.deadline: float | None = None
-        self.operation_id = ""
+        self._write: dict[str, Any] | None = None
 
-    def check(self):
+    def check(self) -> None:
         if (self._pid, self._thread) != (os.getpid(), threading.get_ident()):
             raise ClientThreadError("Create and use each Client in the same process and thread.")
         if self._closed:
@@ -94,7 +58,7 @@ class Transport:
         return remaining
 
     @contextmanager
-    def scope(self, *, timeout: float = 120):
+    def scope(self, *, timeout: float = 120) -> Iterator[None]:
         from inspire.accounts import account_scope
         from inspire.platform.web.runtime import active_transport
 
@@ -109,13 +73,35 @@ class Transport:
             active_transport.reset(token)
             self.deadline = old
 
+    @contextmanager
+    def single_send(self, operation_id: str = "", *, create: bool = False) -> Iterator[None]:
+        self.check()
+        if self._write is not None:
+            raise _SingleSendViolation("single_send blocks cannot be nested.")
+        state = {"operation_id": operation_id, "create": create, "used": False, "sent": False}
+        self._write = state
+        try:
+            yield
+        except (SubmissionUncertainError, MutationUncertainError, _SingleSendViolation):
+            raise
+        except Exception as error:
+            if state["sent"]:
+                self._uncertain(state, error)
+            raise
+        finally:
+            self._write = None
+
+    def _uncertain(self, state: dict[str, Any], error: Exception) -> NoReturn:
+        if state["create"]:
+            raise SubmissionUncertainError(state["operation_id"]) from error
+        raise MutationUncertainError("Mutation may have succeeded; inspect state.") from error
+
     def _validate_session(self, session):
         if (
             session is None
             or not session.storage_state.get("cookies")
             or (session.base_url or "").rstrip("/") != self.base_url
             or session.account not in (None, self.account)
-            or (self.username and (session.login_username or "") != self.username)
         ):
             raise AuthenticationError("No matching cached session; initialize this account first.")
         return session
@@ -175,23 +161,35 @@ class Transport:
         from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
 
         if browser:
-            from inspire.platform.web.session.browser_client import _BrowserRequestClient
+            from inspire.platform.web.session.browser_client import (
+                _BrowserRequestClient,
+                _BrowserHTTPError,
+            )
 
             if self._browser is None:
                 self._browser = _BrowserRequestClient(self.session)
-            return self._browser.request_json(
-                method,
-                self.base_url + path,
-                body=body,
-                timeout=timeout,
-            )
+            try:
+                return self._dispatch(
+                    self._browser.request_json,
+                    method,
+                    self.base_url + path,
+                    body=body,
+                    timeout=timeout,
+                )
+            except _BrowserHTTPError as error:
+                if error.status == 403:
+                    raise AuthenticationError(str(error)) from error
+                if error.status == 429 or error.status >= 500:
+                    raise TransientAPIError(str(error), status=error.status) from error
+                raise ValidationError(f"HTTP {error.status}: {error.body[:500]}") from error
         from inspire.platform.web.session.requests import build_requests_session, _configure
 
         if self._http is None:
             self._http = build_requests_session(self.session, self.base_url)
         else:
             _configure(self._http, self.session, self.base_url)
-        response = self._http.request(
+        response = self._dispatch(
+            self._http.request,
             method,
             self.base_url + path,
             json=body,
@@ -206,70 +204,65 @@ class Transport:
         if response.status_code == 403:
             raise AuthenticationError("Platform access denied.")
         if response.status_code >= 400:
-            raise ValidationError(f"Platform rejected request (HTTP {response.status_code}).")
+            raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")
         return response.json()
+
+    def _dispatch(self, send: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        if self._write is not None:
+            self._write["sent"] = True
+        return send(*args, **kwargs)
 
     def request(
         self, method: str, path: str, *, body=None, timeout: float = 30, referer=None
     ) -> dict:
         from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
-        from inspire.platform.web.session.envelope import _v2_result
+        from inspire.platform.web.session.envelope import _is_transient_v2_error_code
         from requests.exceptions import RequestException
 
-        policy = operation_policy(path)
-        read = policy is OperationPolicy.READ
-        create = policy is OperationPolicy.CREATE
-        browser, refreshed = False, False
-        # Authentication happens before dispatch and cannot be mistaken for a sent write.
+        state = self._write
+        if state is not None:
+            if state["used"]:
+                raise _SingleSendViolation("single_send allows exactly one request.")
+            state["used"] = True
         self.session
-        for attempt in range(3 if read else 1):
+        browser, refreshed = False, False
+        for attempt in range(3 if state is None else 1):
             request_timeout = min(timeout, self.timeout, self.remaining())
             try:
                 payload = self._once(method, path, body, request_timeout, browser, referer)
-                if not isinstance(payload, dict) or not any(
-                    k in payload for k in ("Result", "ResponseMetadata", "data", "code")
-                ):
-                    raise ValueError("Invalid platform envelope.")
-                _v2_result(payload)  # Envelope errors share the same attempt budget.
+                if state is None and isinstance(payload, dict):
+                    metadata = payload.get("ResponseMetadata")
+                    error = metadata.get("Error") if isinstance(metadata, dict) else None
+                    if isinstance(error, dict) and _is_transient_v2_error_code(
+                        str(error.get("Code") or "")
+                    ):
+                        raise TransientAPIError(str(error.get("Message") or error.get("Code")))
                 return payload
-            except (ValidationError, AuthenticationError):
-                raise
             except Exception as error:
-                if (
-                    isinstance(error, ValueError)
-                    and not isinstance(error, TransientAPIError)
-                    and str(error).startswith("API error:")
-                ):
-                    raise ValidationError("Platform rejected the operation.") from None
-                if not read:
-                    # No auth replay, browser fallback or transient retry after dispatch.
-                    if create:
-                        raise SubmissionUncertainError(self.operation_id) from None
-                    raise MutationUncertainError(
-                        "Mutation may have succeeded; inspect state."
-                    ) from None
+                if state is not None:
+                    if state["sent"]:
+                        self._uncertain(state, error)
+                    raise
                 if isinstance(error, SessionExpiredError):
                     if refreshed or not self.allow_browser:
-                        raise AuthenticationError(
-                            "Session expired; authenticate this account."
-                        ) from None
+                        raise AuthenticationError(str(error)) from error
                     self._refresh()
                     refreshed = True
+                elif isinstance(error, (ValidationError, AuthenticationError)):
+                    raise
                 elif isinstance(error, (RequestException, ValueError)) and not isinstance(
                     error, TransientAPIError
                 ):
-                    # Only transport/invalid JSON errors merit browser fallback; explicit
-                    # business errors must not silently become a second request.
-                    if isinstance(error, ValueError) and str(error).startswith("API error:"):
-                        raise ValidationError("Platform rejected the read operation.") from None
                     if self.allow_browser:
                         browser = True
+                elif not isinstance(error, TransientAPIError):
+                    raise TransportError(str(error)) from error
                 if attempt == 2:
-                    raise TransportError("Platform read failed after bounded retries.") from None
-                time.sleep(min(0.5 * (2**attempt), self.remaining()))
+                    raise TransportError(str(error)) from error
+                time.sleep(min(0.1 * (2**attempt), self.remaining()))
         raise AssertionError("unreachable")
 
-    def close(self):
+    def close(self) -> None:
         if self._closed:
             return
         self.check()

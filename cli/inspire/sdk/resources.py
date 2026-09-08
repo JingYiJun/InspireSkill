@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 from functools import wraps
 from typing import Callable, TypeVar, cast, Any
@@ -46,13 +45,9 @@ def operation(fn: F) -> F:
                         raise cause from None
                     cause = cause.__cause__
                 if isinstance(error, ValueError):
-                    raise ValidationError(
-                        "Platform data or resource selection is invalid."
-                    ) from None
+                    raise ValidationError(str(error)) from None
                 if type(error).__module__.startswith("inspire.platform"):
-                    raise ResolutionIncompleteError(
-                        "Platform resource enumeration failed."
-                    ) from None
+                    raise ResolutionIncompleteError(str(error)) from None
                 raise
 
     return cast(F, wrapped)
@@ -99,36 +94,34 @@ class Service:
         )
 
     def cursor_offset(self, cursor, query):
-        fingerprint = hashlib.sha256(
+        query = json.loads(
             json.dumps(
-                [self.client.account, self.client.base_url, type(self).__name__, query],
-                sort_keys=True,
-                default=str,
-            ).encode()
-        ).hexdigest()
+                [self.client.account, self.client.base_url, type(self).__name__, query], default=str
+            )
+        )
         offset = 0
         if cursor is not None:
             try:
                 data = json.loads(base64.urlsafe_b64decode(cursor))
-                if data["query"] != fingerprint or type(data["offset"]) is not int:
+                if data["query"] != query or type(data["offset"]) is not int:
                     raise ValueError()
                 offset = data["offset"]
                 if offset < 0:
                     raise ValueError()
             except Exception:
                 raise ValidationError("Cursor does not match this query and account.") from None
-        return offset, fingerprint
+        return offset, query
 
-    def encode_cursor(self, offset, fingerprint):
+    def encode_cursor(self, offset, query):
         return base64.urlsafe_b64encode(
-            json.dumps({"query": fingerprint, "offset": offset}).encode()
+            json.dumps({"query": query, "offset": offset}).encode()
         ).decode()
 
     def page(self, items, *, limit=20, cursor=None, query=()):
         positive(limit)
-        offset, fingerprint = self.cursor_offset(cursor, query)
+        offset, query = self.cursor_offset(cursor, query)
         end = offset + limit
-        next_cursor = self.encode_cursor(end, fingerprint) if end < len(items) else None
+        next_cursor = self.encode_cursor(end, query) if end < len(items) else None
         return Page(tuple(items[offset:end]), next_cursor, len(items))
 
 

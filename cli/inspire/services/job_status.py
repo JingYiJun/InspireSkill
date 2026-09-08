@@ -26,4 +26,32 @@ RAW_TERMINAL_STATUSES = frozenset(
 
 
 def normalize_status(value: str) -> str:
-    return _STATUS.get(value.removeprefix("job_").upper(), "UNKNOWN")
+    return _STATUS.get(value.upper().removeprefix("JOB_"), "UNKNOWN")
+
+
+STATUS_ALIAS_MAP = {
+    "PENDING": {"PENDING", "job_pending", "job_creating"},
+    "RUNNING": {"RUNNING", "job_running"},
+    "QUEUING": {"QUEUING", "job_queuing"},
+    "SUCCEEDED": {"SUCCEEDED", "job_succeeded"},
+    "FAILED": {"FAILED", "job_failed"},
+    "CANCELLED": {"CANCELLED", "job_cancelled", "job_stopped"},
+}
+STATUS_API_ALIAS_MAP = {
+    "PENDING": ("job_pending", "job_creating"),
+    "RUNNING": ("job_running",),
+    "QUEUING": ("job_queuing",),
+    "SUCCEEDED": ("job_succeeded",),
+    "FAILED": ("job_failed",),
+    "CANCELLED": ("job_cancelled", "job_stopped"),
+}
+JOB_ACTIVE_API_STATUSES = ("job_pending", "job_creating", "job_queuing", "job_running")
+JOB_ACTIVE_STATUSES = {
+    "PENDING",
+    "job_pending",
+    "job_creating",
+    "QUEUING",
+    "job_queuing",
+    "RUNNING",
+    "job_running",
+}

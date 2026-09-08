@@ -18,6 +18,14 @@ from .browser_launch import chromium_launch_kwargs
 from .proxy import get_playwright_proxy
 from .retry import retry_after_seconds
 
+
+class _BrowserHTTPError(ValueError):
+    def __init__(self, status: int, body: str):
+        super().__init__(f"API returned {status}: {body}")
+        self.status = status
+        self.body = body
+
+
 class _BrowserRequestClient:
     def __init__(self, session: WebSession) -> None:
         from playwright.sync_api import sync_playwright
@@ -95,7 +103,7 @@ class _BrowserRequestClient:
                     status=resp.status,
                     retry_after=retry_after_seconds(resp.headers),
                 )
-            raise ValueError(message)
+            raise _BrowserHTTPError(resp.status, body_text)
 
         return resp.json()
 

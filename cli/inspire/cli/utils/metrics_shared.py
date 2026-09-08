@@ -25,6 +25,12 @@ from typing import Any, Callable, Optional
 
 import click
 
+from inspire.services.metrics import (
+    parse_window,
+    parse_absolute,
+    resolve_metrics,
+)
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -45,7 +51,6 @@ from inspire.config import ConfigError
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web.browser_api.metrics import (
     INTERVAL_CHOICES,
-    METRIC_TYPES,
     MetricGroup,
     TASK_TYPE_BY_RESOURCE,
     get_resource_metrics_by_time,
@@ -58,93 +63,12 @@ render_metrics_png = None
 # Metric selection
 # ---------------------------------------------------------------------------
 
-_METRIC_ALIASES: dict[str, str] = {
-    "gpu": "gpu_usage_rate",
-    "gpu_mem": "gpu_memory_usage_rate",
-    "gpu_memory": "gpu_memory_usage_rate",
-    "cpu": "cpu_usage_rate",
-    "mem": "memory_usage_rate",
-    "memory": "memory_usage_rate",
-    "disk_read": "disk_io_read",
-    "disk_write": "disk_io_write",
-    "net_read": "network_tcp_ip_io_read",
-    "net_write": "network_tcp_ip_io_write",
-}
-
-_CORE_METRICS: tuple[str, ...] = (
-    "gpu_usage_rate",
-    "gpu_memory_usage_rate",
-    "cpu_usage_rate",
-    "memory_usage_rate",
-)
-
-# ---------------------------------------------------------------------------
-# Time-window parsing
-# ---------------------------------------------------------------------------
-
-_WINDOW_RE = re.compile(r"^(\d+)\s*([smhd])$")
-_WINDOW_MULT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-
 _SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 # Raw samples are useful for an explicit diagnostic request, but an accidental
 # wide time window must not turn the CLI into an unbounded context stream.
 DEFAULT_RAW_SAMPLE_LIMIT = 500
 MAX_RAW_SAMPLE_LIMIT = 2_000
-
-
-def _parse_window(text: str) -> int:
-    m = _WINDOW_RE.match(text.strip().lower())
-    if not m:
-        raise click.BadParameter(
-            f"unrecognized window '{text}' — use e.g. 30m / 1h / 6h / 24h / 7d"
-        )
-    qty, unit = int(m.group(1)), m.group(2)
-    return qty * _WINDOW_MULT[unit]
-
-
-def _parse_absolute(text: str) -> int:
-    text = text.strip()
-    for fmt in (
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d",
-    ):
-        try:
-            dt = datetime.strptime(text, fmt)
-            return int(dt.replace(tzinfo=timezone.utc).timestamp())
-        except ValueError:
-            continue
-    try:
-        return int(text)
-    except ValueError as exc:
-        raise click.BadParameter(f"unrecognized timestamp '{text}'") from exc
-
-
-def _resolve_metrics(selector: Optional[str]) -> list[str]:
-    if not selector or selector.lower() == "core":
-        return list(_CORE_METRICS)
-    if selector.lower() == "all":
-        return list(METRIC_TYPES)
-    out: list[str] = []
-    for token in selector.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        normalized = _METRIC_ALIASES.get(token.lower(), token)
-        if normalized not in METRIC_TYPES:
-            raise click.BadParameter(
-                f"unknown metric '{token}' — valid aliases: "
-                f"{', '.join(sorted(_METRIC_ALIASES))} or raw: "
-                f"{', '.join(METRIC_TYPES)}"
-            )
-        if normalized not in out:
-            out.append(normalized)
-    if not out:
-        raise click.BadParameter("no metrics selected")
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -621,20 +545,20 @@ def build_metrics_command(
         json_output = ctx.json_output
 
         try:
-            metrics = _resolve_metrics(metric_selector)
-        except click.BadParameter as exc:
+            metrics = resolve_metrics(metric_selector)
+        except ValueError as exc:
             _handle_error(ctx, "ValidationError", str(exc), EXIT_VALIDATION_ERROR)
             return
 
         now = int(time.time())
         try:
             if start:
-                start_ts = _parse_absolute(start)
-                end_ts = _parse_absolute(end) if end else now
+                start_ts = parse_absolute(start)
+                end_ts = parse_absolute(end) if end else now
             else:
-                end_ts = _parse_absolute(end) if end else now
-                start_ts = end_ts - _parse_window(window)
-        except click.BadParameter as exc:
+                end_ts = parse_absolute(end) if end else now
+                start_ts = end_ts - parse_window(window)
+        except ValueError as exc:
             _handle_error(ctx, "ValidationError", str(exc), EXIT_VALIDATION_ERROR)
             return
 

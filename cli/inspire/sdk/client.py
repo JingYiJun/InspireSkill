@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import math
-from urllib.parse import urlsplit
 from .exceptions import ConfigurationError, ValidationError
 from .transport import Transport
 from .resources import Workspaces, Projects, ComputeGroups, Images
@@ -34,15 +33,6 @@ class InspireClient:
             config, _ = Config.from_files_and_env(require_credentials=False, account=selected)
         except Exception:
             raise ConfigurationError("Select an initialized Inspire account.") from None
-        parsed = urlsplit(config.base_url)
-        if (
-            parsed.scheme not in ("http", "https")
-            or not parsed.hostname
-            or parsed.username
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ConfigurationError("Invalid platform base URL.")
         self._account = selected
         self._base_url = config.base_url.rstrip("/")
         self.operation_timeout = operation_timeout
