@@ -1,0 +1,173 @@
+"""Immutable public values. Resource references are identities, not credentials."""
+
+from __future__ import annotations
+from dataclasses import dataclass, field, asdict
+from typing import Any, Generic, TypeVar, ClassVar
+from .exceptions import ValidationError
+
+T = TypeVar("T")
+R = TypeVar("R", bound="ResourceRef")
+
+
+@dataclass(frozen=True)
+class ResourceRef:
+    name: str
+    account: str
+    base_url: str
+    key: str = field(repr=False)
+    workspace_id: str = field(default="", repr=False)
+    kind: ClassVar[str] = "resource"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"version": 1, "kind": self.kind, **asdict(self)}
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]):
+        if value.get("version") != 1 or value.get("kind") != cls.kind:
+            raise ValidationError("Reference type or version does not match.")
+        keys = ("name", "account", "base_url", "key", "workspace_id")
+        if any(not isinstance(value.get(k), str) for k in keys):
+            raise ValidationError("Invalid reference fields.")
+        if any(not value[k].strip() for k in keys[:-1]):
+            raise ValidationError("Reference identity is incomplete.")
+        return cls(**{k: value[k] for k in keys})
+
+
+class WorkspaceRef(ResourceRef):
+    kind = "workspace"
+
+
+class ProjectRef(ResourceRef):
+    kind = "project"
+
+
+class ComputeGroupRef(ResourceRef):
+    kind = "compute_group"
+
+
+class ImageRef(ResourceRef):
+    kind = "image"
+
+
+class QuotaRef(ResourceRef):
+    kind = "quota"
+
+
+class JobRef(ResourceRef):
+    kind = "job"
+
+
+@dataclass(frozen=True)
+class Resource(Generic[R]):
+    name: str
+    ref: R
+
+
+@dataclass(frozen=True)
+class Image(Resource[ImageRef]):
+    source: str
+    url: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class Quota:
+    gpu: int
+    cpu: int
+    memory_gib: int
+
+    def __post_init__(self):
+        for name, minimum in (("gpu", 0), ("cpu", 1), ("memory_gib", 1)):
+            value = getattr(self, name)
+            if type(value) is not int or value < minimum:
+                raise ValidationError(f"{name} must be an integer >= {minimum}.")
+
+
+@dataclass(frozen=True)
+class QuotaOption(Resource[QuotaRef]):
+    quota: Quota
+    group: ComputeGroupRef
+    gpu_type: str
+
+
+@dataclass(frozen=True)
+class ImageSelector:
+    name: str
+    source: str
+
+
+@dataclass(frozen=True)
+class Job:
+    name: str
+    ref: JobRef
+    status: str
+    raw_status: str
+    project: str = ""
+    created_at: str = ""
+    finished_at: str = ""
+
+
+@dataclass(frozen=True)
+class JobHandle:
+    name: str
+    ref: JobRef
+    operation_id: str
+    status: str = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class Page(Generic[T]):
+    items: tuple[T, ...]
+    next_cursor: str | None = None
+    total: int | None = None
+
+
+@dataclass(frozen=True)
+class JobCreateSpec:
+    name: str
+    workspace: str | WorkspaceRef
+    project: str | ProjectRef
+    group: str | ComputeGroupRef
+    quota: Quota | QuotaRef
+    image: str | ImageRef | ImageSelector
+    command: str = field(repr=False)
+    nodes: int = 1
+    shm_gib: int | None = None
+    priority: int | None = None
+    max_time_hours: float | None = None
+    description: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class JobPlan:
+    name: str
+    workspace: Resource[WorkspaceRef]
+    project: Resource[ProjectRef]
+    group: Resource[ComputeGroupRef]
+    image: Image
+    quota: Quota
+    priority: int
+
+    @property
+    def summary(self) -> str:
+        return (
+            f"{self.name}: {self.workspace.name} / {self.project.name} / "
+            f"{self.group.name}; {self.quota}; image={self.image.name}; "
+            f"priority={self.priority}. No resources reserved."
+        )
+
+
+@dataclass(frozen=True)
+class LogResult:
+    text: str = field(repr=False)
+    instances: tuple[str, ...]
+    start: str
+    end: str
+    truncated: bool
+    total: int | None = None
+    # The API has no verified cursor/order contract. Do not invent one.
+
+
+@dataclass(frozen=True)
+class EventResult:
+    items: tuple[dict[str, Any], ...] = field(repr=False)
+    truncated: bool = False

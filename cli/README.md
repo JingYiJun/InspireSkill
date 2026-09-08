@@ -26,3 +26,7 @@ Project documentation:
 - [Agent Skill](https://github.com/realZillionX/InspireSkill/blob/main/SKILL.md)
 - [Usage references](https://github.com/realZillionX/InspireSkill/tree/main/references)
 - [Development guide](https://github.com/realZillionX/InspireSkill/blob/main/CONTRIBUTING.md)
+
+## Python SDK
+
+The package also exposes an experimental synchronous `InspireClient` for Python orchestration. Existing CLI defaults and installation dependencies are unchanged. See the [SDK guide](../references/sdk.md) for account setup, resource references, single-dispatch submission, bounded logs and validation limits.

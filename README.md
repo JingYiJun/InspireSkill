@@ -379,3 +379,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 - [EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 提供了 CLI 的初步框架。
 
 <p align="center"><sub>Made for researchers who'd rather think than click.</sub></p>
+
+### Python SDK（实验性）
+
+在自己的 Python 项目中可使用 `from inspire import InspireClient`，复用同一包的账号配置和训练任务能力。现有 CLI 安装依赖及默认行为保持不变；首版面向本机/控制节点，参见 [SDK 接入与运行合同](references/sdk.md)。

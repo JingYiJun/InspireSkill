@@ -48,6 +48,7 @@ class AuthenticationError(ValueError):
     """
 
     credential_rejection: Optional[bool] = None
+    retry_at: Optional[float] = None
 
 
 # Statuses that say the platform did not answer, not that the answer is no.

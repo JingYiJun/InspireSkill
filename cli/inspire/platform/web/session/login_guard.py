@@ -354,7 +354,9 @@ def _guarded(
         _remove(path)
         block = None
     if block is not None and current < block.blocked_until:
-        raise AuthenticationError(_blocked_message(block, now=current))
+        error = AuthenticationError(_blocked_message(block, now=current))
+        error.retry_at = block.blocked_until
+        raise error
 
     try:
         yield
@@ -365,6 +367,7 @@ def _guarded(
         failures = 1 if block is None else block.failures + 1
         rejection = _classify_rejection(error)
         hold = CREDENTIAL_FAILURE_HOLD_SECONDS if rejection else cooldown_for(failures)
+        error.retry_at = failed_at + hold
         cached = WebSession.load(allow_expired=True, account=account)
         _store(
             path,

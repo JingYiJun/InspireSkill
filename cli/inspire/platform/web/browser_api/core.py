@@ -62,6 +62,12 @@ def _get_base_url() -> str:
     """Get base URL from layered config with sane fallback."""
     global _cached_base_url, _cached_base_url_key
 
+    from inspire.platform.web.runtime import active_transport
+
+    transport = active_transport.get()
+    if transport is not None:
+        return transport.base_url
+
     cache_key = _base_url_cache_key()
     if _cached_base_url is not None and _cached_base_url_key == cache_key:
         return _cached_base_url
@@ -147,6 +153,14 @@ def _request_json(
     body: Optional[dict] = None,
     timeout: int = 30,
 ) -> dict:
+    from inspire.platform.web.runtime import active_transport
+
+    transport = active_transport.get()
+    if transport is not None:
+        return transport.request(
+            method, path, body=_clamped_page_size(body), timeout=timeout, referer=referer
+        )
+
     url = f"{_get_base_url()}{path}"
     headers = {"Referer": referer}
     return request_json(

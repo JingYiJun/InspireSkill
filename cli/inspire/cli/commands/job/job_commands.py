@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 import click
 
+from inspire.services.job_status import RAW_TERMINAL_STATUSES as _JOB_TERMINAL_STATUSES
+
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -102,15 +104,7 @@ _JOB_ACTIVE_STATUSES = {
 # only way back to a running job is a new `job create`. Anything that waits on
 # a job must stop at this set, `job_stopped` included -- a job stopped by hand
 # or reclaimed by the workspace idle rule is as final as one that failed.
-_JOB_TERMINAL_STATUSES = {
-    "SUCCEEDED",
-    "job_succeeded",
-    "FAILED",
-    "job_failed",
-    "CANCELLED",
-    "job_cancelled",
-    "job_stopped",
-}
+
 
 
 class WebJobResolutionError(Exception):
