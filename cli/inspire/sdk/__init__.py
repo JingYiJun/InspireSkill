@@ -30,6 +30,7 @@ from .models_notebooks import (
     ImageSaveHandle,
 )
 from .client import InspireClient
+from .accounts import Accounts, InitResult
 from .models_resources import (
     AccountInfo,
     AccountCheck,
@@ -122,6 +123,8 @@ from .exceptions import ServingFailedError, TensorboardFailedError
 
 
 __all__ = [
+    "Accounts",
+    "InitResult",
     "ExecResult",
     "ServingInstanceView",
     "Serving",

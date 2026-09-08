@@ -17,11 +17,46 @@ SDK 面向能访问平台的本机或控制节点。CPU 节点需满足网络、
 
 ## 账号与会话
 
-先通过 CLI 初始化账号并准备有效登录缓存。导入和构造不联网，第一次资源操作才使用会话。构造时固定账号、平台来源和配置，后续切换 CLI 默认账号不影响已有 Client。
+本地账号管理可直接使用 `from inspire import Accounts`，无需先构造 Client；`InspireClient.accounts` 指向同一个类。所有账号状态仍保存在 `~/.inspire/accounts/<alias>/`，没有仓库级配置层。
 
-`InspireClient(account=None, *, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60)` 默认使用 CLI 当前账号；`allow_browser=False` 仍允许无浏览器续期：平台会话约每 15 分钟失效，即使持续请求也不会延长。SDK 在账号刷新锁内先重读更新的缓存，再尝试 SSO Cookie 续期，最后通过账号登录 guard 保护的 requests CAS 凭据登录。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道，且需按 CLI 安装说明准备 Chromium。验证码要求保留原提示并抛出 `AuthenticationError`，不会转入浏览器重试；登录冷却通过 `AuthenticationCooldownError.retry_at` 暴露。SDK 模块导入不加载 Click、Rich 或 Playwright。
+| API | 行为 |
+|---|---|
+| `Accounts.list()` | 返回排序后的账号别名元组 |
+| `Accounts.current()` | 读取磁盘默认账号，忽略临时账号作用域；未设置时为 `None` |
+| `Accounts.exists(name)` | 检查账号是否存在 |
+| `Accounts.config_path(name)` | 返回账号配置的 `Path` |
+| `Accounts.add(name, *, username, password, base_url="https://qz.sii.edu.cn", proxy=None, use=False, overwrite=False)` | 与 CLI 共用配置渲染；首个账号自动成为默认账号，其余仅在 `use=True` 时切换 |
+| `Accounts.use(name)` | 切换磁盘默认账号 |
+| `Accounts.rename(old, new)` | 重命名账号并迁移 Notebook 目标缓存 |
+| `Accounts.remove(name)` | **立即删除账号及其缓存，不做确认** |
 
-一个 Client 只在创建它的进程和线程中使用；线程 worker 或 fork 子进程各自创建 Client。使用 `with` 或 `close()` 释放自有 HTTP／浏览器连接。账号磁盘缓存、刷新锁和登录冷却与 CLI 共用。`account_info` 查询账号平台信息；本地账号管理仍用 CLI。`api_keys.plaintext(ref)` 显式返回密钥值，其他密钥视图只包含元数据。
+账号创建不打印、不提示、不联网、不启动浏览器；环境归一化仅检查本地 Chromium 文件是否存在。重复名称默认抛 `ValidationError`；`overwrite=True` 会替换整个账号目录，包括缓存。账号层错误转换为 `ValidationError` 并保留原消息。
+
+```python
+from inspire import Accounts, InspireClient
+
+Accounts.add("research", username="login-name", password="password", use=False)
+with InspireClient(account="research") as client:
+    identity = client.login()
+    result = client.init()
+    print(result.config_path, result.changed, result.warnings)
+
+# 也可以直接提供凭据；构造只准备本地配置，不联网登录。
+with InspireClient(username="login-name", password="password", account="research") as client:
+    identity = client.login()
+
+# 可读性别名，行为相同：
+client = InspireClient.from_credentials("login-name", "password", account="research")
+client.close()
+```
+
+完整构造签名为 `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60)`。不传凭据时使用现有账号，省略 account 使用当前账号。username/password 必须成对传入；提供凭据且省略 account 时，以 username 作为本地别名（须符合账号名称规则，邮箱等应显式提供合法 account）。缺失账号会创建；已有账号仅更新显式提供且不同的 auth/api/proxy 字段，保留其他配置。`proxy=None` 保留原代理，空字符串清空四个代理字段。构造客户端始终不改变默认账号指针，包括创建首个账号时。
+
+`client.login(force=False) -> AccountInfo` 立即建立并验证会话：缓存未过期时复用它并查询当前用户，缺失或过期时调用现有 Transport 续期流程；`force=True` 主动进入续期流程。平台会话约每 15 分钟失效，即使持续请求也不会延长。续期在账号刷新锁内先重读更新的磁盘缓存，再尝试 SSO Cookie 续期，最后执行受账号登录 guard 保护的 `login_without_browser`（requests CAS 凭据登录）。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道。验证码要求保留原提示并抛 `AuthenticationError`，不会转入浏览器重试；冷却通过 `AuthenticationCooldownError.retry_at` 暴露。
+
+`client.init(force=False) -> InitResult` 先登录，要求会话含真实可访问 workspace ID，然后按需原子写入账号配置，补齐平台地址、缺失的凭据及缓存登录身份。默认 `force=False` 仅合并凭据、平台地址及缓存登录身份，保留所有其他键值（包括未知节和旧表），仅在解析后的字典变化时写回；`force=True` 从账号模板和发现值重新构建，像 `inspire init --force` 一样丢弃旧表，并舍弃自定义节。返回 `config_path: Path`、按解析后字典比较的 `changed: bool` 和 `warnings: tuple[str, ...]`。它不写入仓库配置。**交互提示、Playwright 安装和 ssh-keygen 仍只由 CLI 提供**；SDK init 不执行这些步骤。CLI 的非交互 init 仍要求已有配置时显式指定 `--force`，其原有刷新语义保留。
+
+导入 SDK 不加载 Click、Rich 或 Playwright。构造时固定账号、平台来源和配置，后续切换默认账号不影响已有 Client。一个 Client 只在创建它的进程和线程中使用；线程 worker 或 fork 子进程各自创建 Client。使用 `with` 或 `close()` 释放连接。磁盘会话、刷新锁和登录冷却与 CLI 共用。`account_info` 查询平台信息；`api_keys.plaintext(ref)` 显式返回密钥值，其他密钥视图只包含元数据。
 
 ## 资源引用与分页
 
@@ -533,7 +568,7 @@ SDK 错误（包括 `NotebookFailedError`）均从 `InspireError` 派生。配�
 ## CLI-only 范围
 
 
-- 本机初始化、配置、安装与缓存：`init`、`config *`、`update`、`uninstall`、`cache *`，以及账号本地管理 `account add/use/rename/remove/list`。
+- 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、`cache *`；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。
 - `api-key export` 的文件格式、权限和 stdout 渲染，以及 `api-key run` 的子进程和环境处理；平台密钥读写由 `client.api_keys` 提供。
 - 所有工作负载的 JSON/TOML `batch`；SDK 应用自行循环或编排。
 - Notebook 的 exec 由 SDK 提供；`ssh/shell/scp/ssh-config/ssh-proxy/connection */install-deps/proxy-url` 仍为 CLI-only，创建后的 `--post-start/--post-start-script` 及 `job/hpc/ray/serving shell` 也仅保留在 CLI。

@@ -30,3 +30,5 @@ Project documentation:
 ## Python SDK
 
 实验性同步入口 `from inspire import InspireClient` 覆盖全部平台侧 CLI 命令组，复用同一包的账号与共享服务。Client 提供 `workspaces`、`projects`、`compute_groups`、`images`、`datasets`、`models`、`resources`、`account_info`、`api_keys`、`jobs`、`notebooks`、`hpc`、`ray`、`servings`、`tensorboards`。本地配置、连接工具和终端渲染仍由 CLI 提供；参见 [Python SDK 指南](../references/sdk.md)。
+
+Python SDK 支持 `Accounts` 本地账号管理、凭据构造 `InspireClient`、无浏览器 `login()` 与非交互 `init()`；详见 [SDK 文档](../references/sdk.md)。

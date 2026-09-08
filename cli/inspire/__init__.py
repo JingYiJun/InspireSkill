@@ -17,6 +17,8 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        Accounts as Accounts,
+        InitResult as InitResult,
         ExecResult as ExecResult,
         ServingInstanceView as ServingInstanceView,
         Serving as Serving,

@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
+from typing import Any
+
+from .accounts import Accounts, InitResult, ensure_credentials
+from .models_resources import AccountInfo
 
 from .exceptions import ConfigurationError, ValidationError
 from .transport import Transport
@@ -11,10 +16,16 @@ from .resources import Workspaces, Projects, ComputeGroups, Images
 
 
 class InspireClient:
+    accounts = Accounts
+
     def __init__(
         self,
         account: str | None = None,
         *,
+        username: str | None = None,
+        password: str | None = None,
+        base_url: str | None = None,
+        proxy: str | None = None,
         allow_browser: bool = False,
         timeout: float = 30,
         operation_timeout: float = 120,
@@ -32,6 +43,12 @@ class InspireClient:
                 or not (math.isfinite(value) and value > 0)
             ):
                 raise ValidationError("Timeouts must be finite positive seconds.")
+        if username is not None or password is not None:
+            if username is None or password is None:
+                raise ValidationError("Username and password must be supplied together.")
+            account = ensure_credentials(
+                account, username=username, password=password, base_url=base_url, proxy=proxy
+            )
         try:
             selected = validate_name(account if account is not None else current_account() or "")
             if not account_exists(selected):
@@ -85,6 +102,102 @@ class InspireClient:
         from .resource_monitor import Resources
 
         self.resources = Resources(self)
+
+    @classmethod
+    def from_credentials(
+        cls,
+        username: str,
+        password: str,
+        *,
+        base_url: str | None = None,
+        proxy: str | None = None,
+        account: str | None = None,
+        **client_kwargs: Any,
+    ) -> InspireClient:
+        """Create a fixed-account client without changing the saved default."""
+        return cls(
+            account,
+            username=username,
+            password=password,
+            base_url=base_url,
+            proxy=proxy,
+            **client_kwargs,
+        )
+
+    def login(self, *, force: bool = False) -> AccountInfo:
+        """Validate a session now; Chromium requires explicit allow_browser=True."""
+        from inspire.platform.web import browser_api
+        from inspire.platform.web.session.models import WebSession
+        from .exceptions import AuthenticationError
+
+        transport = self._transport
+        with transport.scope(timeout=self.operation_timeout):
+            if transport._session is None:
+                cached = WebSession.load(allow_expired=True, account=self.account)
+                try:
+                    transport._adopt_session(cached)
+                except AuthenticationError:
+                    pass
+            if force or transport._session is None or not transport._session.is_valid():
+                transport._refresh()
+            user = browser_api.get_current_user(session=transport.session, refresh=True)
+            return AccountInfo(
+                self.account,
+                self._config.username,
+                self.base_url,
+                str(user.get("id") or user.get("user_id") or ""),
+                str(user.get("name") or user.get("user_name") or ""),
+            )
+
+    def init(self, *, force: bool = False) -> InitResult:
+        """Login and persist account config. Force rebuilds from the template.
+
+        Interactive prompts, Playwright installation and ssh-keygen are CLI-only.
+        Ordinary init preserves all other keys, including legacy and unknown sections.
+        Force drops those sections, like inspire init --force.
+        """
+        from inspire.platform.web.session import DEFAULT_WORKSPACE_ID
+        from inspire.services.account_config import (
+            ACCOUNT_CONFIG_TEMPLATE,
+            sanitize_account_config,
+            toml_dumps,
+            atomic_write_text,
+        )
+
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+            import tomli as tomllib
+
+        with self._transport.scope(timeout=self.operation_timeout):
+            self.login(force=force)
+            session = self._transport.session
+            workspace_id = str(session.workspace_id or "").strip()
+            if not workspace_id or workspace_id == DEFAULT_WORKSPACE_ID:
+                raise ValidationError(
+                    "Could not detect an accessible workspace from the authenticated session. "
+                    "Re-run `inspire init` with an account that can see at least one workspace."
+                )
+            path = Accounts.config_path(self.account)
+            before = path.read_text(encoding="utf-8") if path.exists() else None
+            existing = tomllib.loads(before) if before is not None else {}
+            data = (
+                sanitize_account_config(tomllib.loads(ACCOUNT_CONFIG_TEMPLATE))
+                if force
+                else deepcopy(existing)
+            )
+            auth = data.setdefault("auth", {})
+            if not auth.get("username") or auth.get("username") == "your_username":
+                auth["username"] = session.login_username or self._config.username
+            if not auth.get("password") and self._config.password:
+                auth["password"] = self._config.password
+            api = data.setdefault("api", {})
+            if force or not api.get("base_url") or api.get("base_url") == "https://api.example.com":
+                api["base_url"] = self.base_url
+            changed = data != existing
+            if changed:
+                atomic_write_text(path, toml_dumps(data))
+            return InitResult(path, changed)
 
     @property
     def account(self) -> str:
