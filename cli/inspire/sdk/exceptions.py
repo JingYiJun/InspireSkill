@@ -83,3 +83,15 @@ class NotebookFailedError(InspireError):
     def __init__(self, notebook: Notebook):
         super().__init__(f"Notebook reached terminal state {notebook.status}.")
         self.notebook = notebook
+
+
+class HPCJobFailedError(InspireError):
+    def __init__(self, job):
+        super().__init__(f"HPC job reached terminal state {job.status}.")
+        self.job = job
+
+
+class RayJobFailedError(InspireError):
+    def __init__(self, job):
+        super().__init__(f"Ray job reached terminal state {job.status}.")
+        self.job = job

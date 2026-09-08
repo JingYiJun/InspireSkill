@@ -247,6 +247,91 @@ client.notebooks.wait(handle.ref, target="STOPPED", raise_on_failure=True)
 
 Notebook CLI-only：`ssh`、`shell`、`exec`、`scp`、`ssh-config`、`ssh-proxy`、`connection *`、`install-deps`、`proxy-url`、`batch`、`--post-start/--post-start-script`，以及 `metrics --plot/--open/--sparkline`。SDK 不承担本地连接配置、命令执行、文件同步、依赖安装或绘图；批处理由调用方循环或编排。
 
+## HPC / Ray 方法与 CLI 对应（Phase D）
+
+`client.hpc` 与 `client.ray` 覆盖两个工作负载的平台操作。名称选择需要 workspace，完整名称大小写不敏感，同名资源抛 `AmbiguousResourceError`。获得 `HPCJobRef` / `RayJobRef` 后可省略 workspace，引用支持 `to_dict()` / `from_dict()`，沿用账号、来源、类型和工作区校验。
+
+| CLI | SDK 方法 | 返回值 / 行为 |
+|---|---|---|
+| hpc / ray list | `list(workspace, status=None, keyword=None, limit=20, cursor=None)` | `Page[HPCJob]` / `Page[RayJob]`；当前账号任务，状态与关键词本地过滤，完整扫描最多 100 页 |
+| hpc / ray list 分页 | `iter(workspace, status=None, keyword=None, max_items=None)` | 按 Ref 去重的迭代器 |
+| hpc / ray status | `get(ref, workspace=None)` / `status(names, workspace=None)` | 单个任务 / 按输入顺序返回任务元组；任何一项失败抛出对应错误 |
+| hpc / ray create --dry-run | `plan(spec)` | `HPCJobPlan` / `RayJobPlan`；create_kwargs 是实际创建载荷，payload / to_dict() 是 CLI dry-run 对应的业务视图，summary 不含命令；不预留资源 |
+| hpc / ray create | `create(spec, operation_id=None)` | `HPCJobHandle` / `RayJobHandle`，包含 name、ref、operation_id；重新规划后单次发送 |
+| hpc / ray stop、delete | `stop(ref)` / `delete(ref)` | 每个操作单次发送，不增加终态预检 |
+| ray start | `client.ray.start(ref)` | 单次启动，后续状态由调用方查询 |
+| 等待任务完成 | `wait(ref, timeout=3600, poll_interval=10, raise_on_failure=False)` | 返回终态任务；超时抛 WaitTimeoutError，不停止远端任务 |
+| hpc events | `client.hpc.events(ref, reason=None, instance=None, workload_level=False, limit=100)` | EventResult；默认合并控制器和实例事件，折叠重复次数，附实例标签；HPC 没有 type 过滤 |
+| ray events | `client.ray.events(ref, type=None, reason=None, instance=None, workload_level=False, limit=100)` | EventResult；共享 CLI 最近事件窗口；type 精确匹配，reason 子串匹配 |
+| hpc / ray events --follow | `follow_events(ref, interval=5, **filters)` | 轮询并生成新增 EventResult；与 CLI 相同，终态后仍继续，由调用方关闭生成器 |
+| hpc / ray instances | `instances(ref)` | `tuple[HPCInstanceView, ...]` / `tuple[RayInstanceView, ...]`；HPC 含 handle/pod/role/label，Ray 含 handle/role/kind/label；标签与 CLI 的 Role / Type / Rank 一致 |
+| hpc / ray logs | `logs(ref, instance=None, window=None, start=None, end=None, tail=None, head=None, limit=None)` | LogResult，默认 100 条；包含 text/items/instances/start/end/truncated/total |
+| hpc / ray metrics | `metrics(ref, metric="core", window="1h", start=None, end=None, interval=None, group=None)` | `tuple[MetricGroup, ...]`，共享指标解析，默认间隔 1m；Ray 从 head/worker 详情递归解析计算组，group 可覆盖 |
+| hpc / ray quota | `quotas(workspace, group=None, include_empty=False, limit=20, cursor=None)` | Page[QuotaOption]；对应工作负载计算组，组名子串过滤或 ComputeGroupRef 精确选择 |
+| ray scaling | `client.ray.scaling(ref, group=None, limit=None)` | 按时间排序的公开历史字典元组；time/event/group/replicas_before/replicas_after；limit 取最近 N 项，None 返回平台本次完整结果 |
+
+两种计划均提供解析后的类型字段：`project: Resource[ProjectRef]`、`group: Resource[ComputeGroupRef]`、`quota: Quota`、`image: str`、`priority: int`，以及 `name`、`workspace`。HPC 的 `image` 为解析后的镜像仓库 URL，Ray 的 `image` 为解析后的 mirror ID。`summary` 包含项目、计算组、配额、镜像和优先级。
+
+- `HPCJobPlan` 另含 `instance_count: int`、`number_of_tasks: int`、`cpus_per_task: int`、`memory_per_cpu: int` 和 `datasets: tuple[DatasetMount, ...]`，表示解析后的 Slurm 布局与数据集挂载。
+- `RayJobPlan` 另含 `workers: tuple[dict[str, Any], ...]`（解析后的 worker 配置）及 `shm_gib: int | None`。`create_kwargs`、`payload` 和 `to_dict()` 保持原有语义。
+
+
+所有单任务方法均支持 `workspace=...`。events / logs 的 instance 接受单个标签或标签序列；workload_level 与 instance 互斥。`HPCJob` / `RayJob` 提供 name、ref、status、raw_status、project、created_at、finished_at 和 raw；`to_dict()` 返回 CLI status 的业务视图。
+
+状态词表分别位于 `services/hpc_status.py` / `services/ray_status.py`，CLI status 和列表过滤也使用它们。STOPPED 保留平台原义；SUCCEEDED、FAILED、STOPPED、CANCELLED、DELETED、ERROR 是等待终态，UNKNOWN 和未识别状态继续等待。`raise_on_failure=True` 在非 SUCCEEDED 终态抛 `HPCJobFailedError` / `RayJobFailedError`，`.job` 携带最终快照。
+
+创建载荷分别共享 `services/hpc_submission.py` 和 `services/ray_submission.py`。以下字段保留 CLI 默认值与验证：
+
+| 创建规格 | 字段 | 类型 / 默认值 |
+|---|---|---|
+| 两者 | name | 必填 str |
+| 两者 | workspace / project / group | 必填名称或对应 Ref；创建时使用完整组名 |
+| 两者 | quota | 必填 Quota / QuotaRef / `"gpu,cpu,mem"`，内存为 GiB |
+| 两者 | image | 必填名称 / URL / ImageRef / ImageSelector；HPC 解析为镜像 URL，Ray 解析为平台镜像 ID |
+| 两者 | image_type | SOURCE_PUBLIC / SOURCE_PRIVATE / SOURCE_OFFICIAL；HPC 默认 SOURCE_PRIVATE，Ray 默认 SOURCE_PUBLIC |
+| 两者 | priority | int / None，按工作区与项目策略解析 |
+| 两者 | public_path_readonly | bool / None；None 不发送，False 显式发送可写 |
+| HPCJobCreateSpec | entrypoint | 必填 str，Slurm 脚本正文；与 CLI 一样拒绝完整 shebang / SBATCH 脚本 |
+| HPCJobCreateSpec | instance_count / number_of_tasks | int，均默认 1 |
+| HPCJobCreateSpec | cpus_per_task / memory_per_cpu | int / None；按节点规格和每节点任务数推导，内存为每 CPU GiB；共享 Slurm 布局验证 |
+| HPCJobCreateSpec | enable_hyper_threading | bool，False |
+| HPCJobCreateSpec | max_time_hours / keep_after_finish_hours | 正小时数 / None；前者转换为 Slurm 时间字段，后者转换为容器保留秒数 |
+| HPCJobCreateSpec | datasets | list[str 或 DatasetMount]，默认空；共享数据集解析与挂载验证 |
+| HPCJobCreateSpec | description / enable_notification | str / None；bool，False |
+| RayJobCreateSpec | command | 必填 str，Ray driver 启动命令 |
+| RayJobCreateSpec | description / shm_gib | str，空字符串；正整数 GiB / None |
+| RayJobCreateSpec | workers | list[str]，默认空，但规划 / 创建要求至少一组；使用 CLI 的 --worker 语法 |
+
+Ray worker 格式为 `name=decode;image=镜像名;group=完整组名;quota=0,8,32;min=1;max=4;image-type=SOURCE_PRIVATE;shm-size=8`。前六项必填，image-type 默认 SOURCE_PUBLIC，shm-size 可省略；min/max 至少为 1 且 max 不小于 min，错误文本与 CLI 解析核心一致。
+
+```python
+from inspire import HPCJobCreateSpec, RayJobCreateSpec, Quota
+
+spec = HPCJobCreateSpec(
+    name="sdk-hpc", entrypoint="srun python preprocess.py",
+    workspace="工作区名称", project="项目名称", group="完整计算组名称",
+    quota=Quota(0, 8, 32), image="镜像名称", max_time_hours=2,
+)
+print(client.hpc.plan(spec).summary)
+handle = client.hpc.create(spec, operation_id="pipeline-stage-1")
+finished = client.hpc.wait(handle.ref, raise_on_failure=True)
+print(client.hpc.logs(handle.ref, tail=50).text)
+
+ray_spec = RayJobCreateSpec(
+    name="sdk-ray", command="python driver.py",
+    workspace="工作区名称", project="项目名称", group="完整计算组名称",
+    quota="0,8,32", image="镜像名称",
+    workers=["name=decode;image=镜像名称;group=完整计算组名称;quota=0,8,32;min=1;max=4"],
+)
+print(client.ray.plan(ray_spec).summary)
+```
+
+创建响应丢失、平台报错或未返回 ID 时，沿用单次发送合同抛 SubmissionUncertainError；不重新提交或隐式查询确认。其他写操作发送后失败抛 MutationUncertainError，异常链保留底层平台错误。operation_id 是诊断关联值，不是平台幂等键。
+
+HPC 默认日志窗口取实例创建 / 结束时间，Ray 取任务详情中的时间；显式 window 使用当前时间，start/end 接受成对 datetime。两个工作负载均将窗口限制为最近 30 天。tail/head 互斥，日志按共享排序与标签核心选择。HPC 平台接口截断尾部且忽略页码，因此 tail 或默认查询在 total 大于返回记录数时会扩大一次请求；head 不扩大。Ray 普通查询只在本次返回样本中选择 tail/head。SDK 不承诺全局最后 N 条或无损续读，不附加 CLI 的默认文本字符预算；记录未覆盖 total 时 truncated=True。
+
+HPC / Ray 的 shell、YAML batch 和 `metrics --plot/--open/--sparkline` 保留为 CLI 功能。真实平台创建及清理闭环仍属于 Phase F；Phase D 使用隔离账号配置与模拟平台请求验收。
+
 ## 日志、事件与指标
 
 ```python

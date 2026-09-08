@@ -1,6 +1,7 @@
 """Dataset mount parsing and resolution shared by CLI and SDK."""
 
 from __future__ import annotations
+from inspire.platform.web.browser_api.datasets import container_mount_path
 from typing import Any, Iterable, Optional, Sequence
 from inspire.platform.web.browser_api.datasets import (
     DatasetMount,
@@ -71,3 +72,19 @@ def resolve_dataset_info(
     if failed:
         raise DatasetSpecError(_describe_failures(failed))
     return [DatasetMount(dataset=v.dataset, version=v.version).as_payload(v.path) for v in verdicts]
+
+
+def dataset_mount_views(mounts: Sequence[DatasetMount]) -> list[dict[str, str]]:
+    """`--json` projection of the requested mounts.
+
+    Only the two names the caller typed and the container path they land on;
+    the storage path the platform resolved stays inside the request body.
+    """
+    return [
+        {
+            "name": m.dataset,
+            "version": m.version,
+            "path": container_mount_path(m.dataset, m.version),
+        }
+        for m in mounts
+    ]

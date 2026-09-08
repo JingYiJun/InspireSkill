@@ -16,9 +16,22 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        HPCJob as HPCJob,
+        HPCJobRef as HPCJobRef,
+        HPCJobCreateSpec as HPCJobCreateSpec,
+        HPCJobPlan as HPCJobPlan,
+        HPCJobHandle as HPCJobHandle,
+        RayJob as RayJob,
+        RayJobRef as RayJobRef,
+        RayJobCreateSpec as RayJobCreateSpec,
+        RayJobPlan as RayJobPlan,
+        RayJobHandle as RayJobHandle,
+        HPCInstanceView as HPCInstanceView,
+        RayInstanceView as RayInstanceView,
+        HPCJobFailedError as HPCJobFailedError,
+        RayJobFailedError as RayJobFailedError,
         NotebookImageSizeEstimate as NotebookImageSizeEstimate,
         NotebookResourceSnapshot as NotebookResourceSnapshot,
-
         Notebook as Notebook,
         NotebookRef as NotebookRef,
         NotebookCreateSpec as NotebookCreateSpec,
@@ -26,7 +39,6 @@ if TYPE_CHECKING:
         NotebookHandle as NotebookHandle,
         ImageSaveHandle as ImageSaveHandle,
         NotebookFailedError as NotebookFailedError,
-
         AccountInfo as AccountInfo,
         AccountCheck as AccountCheck,
         AccountContext as AccountContext,

@@ -51,6 +51,11 @@ class InspireClient:
         from .jobs import Jobs
 
         self.jobs = Jobs(self)
+        from .hpc import HPC
+        from .ray import Ray
+
+        self.hpc = HPC(self)
+        self.ray = Ray(self)
         from .notebooks import Notebooks
 
         self.notebooks = Notebooks(self)
@@ -79,11 +84,7 @@ class InspireClient:
         if (
             not isinstance(ref.key, str)
             or not ref.key
-            or (
-                workspace_id is not None
-                and ref.workspace_id
-                and ref.workspace_id != workspace_id
-            )
+            or (workspace_id is not None and ref.workspace_id and ref.workspace_id != workspace_id)
         ):
             raise ValidationError("Reference does not match the requested workspace.")
 

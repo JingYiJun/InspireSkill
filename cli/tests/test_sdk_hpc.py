@@ -1,0 +1,557 @@
+"""HPC SDK/CLI payload, transport, observation and identity contracts."""
+
+from __future__ import annotations
+from dataclasses import replace
+from importlib import import_module
+from types import SimpleNamespace
+import json
+
+import pytest
+import requests
+from click.testing import CliRunner
+from test_sdk import client as client
+from inspire import (
+    HPCJobCreateSpec,
+    HPCJobRef,
+    HPCJobFailedError,
+    RayJobCreateSpec,
+    RayJobRef,
+    RayJobFailedError,
+    Resource,
+    WorkspaceRef,
+    Quota,
+    ValidationError,
+    WaitTimeoutError,
+    SubmissionUncertainError,
+    MutationUncertainError,
+    AmbiguousResourceError,
+    ResolutionIncompleteError,
+)
+from inspire.platform.web import browser_api as api
+from inspire.platform.web.browser_api.projects import ProjectInfo
+from inspire.services.quotas import ResolvedQuota
+
+
+@pytest.fixture
+def catalog(client, monkeypatch):
+    ws = Resource(
+        "Workspace",
+        WorkspaceRef("Workspace", client.account, client.base_url, "ws-test", "ws-test"),
+    )
+    project = ProjectInfo("project-test", "Project", "ws-test", priority_name="10")
+    group = {"id": "group-test", "name": "Group", "support_job_type_list": '["hpc_job", "ray_job"]'}
+    price = {
+        "quota_id": "quota-test",
+        "gpu_count": 0,
+        "cpu_count": 8,
+        "memory_size_gib": 32,
+        "cpu_info": {"cpu_type": "cpu"},
+        "total_price_per_hour": 2,
+    }
+    resolved = ResolvedQuota("quota-test", "group-test", "Group", 0, 8, 32, "", price)
+    monkeypatch.setattr(client.workspaces, "get", lambda _: ws)
+    monkeypatch.setattr(api, "list_notebook_compute_groups", lambda **kw: [group])
+    monkeypatch.setattr(api, "get_resource_prices", lambda **kw: [price])
+    monkeypatch.setattr(api, "list_projects", lambda **kw: [project])
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.projects.list_projects", lambda **kw: [project]
+    )
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.workspaces.is_fair_scheduling_workspace", lambda *a: False
+    )
+    monkeypatch.setattr(
+        "inspire.services.image_resolution.resolve_image_url",
+        lambda value, **kw: "registry/image:v1",
+    )
+    monkeypatch.setattr(
+        "inspire.services.hpc_submission.resolve_image_url", lambda value, **kw: "registry/image:v1"
+    )
+    monkeypatch.setattr(
+        "inspire.services.ray_submission.resolve_image_id", lambda value, **kw: "image-test"
+    )
+    hpc = HPCJobCreateSpec(
+        "example", "srun echo hello", "Workspace", "Project", "Group", Quota(0, 8, 32), "Image"
+    )
+    ray = RayJobCreateSpec(
+        "example",
+        "echo hello",
+        "Workspace",
+        "Project",
+        "Group",
+        Quota(0, 8, 32),
+        "Image",
+        workers=[
+            "name=decode;image=Image;group=Group;quota=0,8,32;min=1;max=3;shm-size=8;image-type=SOURCE_PRIVATE"
+        ],
+    )
+    return SimpleNamespace(
+        ws=ws, project=project, group=group, price=price, resolved=resolved, hpc=hpc, ray=ray
+    )
+
+
+def check_cli_payload(kind, client, catalog, monkeypatch):
+    from inspire.cli.main import main
+    from inspire.cli.utils import quota_resolver
+    from inspire.services import datasets
+
+    cli = import_module(f"inspire.cli.commands.{kind}.{kind}_commands")
+    service = getattr(client, kind)
+    spec = catalog.hpc if kind == "hpc" else catalog.ray
+    if kind == "hpc":
+        spec = replace(
+            spec,
+            image_type="SOURCE_OFFICIAL",
+            instance_count=2,
+            priority=6,
+            number_of_tasks=4,
+            cpus_per_task=4,
+            memory_per_cpu=4,
+            enable_hyper_threading=True,
+            max_time_hours=25.5,
+            keep_after_finish_hours=0.5,
+            datasets=["dataset:v2"],
+            description="description",
+            enable_notification=True,
+            public_path_readonly=False,
+        )
+        extra = [
+            "--entrypoint",
+            spec.entrypoint,
+            "--instance-count",
+            "2",
+            "--number-of-tasks",
+            "4",
+            "--cpus-per-task",
+            "4",
+            "--memory-per-cpu",
+            "4",
+            "--enable-hyper-threading",
+            "--max-time",
+            "25.5",
+            "--keep-after-finish",
+            "0.5",
+            "--dataset",
+            "dataset:v2",
+            "--enable-notification",
+        ]
+        monkeypatch.setattr(cli, "resolve_image_url", lambda raw, **kw: "registry/image:v1")
+        data = [{"dataset_id": "data-test", "path": "storage/dataset", "version": "v2"}]
+        monkeypatch.setattr(datasets, "resolve_dataset_info", lambda *a, **kw: data)
+        monkeypatch.setattr(cli, "resolve_dataset_info", lambda *a, **kw: data)
+    else:
+        spec = replace(
+            spec,
+            image_type="SOURCE_OFFICIAL",
+            description="description",
+            priority=6,
+            shm_gib=16,
+            public_path_readonly=False,
+        )
+        extra = ["--command", spec.command, "--shm-size", "16", "--worker", spec.workers[0]]
+        monkeypatch.setattr(cli, "_resolve_image_id", lambda raw, **kw: "image-test")
+    monkeypatch.setattr(
+        cli.Config, "from_files_and_env", classmethod(lambda cls, **kw: (client._config, {}))
+    )
+    monkeypatch.setattr(cli, "get_web_session", lambda: client._transport._session)
+    monkeypatch.setattr(cli, "select_workspace_id", lambda **kw: catalog.ws.ref.key)
+    monkeypatch.setattr(cli, "workspace_label", lambda *a: catalog.ws.name)
+    monkeypatch.setattr(cli, "_project_label", lambda *a: catalog.project.name)
+    monkeypatch.setattr(cli, "_resolve_project_id", lambda *a, **kw: catalog.project.project_id)
+    if kind == "hpc":
+        monkeypatch.setattr(cli, "_resolve_project_info", lambda *a, **kw: catalog.project)
+    monkeypatch.setattr(quota_resolver, "resolve_quota", lambda **kw: catalog.resolved)
+    planned = service.plan(spec)
+    assert planned.project.name == "Project"
+    assert planned.project.ref.key == "project-test"
+    assert planned.group.name == "Group"
+    assert planned.group.ref.key == "group-test"
+    assert planned.quota == Quota(0, 8, 32)
+    assert planned.priority == 6
+    assert planned.image == ("registry/image:v1" if kind == "hpc" else "image-test")
+    for text in ("Project", "Group", str(planned.quota), planned.image, "priority=6"):
+        assert text in planned.summary
+    if kind == "hpc":
+        assert (planned.instance_count, planned.number_of_tasks,
+                planned.cpus_per_task, planned.memory_per_cpu) == (2, 4, 4, 4)
+        assert [(mount.dataset, mount.version) for mount in planned.datasets] == [("dataset", "v2")]
+    else:
+        assert planned.shm_gib == 16
+        assert planned.workers[0]["min"] == 1
+        assert planned.workers[0]["max"] == 3
+        assert planned.workers[0]["shm_size"] == 8
+
+    # Capture the exact body built by the CLI's shared core, in addition to JSON dry-run output.
+    captured = []
+    fn_name = "build_hpc_create_payload" if kind == "hpc" else "_assemble_create_body"
+    original = getattr(cli, fn_name)
+
+    def build(*a, **kw):
+        result = original(*a, **kw)
+        captured.append(result)
+        return result
+
+    monkeypatch.setattr(cli, fn_name, build)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            kind,
+            "create",
+            "--dry-run",
+            "--name",
+            "example",
+            "--workspace",
+            "Workspace",
+            "--project",
+            "Project",
+            "--group",
+            "Group",
+            "--quota",
+            "0,8,32",
+            "--image",
+            "Image",
+            "--image-type",
+            "SOURCE_OFFICIAL",
+            "--priority",
+            "6",
+            "--description",
+            "description",
+            "--no-public-path-readonly",
+            *extra,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == [planned.create_kwargs]
+    # JSON output deliberately scrubs platform paths; apply the same public rendering to SDK plan.
+    from inspire.cli.formatters.json_formatter import format_json
+
+    assert json.loads(result.output) == json.loads(format_json(planned.to_dict()))
+    assert (
+        spec.entrypoint not in planned.summary
+        if kind == "hpc"
+        else spec.command not in planned.summary
+    )
+
+
+def test_fully_populated_hpc_payload_equals_cli_dry_run(client, catalog, monkeypatch):
+    check_cli_payload("hpc", client, catalog, monkeypatch)
+
+
+def check_write(kind, action, outcome, client, catalog, monkeypatch):
+    service = getattr(client, kind)
+    ref_cls = HPCJobRef if kind == "hpc" else RayJobRef
+    ref = ref_cls("example", client.account, client.base_url, "job-test", "ws-test")
+    plan = service.plan(getattr(catalog, kind))
+    monkeypatch.setattr(service, "plan", lambda spec: plan)
+    calls = []
+
+    def once(method, path, *args, **kw):
+        calls.append((method, path, kw))
+        assert client._transport._write is not None
+        client._transport._write["sent"] = True
+        if outcome == "timeout":
+            raise requests.exceptions.ReadTimeout("lost response")
+        if outcome == "platform":
+            return {
+                "ResponseMetadata": {
+                    "Error": {"Code": "InvalidParameter", "Message": "平台原始错误"}
+                }
+            }
+        return {
+            "Result": {}
+            if outcome == "missing"
+            else {"job_id" if kind == "hpc" else "ray_job_id": "job-test"}
+        }
+
+    monkeypatch.setattr(client._transport, "_once", once)
+    monkeypatch.setattr(client._transport, "_refresh", lambda: pytest.fail("write refreshed"))
+    client._transport.allow_browser = True
+
+    def invoke():
+        if action == "create":
+            return service.create(getattr(catalog, kind), operation_id="caller/diagnostic")
+        return getattr(service, action)(ref)
+
+    if outcome != "ok":
+        error = SubmissionUncertainError if action == "create" else MutationUncertainError
+        with pytest.raises(error) as caught:
+            invoke()
+        if outcome == "platform":
+            assert "平台原始错误" in str(caught.value.__cause__)
+        if action == "create":
+            assert caught.value.operation_id == "caller/diagnostic"
+    else:
+        result = invoke()
+        if action == "create":
+            assert result.ref == ref
+    assert len(calls) == 1
+    assert calls[0][1].endswith(
+        "Action="
+        + ("CreateJobConsole" if kind == "hpc" and action == "create" else action.title() + "Job")
+    )
+
+
+@pytest.mark.parametrize("action", ["create", "stop", "delete"])
+@pytest.mark.parametrize("outcome", ["ok", "timeout", "platform"])
+def test_hpc_writes_single_dispatch(client, catalog, monkeypatch, action, outcome):
+    check_write("hpc", action, outcome, client, catalog, monkeypatch)
+
+
+def test_hpc_missing_create_identity_is_uncertain(client, catalog, monkeypatch):
+    check_write("hpc", "create", "missing", client, catalog, monkeypatch)
+
+
+def check_wait(kind, client, monkeypatch):
+    service = getattr(client, kind)
+    ref_cls, error_cls = (
+        (HPCJobRef, HPCJobFailedError) if kind == "hpc" else (RayJobRef, RayJobFailedError)
+    )
+    ref = ref_cls("example", client.account, client.base_url, "job-test", "ws-test")
+    api_mod = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    values = iter(["UNKNOWN", "pending", "RUNNING", "SUCCEEDED"])
+    monkeypatch.setattr(
+        api_mod,
+        f"get_{kind}_job_detail",
+        lambda *a, **kw: {"name": "example", "status": next(values)},
+    )
+    monkeypatch.setattr("inspire.sdk.compute_jobs.time.sleep", lambda _: None)
+    assert service.wait(ref, raise_on_failure=True).status == "SUCCEEDED"
+    for status in ("FAILED", "STOPPED", "CANCELLED", "ERROR", "DELETED"):
+        monkeypatch.setattr(api_mod, f"get_{kind}_job_detail", lambda *a, **kw: {"status": status})
+        assert service.wait(ref).status == status
+        with pytest.raises(error_cls) as caught:
+            service.wait(ref, raise_on_failure=True)
+        assert caught.value.job.ref == ref
+    monkeypatch.setattr(api_mod, f"get_{kind}_job_detail", lambda *a, **kw: {"status": "UNKNOWN"})
+    with pytest.raises(WaitTimeoutError):
+        service.wait(ref, timeout=0.005, poll_interval=0.001)
+    with pytest.raises(ValidationError):
+        service.wait(ref, poll_interval=0)
+
+
+def test_hpc_wait_vocabulary(client, monkeypatch):
+    check_wait("hpc", client, monkeypatch)
+
+
+def check_logs(kind, client, monkeypatch, head):
+    service = getattr(client, kind)
+    ref_cls = HPCJobRef if kind == "hpc" else RayJobRef
+    ref = ref_cls("example", client.account, client.base_url, "job-test", "ws-test")
+    api_mod = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    cli_log = import_module(f"inspire.cli.commands.{kind}.{kind}_logs")
+    cli_cmd = import_module(f"inspire.cli.commands.{kind}.{kind}_commands")
+    instances = [
+        {
+            "name": "namespace/pod",
+            "role": "launcher" if kind == "hpc" else "head",
+            "created_at": "1000000",
+            "finished_at": "2000000",
+        }
+    ]
+    monkeypatch.setattr(api, f"list_{kind}_job_instances", lambda *a, **kw: (instances, 1))
+    monkeypatch.setattr(
+        api_mod,
+        f"get_{kind}_job_detail",
+        lambda *a, **kw: {"created_at": "1000000", "finished_at": "2000000"},
+    )
+    rows = [{"pod_name": "pod", "timestamp_ms": i, "message": f"line {i}"} for i in (3, 1, 4, 2)]
+    calls = []
+
+    def fetch(**kw):
+        calls.append(kw)
+        return rows[: kw["page_size"]], len(rows)
+
+    monkeypatch.setattr(api_mod, f"list_{kind}_job_logs", fetch)
+    views = getattr(cli_cmd, f"{kind}_instance_views")(instances)
+    result = service.logs(
+        ref, instance=views[0].label, head=2 if head else None, tail=None if head else 2, limit=2
+    )
+    expected_range = (
+        cli_log._log_time_range(instances, None)
+        if kind == "hpc"
+        else cli_log._clamped_window({"created_at": "1000000", "finished_at": "2000000"}, None)
+    )
+    assert (calls[0]["start_timestamp_ms"], calls[0]["end_timestamp_ms"]) == expected_range[:2]
+    from inspire.services.job_logs import select_job_logs
+
+    fetched = rows if kind == "hpc" and not head else rows[:2]
+    expected = select_job_logs(
+        cli_log._labelled_logs(fetched, views),
+        total=4,
+        tail=None if head else 2,
+        head=2 if head else None,
+        record_limit=2,
+        all_output=False,
+    )
+    assert result.items == tuple(expected.logs)
+    assert [c["page_size"] for c in calls] == ([2, 4] if kind == "hpc" and not head else [2])
+    assert calls[0]["pod_names"] == ["namespace/pod"]
+    assert tuple(views) == service.instances(ref)
+    calls.clear()
+    service.logs(ref, window="100d")
+    assert calls[0]["end_timestamp_ms"] - calls[0]["start_timestamp_ms"] == 30 * 24 * 3600 * 1000
+    with pytest.raises(ValidationError):
+        service.logs(ref, head=1, tail=1)
+
+
+@pytest.mark.parametrize("head", [False, True])
+def test_hpc_logs_and_instances_match_cli(client, monkeypatch, head):
+    check_logs("hpc", client, monkeypatch, head)
+
+
+def check_discovery(kind, client, catalog, monkeypatch):
+    service = getattr(client, kind)
+    module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    info = module.HPCJobInfo if kind == "hpc" else module.RayJobInfo
+    key = "job_id" if kind == "hpc" else "ray_job_id"
+    rows = [
+        info.from_api_response(
+            {key: f"key{i}", "name": f"item{i}", "status": "RUNNING", "workspace_id": "ws-test"}
+        )
+        for i in range(105)
+    ]
+    monkeypatch.setattr(
+        module,
+        f"list_{kind}_jobs",
+        lambda **kw: (rows[(kw["page_num"] - 1) * 100 : kw["page_num"] * 100], len(rows)),
+    )
+    assert len(tuple(service.iter("Workspace"))) == 105
+    page = service.list("Workspace", keyword="item10", limit=2)
+    assert len(page.items) == 2 and page.next_cursor
+    assert len(service.list("Workspace", status="stopped").items) == 0
+    selected = service._resolve("ITEM100", "Workspace")
+    assert selected.key == "key100"
+    assert type(selected).from_dict(selected.to_dict()) == selected
+    monkeypatch.setattr(
+        module, f"get_{kind}_job_detail", lambda *a, **kw: {"name": "item100", "status": "FAILED"}
+    )
+    assert service.status([selected])[0].status == "FAILED"
+    rows[0].name = "item100"
+    with pytest.raises(AmbiguousResourceError):
+        service.get("item100", workspace="Workspace")
+    monkeypatch.setattr(module, f"list_{kind}_jobs", lambda **kw: (rows[:100], 201))
+    with pytest.raises(ResolutionIncompleteError):
+        service.list("Workspace")
+    assert service.quotas("Workspace").items[0].quota == Quota(0, 8, 32)
+
+
+def test_hpc_discovery_quota_and_identity(client, catalog, monkeypatch):
+    check_discovery("hpc", client, catalog, monkeypatch)
+
+
+def check_events_metrics(kind, client, monkeypatch):
+    service = getattr(client, kind)
+    ref_cls = HPCJobRef if kind == "hpc" else RayJobRef
+    ref = ref_cls("example", client.account, client.base_url, "key", "ws-test")
+    module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    instance_rows = [{"name": "ns/pod", "role": "worker", "instance_type": "worker"}]
+    monkeypatch.setattr(api, f"list_{kind}_job_instances", lambda *a, **kw: (instance_rows, 1))
+    job_events = [
+        {"reason": "Created", "type": "Normal", "object_type": "job", "last_timestamp": "1"}
+    ]
+    pod_events = [
+        {
+            "reason": "FailedScheduling",
+            "type": "Warning",
+            "object_type": "instance",
+            "object_id": "ns/pod",
+            "last_timestamp": "2",
+        }
+    ]
+    if kind == "hpc":
+        monkeypatch.setattr(module, "list_hpc_job_events", lambda *a, **kw: job_events.copy())
+        monkeypatch.setattr(module, "list_hpc_instance_events", lambda *a, **kw: pod_events.copy())
+    else:
+        monkeypatch.setattr(
+            api,
+            "list_ray_job_events",
+            lambda *a, **kw: pod_events.copy() if kw.get("pod_names") else job_events + pod_events,
+        )
+    result = service.events(ref, reason="sched", instance="worker")
+    assert len(result.items) == 1 and result.items[0]["instance"] == "worker"
+    assert [x["reason"] for x in service.events(ref, workload_level=True).items] == ["Created"]
+    assert service.events(ref, limit=1).truncated
+    if kind == "ray":
+        assert service.events(ref, type="warning").items[0]["reason"] == "FailedScheduling"
+    with pytest.raises(ValidationError):
+        service.events(ref, instance="worker", workload_level=True)
+    follow = service.follow_events(ref, interval=0.01)
+    assert len(next(follow).items) == 2
+    pod_events.append(
+        {
+            "reason": "Scheduled",
+            "object_type": "instance",
+            "object_id": "ns/pod",
+            "last_timestamp": "3",
+        }
+    )
+    assert [x["reason"] for x in next(follow).items] == ["Scheduled"]
+    follow.close()
+    calls = []
+
+    def metrics(**kw):
+        calls.append(kw)
+        return []
+
+    metrics_api = import_module("inspire.platform.web.browser_api.metrics")
+    monkeypatch.setattr(metrics_api, "get_resource_metrics_by_time", metrics)
+    monkeypatch.setattr(
+        module,
+        f"get_{kind}_job_detail",
+        lambda *a, **kw: (
+            {"logic_compute_group_id": "group-key"}
+            if kind == "hpc"
+            else {"head_node": {"logic_compute_group_id": "group-key"}}
+        ),
+    )
+    from datetime import datetime, timezone
+
+    assert (
+        service.metrics(
+            ref,
+            metric="cpu",
+            start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        == ()
+    )
+    assert calls[0]["logic_compute_group_id"] == "group-key"
+    assert calls[0]["task_type"] == metrics_api.TASK_TYPE_BY_RESOURCE[kind]
+    assert calls[0]["end_timestamp"] - calls[0]["start_timestamp"] == 86400
+
+
+def test_hpc_event_filters_follow_and_metrics(client, monkeypatch):
+    check_events_metrics("hpc", client, monkeypatch)
+
+
+def test_hpc_plan_failure_does_not_dispatch(client, catalog, monkeypatch):
+    monkeypatch.setattr(
+        client._transport, "_once", lambda *a, **kw: pytest.fail("invalid plan sent")
+    )
+    with pytest.raises(ValidationError, match="exceeds"):
+        client.hpc.create(replace(catalog.hpc, cpus_per_task=100))
+
+
+def test_hpc_read_error_keeps_platform_text(client, monkeypatch):
+    ref = HPCJobRef("example", client.account, client.base_url, "key", "ws-test")
+
+    def fail(*a, **kw):
+        raise ValueError("平台明文错误")
+
+    monkeypatch.setattr("inspire.platform.web.browser_api.hpc_jobs.get_hpc_job_detail", fail)
+    with pytest.raises(ValidationError, match="平台明文错误"):
+        client.hpc.get(ref)
+
+
+def test_hpc_spec_defaults_match_cli_options():
+    from dataclasses import fields
+    from inspire.cli.main import main as cli
+    from inspire import HPCJobCreateSpec
+
+    options = {option.name: option.default for option in cli.commands["hpc"].commands["create"].params}
+    defaults = {item.name: item.default for item in fields(HPCJobCreateSpec)}
+    for name in ['image_type', 'instance_count', 'number_of_tasks', 'enable_hyper_threading', 'enable_notification', 'priority', 'public_path_readonly', 'description']:
+        option_name = "shm_size" if name == "shm_gib" else name
+        assert (defaults[name] if defaults[name] is not None else "") == (
+            options[option_name] if options[option_name] is not None else ""
+        ), name

@@ -17,6 +17,7 @@ import click
 
 from inspire.services.datasets import (
     DatasetSpecError as DatasetSpecError,
+    dataset_mount_views as dataset_mount_views,
     parse_dataset_spec as parse_dataset_spec,
     parse_dataset_specs as parse_dataset_specs,
     resolve_dataset_info as resolve_dataset_info,
@@ -49,22 +50,8 @@ DATASET_OPTION_HELP = (
 
 def describe_dataset_mounts(mounts: Sequence[DatasetMount]) -> list[str]:
     """Human lines for dry-run and post-create output."""
-    return [f"{m.dataset}:{m.version} -> {container_mount_path(m.dataset, m.version)}" for m in mounts]
-
-
-def dataset_mount_views(mounts: Sequence[DatasetMount]) -> list[dict[str, str]]:
-    """`--json` projection of the requested mounts.
-
-    Only the two names the caller typed and the container path they land on;
-    the storage path the platform resolved stays inside the request body.
-    """
     return [
-        {
-            "name": m.dataset,
-            "version": m.version,
-            "path": container_mount_path(m.dataset, m.version),
-        }
-        for m in mounts
+        f"{m.dataset}:{m.version} -> {container_mount_path(m.dataset, m.version)}" for m in mounts
     ]
 
 

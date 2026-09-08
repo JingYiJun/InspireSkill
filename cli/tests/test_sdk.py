@@ -60,6 +60,12 @@ import inspire.services.notebooks
 import inspire.services.notebook_status
 import inspire.services.notebook_output
 import inspire.services.workload_quota
+for kind in ("hpc", "ray"):
+    for module in ("submission", "status", "instances", "logs", "events", "output"):
+        importlib.import_module(f"inspire.services.{kind}_{module}")
+import inspire.services.ray_scaling
+import inspire.services.image_resolution
+import inspire.services.task_priority
 assert not any(x.startswith(("playwright", "click")) for x in sys.modules)
 '''
     subprocess.run([sys.executable, "-c", script], check=True)

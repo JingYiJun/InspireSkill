@@ -1,5 +1,21 @@
 """Experimental synchronous SDK. CLI installation requirements are unchanged."""
 
+from .models_compute import (
+    HPCJob,
+    HPCJobRef,
+    HPCJobCreateSpec,
+    HPCJobPlan,
+    HPCJobHandle,
+    RayJob,
+    RayJobRef,
+    RayJobCreateSpec,
+    RayJobPlan,
+    RayJobHandle,
+)
+from inspire.services.hpc_instances import HPCInstanceView
+from inspire.services.ray_instances import RayInstanceView
+from .exceptions import HPCJobFailedError, RayJobFailedError
+
 from inspire.platform.web.browser_api.notebooks import (
     NotebookImageSizeEstimate,
     NotebookResourceSnapshot,
@@ -90,9 +106,22 @@ from .exceptions import (
 )
 
 __all__ = [
+    "HPCJob",
+    "HPCJobRef",
+    "HPCJobCreateSpec",
+    "HPCJobPlan",
+    "HPCJobHandle",
+    "RayJob",
+    "RayJobRef",
+    "RayJobCreateSpec",
+    "RayJobPlan",
+    "RayJobHandle",
+    "HPCInstanceView",
+    "RayInstanceView",
+    "HPCJobFailedError",
+    "RayJobFailedError",
     "NotebookImageSizeEstimate",
     "NotebookResourceSnapshot",
-
     "Notebook",
     "NotebookRef",
     "NotebookCreateSpec",
@@ -100,7 +129,6 @@ __all__ = [
     "NotebookHandle",
     "ImageSaveHandle",
     "NotebookFailedError",
-
     "AccountInfo",
     "AccountCheck",
     "AccountContext",
