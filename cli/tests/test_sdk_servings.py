@@ -469,3 +469,30 @@ def test_name_lookup_queries_only_keyword_results(client, catalog, monkeypatch):
     ))
     assert client.servings.get("service-199", workspace="Workspace").ref.key == "s199"
     assert len(calls) == 1 and calls[0]["keyword"] == "service-199"
+
+
+def test_serving_create_accepts_a_typed_model_reference(client, catalog, monkeypatch):
+    # A ModelRef spec must resolve through Models.get, whose workspace is keyword-only.
+    from inspire import ModelRef
+
+    from inspire.platform.web.browser_api.models import ModelInfo
+
+    monkeypatch.setattr(
+        api,
+        "list_models",
+        lambda **kw: (
+            [ModelInfo(model_id="model-test", name="Model", status="READY", latest_version="3")],
+            1,
+        ),
+    )
+    ref = ModelRef("Model", client.account, client.base_url, "model-test", "ws-test")
+    captured = []
+    monkeypatch.setattr(
+        api, "create_serving", lambda **kw: captured.append(kw) or {"id": "serving-test"}
+    )
+    plan = client.servings.plan(replace(catalog.serving, model=ref))
+    assert plan.model == "Model"
+    assert plan.model_version == 3
+    handle = client.servings.create(replace(catalog.serving, model=ref))
+    assert handle.ref.key == "serving-test"
+    assert captured[0]["model_id"] == "model-test"

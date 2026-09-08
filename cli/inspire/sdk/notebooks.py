@@ -27,7 +27,7 @@ from inspire.services.workload_quota import (
     ensure_priority_allowed,
     allowed_priority_levels_for,
 )
-from .resources import Service, operation, exact, positive
+from .resources import Service, operation, exact, positive, platform_page
 from .models import (
     Page,
     WorkspaceRef,
@@ -145,7 +145,7 @@ class Notebooks(Service):
                 user_ids=user_ids,
                 keyword=keyword or "",
                 status=[status.upper()] if status else None,
-                page=page,
+                page=platform_page(page, 100),
                 page_size=100,
                 session=self.session,
             )

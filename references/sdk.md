@@ -64,7 +64,7 @@ client.close()
 
 `Page` 提供 `items`、`next_cursor`、`total`，通过相同过滤条件与 `cursor=page.next_cursor` 继续。Jobs、Notebook、HPC、Ray、Serving 的列表采用服务端分页，按需取页直到收集到 `limit` 项或目录结束；游标记录平台行偏移，并绑定账号、门面及查询条件，不是平台快照。迭代器沿游标继续并对身份去重，`max_items` 控制产出数。Notebook、HPC、Ray、Serving 列表未应用本地过滤时，`total` 使用平台报告的总数；应用本地状态或关键词过滤时为 `None`，平台未提供可靠总数时也为 `None`。其他目录（包括 TensorBoard）仍可能先有界枚举再做本地分页。
 
-HPC、Ray、Serving 的请求页大小固定为 50、20、20，Notebook 为 100；不会按总数扩大请求。缺页、重复页或单次扫描超过 100 页时抛 `ResolutionIncompleteError`。Serving、Notebook、TensorBoard 名称解析先发送 `keyword` 再精确匹配；当前 HPC/Ray ListJobs 合同不支持关键词过滤，名称解析最多扫描 100 页，无法确认唯一性时抛 `ResolutionIncompleteError`，可使用已有类型化引用直接查询。
+HPC、Ray、Serving 的请求页大小固定为 50、20、20，Notebook 为 100；不会按总数扩大请求。平台列表接口只服务 `page_num × page_size ≤ 5000` 的请求（更深的页返回 `InvalidParameter`），因此任何列表或迭代最多能到达第 5000 行；SDK 在发出这类请求之前就抛 `ResolutionIncompleteError`，提示用 `status`/`keyword` 收窄或用 `max_items` 截止。缺页、重复页或单次扫描超过 100 页时同样抛 `ResolutionIncompleteError`。Serving、Notebook、TensorBoard 名称解析先发送 `keyword` 再精确匹配；当前 HPC/Ray ListJobs 合同不支持关键词过滤，名称解析最多扫描 100 页，无法确认唯一性时抛 `ResolutionIncompleteError`，可使用已有类型化引用直接查询。
 
 名称按完整名称消歧，多个候选抛 `AmbiguousResourceError`，候选引用在 `.candidates`。名称查询工作负载、计算组、镜像和模型时显式给 workspace；已有类型化 Ref 可省略。Ref 校验类型、账号、来源以及显式工作区；`.to_dict()` / `XRef.from_dict()` 可用于保存和恢复，不能跨账号套用。项目目录默认是全局范围；模型 list 和账号 permissions 支持 `workspace="all"`，resources 查询只接受单工作区。
 

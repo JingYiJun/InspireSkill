@@ -11,7 +11,7 @@ from typing import Any, Callable, Generic, Iterator, Protocol, Sequence, TypeVar
 from inspire.platform.web import browser_api
 from inspire.services.quotas import parse_quota
 from inspire.services.workload_quota import selected_groups, match_quota_rows, quota_values
-from .resources import Service, operation, exact, positive
+from .resources import Service, operation, exact, positive, platform_page
 from .models import (
     ResourceRef,
     Resource,
@@ -128,7 +128,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         rows, seen, previous = [], set(), None
         size = self._binding.list_page_size
         for page in range(1, 101):
-            items, total = self._fetch(ws, page, size, keyword=keyword)
+            items, total = self._fetch(ws, platform_page(page, size), size, keyword=keyword)
             jobs = [self._list_job(row, ws) for row in items]
             keys = tuple(job.ref.key for job in jobs)
             if keys and keys == previous:

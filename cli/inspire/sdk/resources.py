@@ -82,6 +82,20 @@ def exact(items, selector, ref_type, client, workspace_id=None):
     return matches[0]
 
 
+PLATFORM_MAX_ROWS = 5000
+"""Deepest row the platform list APIs serve: ``page_num * page_size`` must not exceed it."""
+
+
+def platform_page(page: int, page_size: int) -> int:
+    """Return ``page`` when the platform can serve it; raise before dispatching otherwise."""
+    if page * page_size > PLATFORM_MAX_ROWS:
+        raise ResolutionIncompleteError(
+            f"Platform lists at most {PLATFORM_MAX_ROWS} rows per query; "
+            "narrow with status/keyword or stop at max_items."
+        )
+    return page
+
+
 class Service:
     def __init__(self, client):
         self.client = client
@@ -222,7 +236,7 @@ class Service:
         rows, seen, previous = [], set(), None
         for _ in range(100):
             page_num, skip = divmod(offset, page_size)
-            items, total = fetch(page_num + 1, page_size)
+            items, total = fetch(platform_page(page_num + 1, page_size), page_size)
             values = [convert(item) for item in items]
             keys = tuple(item.ref.key for item in values)
             if keys and keys == previous:

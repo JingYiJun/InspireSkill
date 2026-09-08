@@ -232,7 +232,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
         user_id = self._current_user_id()
         if isinstance(spec.model, ModelRef):
-            model = self.client.models.get(spec.model, ws.ref)
+            model = self.client.models.get(spec.model, workspace=ws.ref)
             model_id, model_label = model.ref.key, model.name
             from inspire.services.models import version_number
 

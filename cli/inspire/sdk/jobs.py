@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import asdict
-from .resources import Service, operation, exact, positive
+from .resources import Service, operation, exact, positive, platform_page
 from .models import (
     Job,
     JobRef,
@@ -82,7 +82,7 @@ class Jobs(Service):
             items, total = list_jobs(
                 workspace_id=ws.ref.key,
                 keyword=keyword,
-                page_num=page,
+                page_num=platform_page(page, 100),
                 page_size=100,
                 session=self.session,
             )
@@ -139,7 +139,7 @@ class Jobs(Service):
             items, total = list_jobs(
                 workspace_id=ws.ref.key,
                 keyword=keyword,
-                page_num=page_num + 1,
+                page_num=platform_page(page_num + 1, 100),
                 page_size=100,
                 session=self.session,
             )

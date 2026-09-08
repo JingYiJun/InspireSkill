@@ -710,3 +710,37 @@ def test_workload_filtered_cursor_and_missing_page(client, catalog, monkeypatch,
     monkeypatch.setattr(module, f"list_{kind}_jobs", lambda **kw: ([], 200))
     with pytest.raises(ResolutionIncompleteError, match="omitted"):
         service.list("Workspace")
+
+
+def test_platform_page_guard_matches_platform_row_cap():
+    from inspire.sdk.resources import platform_page, PLATFORM_MAX_ROWS
+
+    assert PLATFORM_MAX_ROWS == 5000
+    assert platform_page(100, 50) == 100
+    assert platform_page(50, 100) == 50
+    for page, size in ((101, 50), (51, 100), (251, 20)):
+        with pytest.raises(ResolutionIncompleteError, match="5000 rows"):
+            platform_page(page, size)
+
+
+def test_hpc_iter_stops_before_platform_row_cap(client, catalog, monkeypatch):
+    # The platform rejects page_num * page_size > 5000 with InvalidParameter;
+    # the SDK refuses to dispatch that request and names the remedy instead.
+    module = import_module("inspire.platform.web.browser_api.hpc_jobs")
+    calls = []
+
+    def fetch(**kwargs):
+        page = kwargs["page_num"]
+        assert kwargs["page_size"] == 50
+        calls.append(page)
+        return [module.HPCJobInfo.from_api_response({"job_id": f"{page}-{i}", "name": f"n{page}-{i}"})
+                for i in range(50)], 89593
+
+    monkeypatch.setattr(module, "list_hpc_jobs", fetch)
+    seen = []
+    with pytest.raises(ResolutionIncompleteError, match="5000 rows"):
+        for job in client.hpc.iter("Workspace"):
+            seen.append(job)
+    assert len(seen) == 5000
+    assert calls == list(range(1, 101))
+    assert len(list(client.hpc.iter("Workspace", max_items=5000))) == 5000
