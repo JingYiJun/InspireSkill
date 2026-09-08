@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import builtins
-from typing import Any
+from typing import Any, Sequence
 from inspire.platform.web import browser_api
 from inspire.services import models as views
 from inspire.services.collections import bound_collection
@@ -45,14 +45,14 @@ class Models(Service):
                 user_id=user_id,
                 session=self.session,
             )
-            rows = self.collect_pages(
+            rows = self._collect_pages(
                 lambda **paging: browser_api.list_models(**paging, **kwargs), lambda x: x.model_id
             )
             items.extend(
                 (
                     ModelInfo.from_view(
                         views.model_list_view(x, workspace=ws.name),
-                        ref=self.ref(ModelRef, x.name, x.model_id, ws.ref.key),
+                        ref=self._make_ref(ModelRef, x.name, x.model_id, ws.ref.key),
                     ),
                     x,
                 )
@@ -70,13 +70,13 @@ class Models(Service):
     def list(
         self,
         workspace: str | WorkspaceRef,
+        *,
         project: str | ProjectRef | None = None,
         keyword: str | None = None,
-        *,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[ModelInfo]:
-        return self.page(
+        return self._page(
             [x[0] for x in self._all(workspace, project, keyword)],
             limit=limit,
             cursor=cursor,
@@ -86,34 +86,42 @@ class Models(Service):
     @operation
     def get(
         self,
-        name_or_ref: str | ModelRef,
-        workspace: str | WorkspaceRef,
+        ref: str | ModelRef,
+        *,
+        workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
     ) -> ModelInfo:
+        if workspace is None:
+            if not isinstance(ref, ModelRef):
+                raise ValidationError("workspace is required when selecting a model by name.")
+            self.client._validate_ref(ref, ModelRef)
+            workspace = WorkspaceRef("", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id)
         ws = self.client.workspaces.get(workspace)
         return exact(
             [x[0] for x in self._all(ws.ref, project)],
-            name_or_ref,
+            ref,
             ModelRef,
             self.client,
             ws.ref.key,
         )
 
     def _ref(self, selector, workspace, project):
-        ws = self.client.workspaces.get(workspace)
         if isinstance(selector, ModelRef):
-            self.client._validate_ref(selector, ModelRef, ws.ref.key)
+            ws_id = self.client.workspaces.get(workspace).ref.key if workspace is not None else None
+            self.client._validate_ref(selector, ModelRef, ws_id)
             return selector
-        return self.get(selector, ws.ref, project).ref
+        return self.get(selector, workspace=workspace, project=project).ref
 
     @operation
     def status(
-        self,
-        name_or_ref: str | ModelRef,
-        workspace: str | WorkspaceRef,
+        self, refs: Sequence[str | ModelRef], *, workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
-    ) -> ModelStatus:
-        ref = self._ref(name_or_ref, workspace, project)
+    ) -> tuple[ModelStatus, ...]:
+        """Return detailed model status for each reference, in input order."""
+        return tuple(self._status(ref, workspace, project) for ref in refs)
+
+    def _status(self, selector, workspace, project):
+        ref = self._ref(selector, workspace, project)
         kwargs = dict(session=self.session, workspace_id=ref.workspace_id)
         data = browser_api.get_model_detail(ref.key, **kwargs)
         records = browser_api.list_model_version_records(ref.key, **kwargs)
@@ -141,16 +149,17 @@ class Models(Service):
     @operation
     def versions(
         self,
-        name_or_ref: str | ModelRef,
-        workspace: str | WorkspaceRef,
+        ref: str | ModelRef,
+        *,
+        workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
     ) -> tuple[ModelVersion, ...]:
-        ref = self._ref(name_or_ref, workspace, project)
+        resolved = self._ref(ref, workspace, project)
         records = browser_api.list_model_version_records(
-            ref.key, session=self.session, workspace_id=ref.workspace_id
+            resolved.key, session=self.session, workspace_id=resolved.workspace_id
         )
         compatibility = browser_api.get_model_vllm_compatibility(
-            ref.key, session=self.session, workspace_id=ref.workspace_id
+            resolved.key, session=self.session, workspace_id=resolved.workspace_id
         )
         return tuple(
             ModelVersion.from_view(x)
@@ -160,12 +169,13 @@ class Models(Service):
     @operation
     def deploy_config(
         self,
-        name_or_ref: str | ModelRef,
-        workspace: str | WorkspaceRef,
+        ref: str | ModelRef,
+        *,
+        workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
         version: int | None = None,
     ) -> ModelDeployConfig:
-        model = self.get(name_or_ref, workspace, project)
+        model = self.get(ref, workspace=workspace, project=project)
         if version is None:
             version = views.version_number(model.version)
         if version is None:
@@ -178,9 +188,15 @@ class Models(Service):
 
     @operation
     def register(
-        self, name: str, source_path: str, workspace: str | WorkspaceRef,
-        project: str | ProjectRef, type: str | builtins.list[str] | None = None,
-        tag: str | builtins.list[str] | None = None, description: str | None = None, *,
+        self,
+        name: str,
+        *,
+        source_path: str,
+        workspace: str | WorkspaceRef,
+        project: str | ProjectRef,
+        type: str | builtins.list[str] | None = None,
+        tag: str | builtins.list[str] | None = None,
+        description: str | None = None,
         operation_id: str | None = None,
     ) -> ModelRegisterHandle:
         from uuid import uuid4
@@ -208,11 +224,15 @@ class Models(Service):
         key = created_model_id(result)
         if not key:
             raise SubmissionUncertainError(identifier)
-        return ModelRegisterHandle(name, self.ref(ModelRef, name, key, ws.ref.key), identifier)
+        return ModelRegisterHandle(name, self._make_ref(ModelRef, name, key, ws.ref.key), identifier)
 
     @operation
     def delete(
-        self, ref: str | ModelRef, force: bool = False, *, workspace: str | WorkspaceRef | None = None,
+        self,
+        ref: str | ModelRef,
+        *,
+        force: bool = False,
+        workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
     ) -> None:
         from inspire.services.model_writes import model_usage
@@ -220,19 +240,20 @@ class Models(Service):
         if isinstance(ref, ModelRef):
             ws = self.client.workspaces.get(workspace).ref.key if workspace is not None else None
             self.client._validate_ref(ref, ModelRef, ws)
+            resolved = ref
         else:
             if workspace is None:
                 raise ValidationError("workspace is required when selecting a model by name.")
-            ref = self._ref(ref, workspace, project)
-        assert isinstance(ref, ModelRef)
+            resolved = self._ref(ref, workspace, project)
+        assert isinstance(resolved, ModelRef)
         session = self.session
         if not force:
             references, pending = model_usage(
-                ref.key, session=session, workspace_id=ref.workspace_id
+                resolved.key, session=session, workspace_id=resolved.workspace_id
             )
             if references or pending:
                 from inspire.services.model_writes import in_use_message
 
-                raise ValidationError(in_use_message(ref.name, references, pending=pending))
+                raise ValidationError(in_use_message(resolved.name, references, pending=pending))
         with self.client._transport.single_send():
-            browser_api.delete_model(ref.key, session=session, workspace_id=ref.workspace_id)
+            browser_api.delete_model(resolved.key, session=session, workspace_id=resolved.workspace_id)

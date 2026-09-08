@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import time
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 from inspire.services import tensorboards as core
 from inspire.services import tensorboard_data as data_core
@@ -11,7 +11,7 @@ from inspire.platform.web.browser_api.tensorboards import tensorboard_app_url
 from .resources import Service, operation, exact
 from .models import ComputeGroupRef, JobRef, Resource, WorkspaceRef, Page
 from .models_serving import Tensorboard, TensorboardRef, TensorboardCreateSpec, TensorboardHandle
-from .exceptions import ValidationError, SubmissionUncertainError
+from .exceptions import ValidationError, SubmissionUncertainError, TensorboardFailedError
 from .compute_jobs import duration
 
 
@@ -19,7 +19,7 @@ class Tensorboards(Service):
     def _board(self, row, workspace_id):
         return Tensorboard(
             row.name,
-            self.ref(TensorboardRef, row.name, row.tb_id, workspace_id),
+            self._make_ref(TensorboardRef, row.name, row.tb_id, workspace_id),
             row.status,
             row.summary_path,
             row.url,
@@ -33,7 +33,7 @@ class Tensorboards(Service):
         )
 
     def _all(self, ws, status=None, keyword=None):
-        rows = self.collect_pages(
+        rows = self._collect_pages(
             lambda page, page_size: api.list_tensorboards(
                 workspace_id=ws.ref.key,
                 status=status,
@@ -48,9 +48,14 @@ class Tensorboards(Service):
 
     @operation
     def list(
-        self, workspace: str | WorkspaceRef, status: str | None = None,
-        job: str | JobRef | None = None, *, keyword: str | None = None,
-        limit: int = 20, cursor: str | None = None,
+        self,
+        workspace: str | WorkspaceRef,
+        *,
+        status: str | None = None,
+        job: str | JobRef | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> Page[Tensorboard]:
         ws = self.client.workspaces.get(workspace)
         rows = self._all(ws, status, keyword)
@@ -67,7 +72,7 @@ class Tensorboards(Service):
                     else row.job.casefold() == job_name.casefold()
                 )
             ]
-        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, job, keyword))
+        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, job, keyword))
 
     def _resolve(self, ref, workspace=None):
         if isinstance(ref, TensorboardRef):
@@ -88,13 +93,17 @@ class Tensorboards(Service):
 
     @operation
     def status(
-        self, ref: str | TensorboardRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> Tensorboard:
-        return self.get(ref, workspace=workspace)
+        self, refs: Sequence[str | TensorboardRef], *, workspace: str | WorkspaceRef | None = None
+    ) -> tuple[Tensorboard, ...]:
+        """Return one current snapshot per reference, in input order."""
+        return tuple(self.get(ref, workspace=workspace) for ref in refs)
 
     @operation
     def create(
-        self, spec: TensorboardCreateSpec, operation_id: str | None = None
+        self,
+        spec: TensorboardCreateSpec,
+        *,
+        operation_id: str | None = None,
     ) -> TensorboardHandle:
         identifier = uuid4().hex if operation_id is None else operation_id
         if not isinstance(identifier, str) or not identifier:
@@ -109,7 +118,7 @@ class Tensorboards(Service):
             resources = [
                 Resource(
                     str(row.get("name") or ""),
-                    self.ref(
+                    self._make_ref(
                         ComputeGroupRef,
                         str(row.get("name") or ""),
                         str(row.get("logic_compute_group_id") or row.get("id") or ""),
@@ -133,7 +142,7 @@ class Tensorboards(Service):
             )
             job_id = exact(
                 [
-                    Resource(row["name"], self.ref(JobRef, row["name"], row["id"], ws.ref.key))
+                    Resource(row["name"], self._make_ref(JobRef, row["name"], row["id"], ws.ref.key))
                     for row in candidates
                 ],
                 spec.job,
@@ -161,7 +170,7 @@ class Tensorboards(Service):
         if board is None or not board.tb_id:
             raise SubmissionUncertainError(identifier)
         return TensorboardHandle(
-            board.name, self.ref(TensorboardRef, board.name, board.tb_id, ws.ref.key), identifier
+            board.name, self._make_ref(TensorboardRef, board.name, board.tb_id, ws.ref.key), identifier
         )
 
     def _mutate(self, ref, action, workspace):
@@ -189,8 +198,14 @@ class Tensorboards(Service):
         self._mutate(ref, api.delete_tensorboard, workspace)
 
     def wait(
-        self, ref: str | TensorboardRef, target: str, timeout: float = 60, poll_interval: float = 3,
-        *, workspace: str | WorkspaceRef | None = None,
+        self,
+        ref: str | TensorboardRef,
+        *,
+        target: str = "running",
+        raise_on_failure: bool = False,
+        timeout: float = 60,
+        poll_interval: float = 3,
+        workspace: str | WorkspaceRef | None = None,
     ) -> Tensorboard:
         duration(timeout)
         duration(poll_interval)
@@ -201,6 +216,10 @@ class Tensorboards(Service):
                 self.client._transport.remaining()
                 board = self.get(resolved)
                 if board.status == target:
+                    return board
+                if board.status in {"failed", "error", "deleted"}:
+                    if raise_on_failure:
+                        raise TensorboardFailedError(board)
                     return board
 
                 time.sleep(min(poll_interval, self.client._transport.remaining()))
@@ -227,8 +246,13 @@ class Tensorboards(Service):
 
     @operation
     def scalars(
-        self, ref: str | TensorboardRef, tag: str = "", run: str | None = None,
-        points: int | None = None, *, workspace: str | WorkspaceRef | None = None,
+        self,
+        ref: str | TensorboardRef,
+        *,
+        tag: str = "",
+        run: str | None = None,
+        points: int | None = None,
+        workspace: str | WorkspaceRef | None = None,
     ) -> dict[str, Any]:
         if points is not None and (not isinstance(points, int) or points < 0):
             raise ValidationError("points must be a non-negative integer.")

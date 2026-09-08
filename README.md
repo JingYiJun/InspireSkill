@@ -382,4 +382,4 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 ### Python SDK（实验性）
 
-在自己的 Python 项目中可使用 `from inspire import InspireClient`，复用同一包的账号配置和训练任务能力。现有 CLI 安装依赖及默认行为保持不变；首版面向本机/控制节点，参见 [SDK 接入与运行合同](references/sdk.md)。
+实验性同步入口 `from inspire import InspireClient` 覆盖全部平台侧 CLI 命令组，复用同一包的账号与共享服务。Client 提供 `workspaces`、`projects`、`compute_groups`、`images`、`datasets`、`models`、`resources`、`account_info`、`api_keys`、`jobs`、`notebooks`、`hpc`、`ray`、`servings`、`tensorboards`。本地配置、连接工具和终端渲染仍由 CLI 提供；参见 [Python SDK 指南](references/sdk.md)。

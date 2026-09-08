@@ -181,7 +181,7 @@ def test_single_dispatch(client, catalog, monkeypatch, action, outcome):
         if action == "create":
             return client.servings.create(catalog.serving, operation_id="diagnostic")
         return getattr(client.servings, action)(
-            ref, *([2] if action in ("scale", "rollback") else [])
+            ref, **({"replicas": 2} if action == "scale" else {"version": 2} if action == "rollback" else {})
         )
 
     if outcome == "ok":
@@ -310,7 +310,7 @@ def test_scale_zero_and_quota_priority(client, catalog, monkeypatch):
     ref = ServingRef("example", client.account, client.base_url, "s1", "ws-test")
     calls = []
     monkeypatch.setattr(api, "scale_serving", lambda *a, **kw: calls.append(kw))
-    client.servings.scale(ref, 0)
+    client.servings.scale(ref, replicas=0)
     assert calls[0]["replica"] == 0
     monkeypatch.setattr(api, "get_quota_priority_levels", lambda **kw: {"quota-test": ("low",)})
     with pytest.raises(ValidationError, match="published as LOW-priority only"):
@@ -389,3 +389,24 @@ def test_binding_adapts_serving_paging(client, monkeypatch):
         workspace_id="ws-test", page_num=2, page_size=50, session=None
     ) == ([], 0)
     assert calls == [dict(workspace_id="ws-test", page=2, page_size=50, session=None)]
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_list_expands_first_page_once(client, catalog, monkeypatch, incomplete):
+    from inspire import ResolutionIncompleteError
+
+    rows = [ServingInfo(f"s{i}", f"service-{i}", "running") for i in range(35)]
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append((kwargs["page"], kwargs["page_size"]))
+        count = min(kwargs["page_size"], 20) if incomplete else kwargs["page_size"]
+        return rows[:count], len(rows)
+
+    monkeypatch.setattr(api, "list_servings", fetch)
+    if incomplete:
+        with pytest.raises(ResolutionIncompleteError):
+            client.servings.list("Workspace", limit=50)
+    else:
+        assert len(client.servings.list("Workspace", limit=50).items) == 35
+    assert calls == [(1, 20), (1, 35)]

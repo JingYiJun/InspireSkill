@@ -84,7 +84,7 @@ class Service:
     def session(self):
         return self.client._transport.session
 
-    def ref(self, cls, name, key, workspace_id=""):
+    def _make_ref(self, cls, name, key, workspace_id=""):
         if not key:
             raise ResolutionIncompleteError("Platform omitted a resource identity.")
         return cls(
@@ -95,7 +95,7 @@ class Service:
             workspace_id=workspace_id,
         )
 
-    def cursor_offset(self, cursor, query):
+    def _cursor_offset(self, cursor, query):
         query = json.loads(
             json.dumps(
                 [self.client.account, self.client.base_url, type(self).__name__, query],
@@ -117,33 +117,38 @@ class Service:
                 raise ValidationError("Cursor does not match this query and account.") from None
         return offset, query
 
-    def encode_cursor(self, offset, query):
+    def _encode_cursor(self, offset, query):
         return base64.urlsafe_b64encode(
             json.dumps({"query": query, "offset": offset}).encode()
         ).decode()
 
-    def page(self, items, *, limit=20, cursor=None, query=()):
+    def _page(self, items, *, limit=20, cursor=None, query=()):
         positive(limit)
-        offset, query = self.cursor_offset(cursor, query)
+        offset, query = self._cursor_offset(cursor, query)
         end = offset + limit
-        next_cursor = self.encode_cursor(end, query) if end < len(items) else None
+        next_cursor = self._encode_cursor(end, query) if end < len(items) else None
         return Page(tuple(items[offset:end]), next_cursor, len(items))
 
-    def collect_pages(self, fetch, identity):
+    def _collect_pages(self, fetch, identity, *, page_size=100, expand_list=False):
         """Enumerate before local paging or exact selection; never hide a partial catalog."""
         items = []
         seen = set()
         for page in range(1, 101):
-            rows, total = fetch(page=page, page_size=100)
+            rows, total = fetch(page=page, page_size=page_size)
+            if expand_list and total > len(rows):
+                rows, expanded_total = fetch(page=1, page_size=max(total, len(rows), 1))
+                total = max(total, expanded_total, len(rows))
             for row in rows:
                 key = identity(row)
+                if not key:
+                    raise ResolutionIncompleteError("Platform omitted a resource identity.")
                 if key in seen:
                     continue
                 seen.add(key)
                 items.append(row)
             if len(items) >= total:
                 return items
-            if not rows:
+            if expand_list or not rows:
                 break
         raise ResolutionIncompleteError("Resource catalog enumeration is incomplete.")
 
@@ -154,16 +159,16 @@ class Workspaces(Service):
 
         rows = try_enumerate_workspaces(self.session, base_url=self.client.base_url)
         return [
-            Resource(x["name"], self.ref(WorkspaceRef, x["name"], x["id"], x["id"])) for x in rows
+            Resource(x["name"], self._make_ref(WorkspaceRef, x["name"], x["id"], x["id"])) for x in rows
         ]
 
     @operation
     def list(self, *, limit: int = 20, cursor: str | None = None) -> Page[Resource[WorkspaceRef]]:
-        return self.page(self._all(), limit=limit, cursor=cursor)
+        return self._page(self._all(), limit=limit, cursor=cursor)
 
     @operation
-    def get(self, selector: str | WorkspaceRef) -> Resource[WorkspaceRef]:
-        return exact(self._all(), selector, WorkspaceRef, self.client)
+    def get(self, ref: str | WorkspaceRef) -> Resource[WorkspaceRef]:
+        return exact(self._all(), ref, WorkspaceRef, self.client)
 
 
 class Projects(Service):
@@ -181,7 +186,7 @@ class Projects(Service):
             (
                 ProjectInfo.from_view(
                     project_to_dict(x),
-                    ref=self.ref(ProjectRef, x.name, x.project_id, ws.ref.key if ws else ""),
+                    ref=self._make_ref(ProjectRef, x.name, x.project_id, ws.ref.key if ws else ""),
                 ),
                 x,
             )
@@ -197,7 +202,7 @@ class Projects(Service):
         cursor: str | None = None,
     ) -> Page[ProjectInfo]:
         ws = self.client.workspaces.get(workspace) if workspace is not None else None
-        return self.page(
+        return self._page(
             [x[0] for x in self._all(ws)],
             limit=limit,
             cursor=cursor,
@@ -206,12 +211,12 @@ class Projects(Service):
 
     @operation
     def get(
-        self, selector: str | ProjectRef, *, workspace: str | WorkspaceRef | None = None
+        self, ref: str | ProjectRef, *, workspace: str | WorkspaceRef | None = None
     ) -> ProjectInfo:
         ws = self.client.workspaces.get(workspace) if workspace is not None else None
         return exact(
             [x[0] for x in self._all(ws)],
-            selector,
+            ref,
             ProjectRef,
             self.client,
             ws.ref.key if ws else None,
@@ -219,17 +224,19 @@ class Projects(Service):
 
     @operation
     def detail(
-        self, name_or_ref: str | ProjectRef, workspace: str | WorkspaceRef | None = None
+        self,
+        ref: str | ProjectRef,
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> ProjectDetail:
         from inspire.platform.web import browser_api
         from inspire.services.projects import project_detail_view
 
-        if isinstance(name_or_ref, ProjectRef):
+        if isinstance(ref, ProjectRef):
             ws = self.client.workspaces.get(workspace) if workspace is not None else None
-            self.client._validate_ref(name_or_ref, ProjectRef, ws.ref.key if ws else None)
-            ref = name_or_ref
+            self.client._validate_ref(ref, ProjectRef, ws.ref.key if ws else None)
         else:
-            ref = self.get(name_or_ref, workspace=workspace).ref
+            ref = self.get(ref, workspace=workspace).ref
         data = browser_api.get_project_detail(ref.key, session=self.session)
         try:
             usage = browser_api.get_project_budget_usage(ref.key, session=self.session)
@@ -246,7 +253,7 @@ class Projects(Service):
         return tuple(
             ProjectOwner.from_view(
                 view,
-                ref=self.ref(ProjectOwnerRef, view["name"], row.get("id") or row.get("user_id"))
+                ref=self._make_ref(ProjectOwnerRef, view["name"], row.get("id") or row.get("user_id"))
                 if row.get("id") or row.get("user_id")
                 else None,
             )
@@ -264,7 +271,7 @@ class ComputeGroups(Service):
             (
                 Resource(
                     str(x.get("name") or x.get("logic_compute_group_name") or ""),
-                    self.ref(
+                    self._make_ref(
                         ComputeGroupRef,
                         str(x.get("name") or x.get("logic_compute_group_name") or ""),
                         x.get("id") or x.get("logic_compute_group_id"),
@@ -278,20 +285,29 @@ class ComputeGroups(Service):
 
     @operation
     def list(
-        self, *, workspace: str | WorkspaceRef, limit: int = 20, cursor: str | None = None
+        self,
+        workspace: str | WorkspaceRef,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> Page[Resource[ComputeGroupRef]]:
         ws = self.client.workspaces.get(workspace)
-        return self.page(
+        return self._page(
             [x[0] for x in self._all(ws)], limit=limit, cursor=cursor, query=(ws.ref.key,)
         )
 
     @operation
     def get(
-        self, selector: str | ComputeGroupRef, *, workspace: str | WorkspaceRef
+        self, ref: str | ComputeGroupRef, *, workspace: str | WorkspaceRef | None = None
     ) -> Resource[ComputeGroupRef]:
+        if workspace is None:
+            if not isinstance(ref, ComputeGroupRef):
+                raise ValidationError("workspace is required when selecting by name.")
+            self.client._validate_ref(ref, ComputeGroupRef)
+            workspace = WorkspaceRef("", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id)
         ws = self.client.workspaces.get(workspace)
         return exact(
-            [x[0] for x in self._all(ws)], selector, ComputeGroupRef, self.client, ws.ref.key
+            [x[0] for x in self._all(ws)], ref, ComputeGroupRef, self.client, ws.ref.key
         )
 
 
@@ -321,7 +337,7 @@ class Images(Service):
         return [
             Image(
                 images.image_label(x),
-                self.ref(ImageRef, images.image_label(x), x.image_id, ws.ref.key),
+                self._make_ref(ImageRef, images.image_label(x), x.image_id, ws.ref.key),
                 images.image_visibility(x) or source or "",
                 x.url,
                 x.status,
@@ -336,14 +352,14 @@ class Images(Service):
     def list(
         self,
         workspace: str | WorkspaceRef,
+        *,
         source: str | None = None,
         keyword: str | None = None,
-        *,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[Image]:
         ws = self.client.workspaces.get(workspace)
-        return self.page(
+        return self._page(
             self._all(ws, source, keyword),
             limit=limit,
             cursor=cursor,
@@ -352,30 +368,33 @@ class Images(Service):
 
     @operation
     def get(
-        self, selector: str | ImageRef | ImageSelector, *, workspace: str | WorkspaceRef
+        self, ref: str | ImageRef | ImageSelector, *, workspace: str | WorkspaceRef | None = None
     ) -> Image:
+        if workspace is None:
+            if not isinstance(ref, ImageRef):
+                raise ValidationError("workspace is required when selecting by name.")
+            self.client._validate_ref(ref, ImageRef)
+            workspace = WorkspaceRef("", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id)
         ws = self.client.workspaces.get(workspace)
-        source = selector.source if isinstance(selector, ImageSelector) else None
-        name = selector.name if isinstance(selector, ImageSelector) else selector
+        source = ref.source if isinstance(ref, ImageSelector) else None
+        name = ref.name if isinstance(ref, ImageSelector) else ref
         return exact(
             self._all(ws, source, require_complete=True), name, ImageRef, self.client, ws.ref.key
         )
 
     @operation
     def detail(
-        self, name_or_ref: str | ImageRef | ImageSelector, workspace: str | WorkspaceRef
+        self,
+        ref: str | ImageRef | ImageSelector,
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> ImageDetail:
         from inspire.platform.web import browser_api
         from inspire.services.images import image_summary
 
-        ws = self.client.workspaces.get(workspace)
-        if isinstance(name_or_ref, ImageRef):
-            self.client._validate_ref(name_or_ref, ImageRef, ws.ref.key)
-            ref = name_or_ref
-        else:
-            ref = self.get(name_or_ref, workspace=ws.ref).ref
-        row = browser_api.get_image_detail(image_id=ref.key, session=self.session)
-        return ImageDetail.from_view(image_summary(row), ref=ref)
+        resolved = self._write_ref(ref, workspace)
+        row = browser_api.get_image_detail(image_id=resolved.key, session=self.session)
+        return ImageDetail.from_view(image_summary(row), ref=resolved)
 
     def _write_ref(self, ref, workspace=None):
         if isinstance(ref, ImageRef):
@@ -388,8 +407,13 @@ class Images(Service):
 
     @operation
     def register(
-        self, name: str, workspace: str | WorkspaceRef, version: str | None = None,
-        description: str | None = None, visibility: str | None = None, *,
+        self,
+        name: str,
+        *,
+        workspace: str | WorkspaceRef,
+        version: str | None = None,
+        description: str | None = None,
+        visibility: str | None = None,
         operation_id: str | None = None,
     ) -> ImageRegisterHandle:
         from uuid import uuid4
@@ -424,14 +448,18 @@ class Images(Service):
         label = f"{name}:{version or 'v1'}"
         return ImageRegisterHandle(
             label,
-            self.ref(ImageRef, label, key, ws.ref.key),
+            self._make_ref(ImageRef, label, key, ws.ref.key),
             identifier,
             data.get("address") or result.get("address") or "",
         )
 
     def wait_ready(
-        self, ref: str | ImageRef | ImageSelector, timeout: float = 600, poll_interval: float = 5,
-        *, workspace: str | WorkspaceRef | None = None,
+        self,
+        ref: str | ImageRef | ImageSelector,
+        *,
+        timeout: float = 600,
+        poll_interval: float = 5,
+        workspace: str | WorkspaceRef | None = None,
     ) -> CustomImageInfo:
         from inspire.platform.web import browser_api
         from .compute_jobs import duration
@@ -466,8 +494,11 @@ class Images(Service):
 
     @operation
     def set_visibility(
-        self, ref: str | ImageRef | ImageSelector, visibility: str, *,
-        workspace: str | WorkspaceRef | None = None
+        self,
+        ref: str | ImageRef | ImageSelector,
+        *,
+        visibility: str,
+        workspace: str | WorkspaceRef | None = None,
     ) -> None:
         from inspire.platform.web import browser_api
         from inspire.services.image_writes import parse_visibility_value

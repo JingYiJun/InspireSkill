@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 新增
+
+- **新增实验性同步 Python SDK。** `from inspire import InspireClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组，统一资源引用、分页、批量状态与关键字参数合同。CLI 与 SDK 共享创建、配额、状态、日志／事件／指标及业务视图服务；写请求通过 `single_send` 单次分派，发送后不自动重试，结果不确定时返回专用异常。本地账号与配置、缓存、批处理、SSH／Shell／文件传输及终端渲染保持 CLI-only，原包依赖和默认安装行为不变。
+
 ## v7.1.8
 
 ### 新增

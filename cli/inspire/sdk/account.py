@@ -61,7 +61,7 @@ class AccountInformation(Service):
         return AccountCheck(True, identity, session.created_at, ())
 
     @operation
-    def context(self, limit: int | None = None) -> AccountContext:
+    def context(self, *, limit: int | None = None) -> AccountContext:
         data = account_context.collect_context(
             self.client._config, session=self.session, account=self.client.account
         )
@@ -91,18 +91,18 @@ class APIKeys(Service):
         return [
             APIKeyInfo.from_view(
                 {"name": key.name, "created_at": key.created_at},
-                ref=self.ref(APIKeyRef, key.name, key.key_id),
+                ref=self._make_ref(APIKeyRef, key.name, key.key_id),
             )
             for key in api_keys.list_api_keys(session=self.session)
         ]
 
     @operation
     def list(self, *, limit: int = 20, cursor: str | None = None) -> Page[APIKeyInfo]:
-        return self.page(self._all(), limit=limit, cursor=cursor)
+        return self._page(self._all(), limit=limit, cursor=cursor)
 
     @operation
-    def get(self, name_or_ref: str | APIKeyRef) -> APIKeyInfo:
-        return exact(self._all(), name_or_ref, APIKeyRef, self.client)
+    def get(self, ref: str | APIKeyRef) -> APIKeyInfo:
+        return exact(self._all(), ref, APIKeyRef, self.client)
 
     @operation
     def create(self, name: str) -> APIKeyInfo:
@@ -113,12 +113,12 @@ class APIKeys(Service):
         return APIKeyInfo.from_view({"name": name})
 
     @operation
-    def delete(self, name_or_ref: str | APIKeyRef) -> APIKeyInfo:
-        if isinstance(name_or_ref, APIKeyRef):
-            self.client._validate_ref(name_or_ref, APIKeyRef)
-            key = APIKeyInfo.from_view({"name": name_or_ref.name}, ref=name_or_ref)
+    def delete(self, ref: str | APIKeyRef) -> APIKeyInfo:
+        if isinstance(ref, APIKeyRef):
+            self.client._validate_ref(ref, APIKeyRef)
+            key = APIKeyInfo.from_view({"name": ref.name}, ref=ref)
         else:
-            key = self.get(name_or_ref)
+            key = self.get(ref)
         assert key.ref is not None
         session = self.session
         with self.client._transport.single_send():
@@ -126,12 +126,11 @@ class APIKeys(Service):
         return key
 
     @operation
-    def plaintext(self, name_or_ref: str | APIKeyRef) -> str:
-        if isinstance(name_or_ref, APIKeyRef):
-            self.client._validate_ref(name_or_ref, APIKeyRef)
-            ref = name_or_ref
+    def plaintext(self, ref: str | APIKeyRef) -> str:
+        if isinstance(ref, APIKeyRef):
+            self.client._validate_ref(ref, APIKeyRef)
         else:
-            key = self.get(name_or_ref)
+            key = self.get(ref)
             assert key.ref is not None
             ref = key.ref
         return api_keys.get_api_key_plaintext(ref.key, session=self.session)

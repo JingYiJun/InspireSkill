@@ -42,6 +42,8 @@ def metric_group(detail: object) -> str | None:
 
 class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
     _binding = WorkloadBinding[HPCInstanceView](
+        list_page_size=50,
+        expand_list=True,
         list_jobs=lambda **kwargs: api.list_hpc_jobs(**kwargs),
         get_detail=lambda key, **kwargs: api.get_hpc_job_detail(key, **kwargs),
         stop=lambda key, **kwargs: api.stop_hpc_job(key, **kwargs),
@@ -160,7 +162,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             project=project,
             group=Resource(
                 quota.compute_group_name,
-                self.ref(ComputeGroupRef, quota.compute_group_name,
+                self._make_ref(ComputeGroupRef, quota.compute_group_name,
                          quota.logic_compute_group_id, ws.ref.key),
             ),
             quota=Quota(quota.gpu_count, quota.cpu_count, quota.memory_gib),
@@ -176,7 +178,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         )
 
     @operation
-    def create(self, spec: HPCJobCreateSpec, operation_id: str | None = None) -> HPCJobHandle:
+    def create(self, spec: HPCJobCreateSpec, *, operation_id: str | None = None) -> HPCJobHandle:
         identifier = uuid4().hex if operation_id is None else operation_id
         if not isinstance(identifier, str) or not identifier:
             raise ValidationError("operation_id must be a non-empty string.")
@@ -188,7 +190,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         if not key:
             raise SubmissionUncertainError(identifier)
         return HPCJobHandle(
-            plan.name, self.ref(HPCJobRef, plan.name, key, plan.workspace.ref.key), identifier
+            plan.name, self._make_ref(HPCJobRef, plan.name, key, plan.workspace.ref.key), identifier
         )
 
     @operation

@@ -26,7 +26,7 @@ from .models import (
     MetricGroup,
 )
 from .models_compute import WorkloadJob
-from .exceptions import ValidationError, ResolutionIncompleteError, ResourceNotFoundError
+from .exceptions import ValidationError, ResourceNotFoundError
 
 
 R = TypeVar("R", bound=ResourceRef)
@@ -46,6 +46,8 @@ V = TypeVar("V", bound=InstanceView)
 
 @dataclass(frozen=True)
 class WorkloadBinding(Generic[V]):
+    list_page_size: int
+    expand_list: bool
     list_jobs: Callable[..., tuple[Sequence[Any], int]]
     get_detail: Callable[..., dict[str, Any]]
     stop: Callable[..., object]
@@ -101,7 +103,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         view = self._binding.public_status(data, fallback_name=name)
         return self._model(
             name,
-            ref or self.ref(self._ref_type, name, key, ws),
+            ref or self._make_ref(self._ref_type, name, key, ws),
             self._binding.normalize_status(raw),
             raw,
             str(data.get("project_name") or ""),
@@ -112,34 +114,22 @@ class ComputeJobs(Service, Generic[R, J, V]):
         )
 
     def _all(self, ws):
-        rows, seen, previous = [], set(), None
-        for page in range(1, 101):
-            items, total = self._binding.list_jobs(
-                workspace_id=ws.ref.key, page_num=page, page_size=100, session=self.session
-            )
-            data = [
+        items = self._collect_pages(
+            lambda page, page_size: self._binding.list_jobs(
+                workspace_id=ws.ref.key, page_num=page, page_size=page_size, session=self.session
+            ),
+            lambda row: getattr(row, "job_id", None) or getattr(row, "ray_job_id", None),
+            page_size=self._binding.list_page_size,
+            expand_list=self._binding.expand_list,
+        )
+        return [
+            self._job(
                 dict(x.raw, **{k: v for k, v in asdict(x).items() if k != "raw"})
-                if hasattr(x, "raw")
-                else asdict(x)
-                for x in items
-            ]
-            keys = tuple(str(x.get("job_id") or x.get("ray_job_id") or "") for x in data)
-            if keys and (not all(keys) or keys == previous):
-                raise ResolutionIncompleteError(
-                    "Platform repeated a job page or omitted an identity."
-                )
-            previous = keys
-            for item, key in zip(data, keys):
-                if key not in seen:
-                    rows.append(self._job(item, ws.ref.key))
-                    seen.add(key)
-            if not items:
-                if len(seen) < total:
-                    raise ResolutionIncompleteError("Platform omitted a job page.")
-                return rows
-            if page * 100 >= total:
-                return rows
-        raise ResolutionIncompleteError("Job scan exceeded 100 pages; narrow the query.")
+                if hasattr(x, "raw") else asdict(x),
+                ws.ref.key,
+            )
+            for x in items
+        ]
 
     @operation
     def list(
@@ -172,7 +162,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
                     )
                 )
             ]
-        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
+        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
 
     def iter(
         self,
@@ -226,17 +216,20 @@ class ComputeJobs(Service, Generic[R, J, V]):
 
     @operation
     def status(
-        self, names: Sequence[str | R], workspace: str | WorkspaceRef | None = None
+        self,
+        refs: Sequence[str | R],
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> tuple[J, ...]:
-        return tuple(self.get(ref, workspace=workspace) for ref in names)
+        return tuple(self.get(ref, workspace=workspace) for ref in refs)
 
     def wait(
         self,
         ref: str | R,
+        *,
         timeout: float = 3600,
         poll_interval: float = 10,
         raise_on_failure: bool = False,
-        *,
         workspace: str | WorkspaceRef | None = None,
     ) -> J:
         duration(timeout)
@@ -306,7 +299,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         values = [
             Resource(
                 str(g.get("name") or g.get("logic_compute_group_name") or ""),
-                self.ref(
+                self._make_ref(
                     ComputeGroupRef,
                     str(g.get("name") or g.get("logic_compute_group_name") or ""),
                     g.get("id") or g.get("logic_compute_group_id"),
@@ -338,7 +331,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
     def _project(self, ws, selector):
         rows = browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
         values = [
-            Resource(p.name, self.ref(ProjectRef, p.name, p.project_id, ws.ref.key)) for p in rows
+            Resource(p.name, self._make_ref(ProjectRef, p.name, p.project_id, ws.ref.key)) for p in rows
         ]
         return exact(values, selector, ProjectRef, self.client, ws.ref.key)
 
@@ -346,9 +339,9 @@ class ComputeJobs(Service, Generic[R, J, V]):
     def quotas(
         self,
         workspace: str | WorkspaceRef,
+        *,
         group: str | ComputeGroupRef | None = None,
         include_empty: bool = False,
-        *,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[QuotaOption]:
@@ -376,14 +369,14 @@ class ComputeJobs(Service, Generic[R, J, V]):
         sort_quota_rows(views)
         for view in views:
             triple = parse_quota(view["quota"]) if view["quota"] else None
-            group_ref = self.ref(
+            group_ref = self._make_ref(
                 ComputeGroupRef, view["compute_group"], view["group_id"], ws.ref.key
             )
             levels = view["allowed_priority_levels"]
             rows.append(
                 QuotaOption(
                     view["quota"],
-                    self.ref(
+                    self._make_ref(
                         QuotaRef, view["quota"], view["quota_id"] or view["group_id"], ws.ref.key
                     ),
                     Quota(triple.gpu_count, triple.cpu_count, triple.memory_gib)
@@ -397,12 +390,12 @@ class ComputeJobs(Service, Generic[R, J, V]):
                     view["points_per_hour"],
                 )
             )
-        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
+        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
 
     @operation
     def metrics(
         self,
-        selector: str | R,
+        ref: str | R,
         *,
         workspace: str | WorkspaceRef | None = None,
         metric: str = "core",
@@ -424,7 +417,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
             raise ValidationError(
                 f"Invalid interval {interval!r}; choose from: {', '.join(INTERVAL_CHOICES)}"
             )
-        ref = self._resolve(selector, workspace)
+        resolved = self._resolve(ref, workspace)
 
         def timestamp(value):
             return int(value.timestamp()) if isinstance(value, datetime) else parse_absolute(value)
@@ -434,15 +427,15 @@ class ComputeJobs(Service, Generic[R, J, V]):
         if end_ts <= start_ts:
             raise ValidationError("end time must be after start time")
         if group is not None:
-            ws = WorkspaceRef("", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id)
-            lcg = self.client.compute_groups.get(group, workspace=ws).ref.key
+            ws = WorkspaceRef("", resolved.account, resolved.base_url, resolved.workspace_id, resolved.workspace_id)
+            lcg = self.client.compute_groups.get(group, workspace=ws).resolved.key
         else:
-            lcg = self._binding.metric_group(self._detail(ref.key))
+            lcg = self._binding.metric_group(self._detail(resolved.key))
         if not lcg:
             raise ValidationError("Unable to resolve compute group; pass group.")
         return tuple(
             get_resource_metrics_by_time(
-                task_id=ref.key,
+                task_id=resolved.key,
                 task_type=self._binding.task_type,
                 logic_compute_group_id=lcg,
                 metric_types=resolve_metrics(metric),

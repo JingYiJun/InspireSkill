@@ -74,7 +74,7 @@ class Jobs(Service):
         raw = str(data.get("status") or "")
         return Job(
             name,
-            ref or self.ref(JobRef, name, key, workspace_id),
+            ref or self._make_ref(JobRef, name, key, workspace_id),
             normalize_status(raw),
             raw,
             str(data.get("project_name") or ""),
@@ -85,8 +85,8 @@ class Jobs(Service):
     @operation
     def list(
         self,
-        *,
         workspace: str | WorkspaceRef,
+        *,
         status: str | None = None,
         keyword: str | None = None,
         limit: int = 20,
@@ -96,7 +96,7 @@ class Jobs(Service):
         ws = self.client.workspaces.get(workspace)
         from inspire.platform.web.browser_api.jobs import list_jobs
 
-        offset, fingerprint = self.cursor_offset(cursor, (ws.ref.key, status, keyword))
+        offset, fingerprint = self._cursor_offset(cursor, (ws.ref.key, status, keyword))
         rows: builtins.list[Job] = []
         seen = set()
         previous = None
@@ -122,7 +122,7 @@ class Jobs(Service):
                     or status.casefold() in (job.status.casefold(), job.raw_status.casefold())
                 ) and item.job_id not in seen:
                     if len(rows) == limit:
-                        return Page(tuple(rows), self.encode_cursor(offset, fingerprint), None)
+                        return Page(tuple(rows), self._encode_cursor(offset, fingerprint), None)
                     rows.append(job)
                     seen.add(item.job_id)
                 offset += 1
@@ -133,8 +133,8 @@ class Jobs(Service):
 
     def iter(
         self,
-        *,
         workspace: str | WorkspaceRef,
+        *,
         status: str | None = None,
         keyword: str | None = None,
         max_items: int | None = None,
@@ -174,16 +174,16 @@ class Jobs(Service):
         return exact(self._all(ws, keyword=selector), selector, JobRef, self.client, ws.ref.key).ref
 
     @operation
-    def get(self, selector: str | JobRef, *, workspace: str | WorkspaceRef | None = None) -> Job:
+    def get(self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None) -> Job:
         from inspire.platform.web.browser_api.jobs import get_job_detail_v2
 
-        ref = self._resolve(selector, workspace)
-        data = get_job_detail_v2(ref.key, session=self.session)
+        resolved = self._resolve(ref, workspace)
+        data = get_job_detail_v2(resolved.key, session=self.session)
         if not data:
             raise ResourceNotFoundError("Job no longer exists or is not visible.")
-        if data.get("workspace_id") and data["workspace_id"] != ref.workspace_id:
+        if data.get("workspace_id") and data["workspace_id"] != resolved.workspace_id:
             raise ValidationError("Job reference workspace does not match platform detail.")
-        return self._job(data, ref.workspace_id, ref)
+        return self._job(data, resolved.workspace_id, resolved)
 
     def _quota_rows(self, ws, group):
         from inspire.platform.web.browser_api.notebooks import get_resource_prices
@@ -206,7 +206,7 @@ class Jobs(Service):
             quota = Quota(gpu_count, cpu_count, memory_gib)
             name = f"{quota.gpu},{quota.cpu},{quota.memory_gib}"
             public = QuotaOption(
-                name, self.ref(QuotaRef, name, key, ws.ref.key), quota, group.ref, gpu
+                name, self._make_ref(QuotaRef, name, key, ws.ref.key), quota, group.ref, gpu
             )
             resolved = ResolvedQuota(
                 key, group.ref.key, group.name, quota.gpu, quota.cpu, quota.memory_gib, gpu, row
@@ -217,8 +217,8 @@ class Jobs(Service):
     @operation
     def quotas(
         self,
-        *,
         workspace: str | WorkspaceRef,
+        *,
         group: str | ComputeGroupRef | None = None,
         include_empty: bool = False,
         limit: int = 20,
@@ -271,7 +271,7 @@ class Jobs(Service):
             option = options.get((key, view["quota_id"]))
             if option is None:
                 option = QuotaOption(
-                    "", self.ref(QuotaRef, "", key, ws.ref.key), None, by_group[key].ref, ""
+                    "", self._make_ref(QuotaRef, "", key, ws.ref.key), None, by_group[key].ref, ""
                 )
             allowed = view["allowed_priority_levels"]
             rows.append(
@@ -283,7 +283,7 @@ class Jobs(Service):
                     points_per_hour=view["points_per_hour"],
                 )
             )
-        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
+        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
 
     def _plan(self, spec):
         from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
@@ -326,7 +326,7 @@ class Jobs(Service):
         if isinstance(spec.image, str) and "/" in spec.image:
             image = Image(
                 spec.image,
-                self.ref(ImageRef, spec.image, spec.image, ws.ref.key),
+                self._make_ref(ImageRef, spec.image, spec.image, ws.ref.key),
                 "url",
                 spec.image,
             )
@@ -438,12 +438,12 @@ class Jobs(Service):
         if not isinstance(key, str) or not key:
             raise SubmissionUncertainError(identifier)
         return JobHandle(
-            spec.name, self.ref(JobRef, spec.name, key, public.workspace.ref.key), identifier
+            spec.name, self._make_ref(JobRef, spec.name, key, public.workspace.ref.key), identifier
         )
 
     def wait(
         self,
-        selector: str | JobRef,
+        ref: str | JobRef,
         *,
         workspace: str | WorkspaceRef | None = None,
         timeout: float = 3600,
@@ -458,10 +458,10 @@ class Jobs(Service):
             ):
                 raise ValidationError("Wait durations must be finite positive seconds.")
         with self.client._transport.scope(timeout=timeout):
-            ref = self._resolve(selector, workspace)
+            resolved = self._resolve(ref, workspace)
             while True:
                 self.client._transport.remaining()
-                job = self.get(ref)
+                job = self.get(resolved)
                 if job.status in TERMINAL_STATUSES:
                     if raise_on_failure and job.status != "SUCCEEDED":
                         raise JobFailedError(job)
@@ -469,47 +469,50 @@ class Jobs(Service):
                 time.sleep(min(poll_interval, self.client._transport.remaining()))
 
     @operation
-    def stop(self, selector: str | JobRef, *, workspace: str | WorkspaceRef | None = None) -> None:
+    def stop(self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None) -> None:
         from inspire.platform.web.browser_api.jobs import stop_training_job
 
-        ref = self._resolve(selector, workspace)
+        resolved = self._resolve(ref, workspace)
         session = self.session
         with self.client._transport.single_send():
-            stop_training_job(ref.key, session=session)
+            stop_training_job(resolved.key, session=session)
 
     @operation
     def delete(
-        self, selector: str | JobRef, *, workspace: str | WorkspaceRef | None = None
+        self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
     ) -> None:
         from inspire.platform.web.browser_api.jobs import delete_job
 
-        ref = self._resolve(selector, workspace)
+        resolved = self._resolve(ref, workspace)
         session = self.session
         with self.client._transport.single_send():
-            delete_job(ref.key, session=session)
+            delete_job(resolved.key, session=session)
 
     @operation
     def status(
-        self, names_or_refs: Sequence[str | JobRef], workspace: str | WorkspaceRef | None = None
+        self,
+        refs: Sequence[str | JobRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Job, ...]:
-        return tuple(self.get(ref, workspace=workspace) for ref in names_or_refs)
+        return tuple(self.get(ref, workspace=workspace) for ref in refs)
 
     @operation
     def command(
-        self, selector: str | JobRef, *, workspace: str | WorkspaceRef | None = None
+        self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
     ) -> str:
         from inspire.platform.web.browser_api.jobs import get_job_detail_v2
 
-        ref = self._resolve(selector, workspace)
-        return str(get_job_detail_v2(ref.key, session=self.session).get("command") or "")
+        resolved = self._resolve(ref, workspace)
+        return str(get_job_detail_v2(resolved.key, session=self.session).get("command") or "")
 
     @operation
     def instances(
-        self, selector: str | JobRef, *, workspace: str | WorkspaceRef | None = None
+        self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
     ) -> tuple[JobInstance, ...]:
         from inspire.services.job_events import list_all_job_instances
 
-        ref = self._resolve(selector, workspace)
+        resolved = self._resolve(ref, workspace)
         return tuple(
             JobInstance(
                 name=str(row.get("name") or row.get("pod_name") or ""),
@@ -521,18 +524,18 @@ class Jobs(Service):
                 rank=row.get("rank", i),
                 raw=dict(row),
             )
-            for i, row in enumerate(list_all_job_instances(ref.key, session=self.session))
+            for i, row in enumerate(list_all_job_instances(resolved.key, session=self.session))
         )
 
     def instance_names(
-        self, selector: str | JobRef, *, workspace: str | WorkspaceRef | None = None
+        self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
     ) -> tuple[str, ...]:
-        return tuple(row.name for row in self.instances(selector, workspace=workspace))
+        return tuple(row.name for row in self.instances(ref, workspace=workspace))
 
     @operation
     def events(
         self,
-        selector: str | JobRef,
+        ref: str | JobRef,
         *,
         workspace: str | WorkspaceRef | None = None,
         type: str | None = None,
@@ -543,22 +546,22 @@ class Jobs(Service):
     ) -> EventResult:
         from inspire.services.job_events import collect_job_events, matching_events
 
-        ref = self._resolve(selector, workspace)
+        resolved = self._resolve(ref, workspace)
         selectors = (instance,) if isinstance(instance, str) else instance or ()
         rows = collect_job_events(
-            ref.key, session=self.session, instance=selectors, workload_level=workload_level
+            resolved.key, session=self.session, instance=selectors, workload_level=workload_level
         )
         rows = matching_events(rows, type_filter=type, reason_filter=reason)
         selected = rows[-limit:] if limit > 0 else rows
         return EventResult(tuple(selected), len(selected) < len(rows))
 
     def follow_events(
-        self, selector: str | JobRef, *, interval: float = 5, **filters: Any
+        self, ref: str | JobRef, *, interval: float = 5, **filters: Any
     ) -> Iterator[EventResult]:
         if not math.isfinite(interval) or interval <= 0:
             raise ValidationError("interval must be finite positive seconds")
         with self.client._transport.scope(timeout=self.client.operation_timeout):
-            ref = self._resolve(selector, filters.pop("workspace", None))
+            ref = self._resolve(ref, filters.pop("workspace", None))
         seen = set()
         while True:
             result = self.events(ref, **filters)
@@ -577,7 +580,7 @@ class Jobs(Service):
     @operation
     def metrics(
         self,
-        selector: str | JobRef,
+        ref: str | JobRef,
         *,
         workspace: str | WorkspaceRef | None = None,
         metric: str = "core",
@@ -599,7 +602,7 @@ class Jobs(Service):
             raise ValidationError(
                 f"Invalid interval {interval!r}; choose from: {', '.join(INTERVAL_CHOICES)}"
             )
-        ref = self._resolve(selector, workspace)
+        resolved = self._resolve(ref, workspace)
 
         def timestamp(value):
             return int(value.timestamp()) if isinstance(value, datetime) else parse_absolute(value)
@@ -609,15 +612,15 @@ class Jobs(Service):
         if end_ts <= start_ts:
             raise ValidationError("end time must be after start time")
         if group is not None:
-            ws = WorkspaceRef("", ref.account, ref.base_url, ref.workspace_id, ref.workspace_id)
-            lcg = self.client.compute_groups.get(group, workspace=ws).ref.key
+            ws = WorkspaceRef("", resolved.account, resolved.base_url, resolved.workspace_id, resolved.workspace_id)
+            lcg = self.client.compute_groups.get(group, workspace=ws).resolved.key
         else:
-            lcg = get_job_detail_v2(ref.key, session=self.session).get("logic_compute_group_id")
+            lcg = get_job_detail_v2(resolved.key, session=self.session).get("logic_compute_group_id")
         if not lcg:
             raise ValidationError("Unable to resolve compute group; pass group.")
         return tuple(
             get_resource_metrics_by_time(
-                task_id=ref.key,
+                task_id=resolved.key,
                 task_type=TASK_TYPE_BY_RESOURCE["job"],
                 logic_compute_group_id=lcg,
                 metric_types=resolve_metrics(metric),
@@ -631,7 +634,7 @@ class Jobs(Service):
     @operation
     def logs(
         self,
-        selector: str | JobRef,
+        ref: str | JobRef,
         *,
         workspace: str | WorkspaceRef | None = None,
         instances: str | Sequence[str] = "all",
@@ -657,7 +660,7 @@ class Jobs(Service):
         for value, label in ((tail, "tail"), (head, "head"), (max_chars, "max_chars")):
             if value is not None:
                 positive(value, label, 10000000)
-        job = self.get(selector, workspace=workspace)
+        job = self.get(ref, workspace=workspace)
         pods = self.instance_names(job.ref) if instances == "all" else tuple(instances)
         if start is not None or end is not None:
             if start is None or end is None:
@@ -697,14 +700,14 @@ class Jobs(Service):
         )
 
     def follow_logs(
-        self, selector: str | JobRef, *, interval: float = 2, **filters: Any
+        self, ref: str | JobRef, *, interval: float = 2, **filters: Any
     ) -> Iterator[LogResult]:
         from inspire.services.job_logs import web_log_identity, format_log_line
 
         if not math.isfinite(interval) or interval <= 0:
             raise ValidationError("interval must be finite positive seconds")
         with self.client._transport.scope(timeout=self.client.operation_timeout):
-            ref = self._resolve(selector, filters.pop("workspace", None))
+            ref = self._resolve(ref, filters.pop("workspace", None))
         seen: set[tuple[int, str, str, int]] = set()
         draining = False
         while True:

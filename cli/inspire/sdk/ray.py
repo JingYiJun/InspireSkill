@@ -32,6 +32,8 @@ from .exceptions import ValidationError, RayJobFailedError, SubmissionUncertainE
 
 class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
     _binding = WorkloadBinding[RayInstanceView](
+        list_page_size=20,
+        expand_list=True,
         list_jobs=lambda **kwargs: api.list_ray_jobs(**kwargs),
         get_detail=lambda key, **kwargs: api.get_ray_job_detail(key, **kwargs),
         stop=lambda key, **kwargs: api.stop_ray_job(key, **kwargs),
@@ -124,7 +126,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             project=project,
             group=Resource(
                 head.compute_group_name,
-                self.ref(ComputeGroupRef, head.compute_group_name,
+                self._make_ref(ComputeGroupRef, head.compute_group_name,
                          head.logic_compute_group_id, ws.ref.key),
             ),
             quota=Quota(head.gpu_count, head.cpu_count, head.memory_gib),
@@ -137,7 +139,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         )
 
     @operation
-    def create(self, spec: RayJobCreateSpec, operation_id: str | None = None) -> RayJobHandle:
+    def create(self, spec: RayJobCreateSpec, *, operation_id: str | None = None) -> RayJobHandle:
         identifier = uuid4().hex if operation_id is None else operation_id
         if not isinstance(identifier, str) or not identifier:
             raise ValidationError("operation_id must be a non-empty string.")
@@ -149,7 +151,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         if not key:
             raise SubmissionUncertainError(identifier)
         return RayJobHandle(
-            plan.name, self.ref(RayJobRef, plan.name, key, plan.workspace.ref.key), identifier
+            plan.name, self._make_ref(RayJobRef, plan.name, key, plan.workspace.ref.key), identifier
         )
 
     @operation
@@ -226,9 +228,9 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
     def scaling(
         self,
         ref: str | RayJobRef,
+        *,
         group: str | None = None,
         limit: int | None = None,
-        *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[dict, ...]:
         from inspire.services.ray_scaling import public_ray_scaling_events, event_time

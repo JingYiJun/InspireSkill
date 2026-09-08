@@ -182,7 +182,7 @@ def test_mutations_single_dispatch_on_lost_response(
         return client._transport.request("POST", "/fake", body={})
 
     monkeypatch.setattr(api, platform, send)
-    args = (catalog.spec,) if create else ((ref, "snapshot") if action == "save_image" else (ref,))
+    args = (catalog.spec,) if create else (ref,)
 
     # _once is replaced, so simulate the dispatch boundary itself as transport tests do.
     def dispatched(*a, **kw):
@@ -190,7 +190,7 @@ def test_mutations_single_dispatch_on_lost_response(
 
     monkeypatch.setattr(client._transport, "_once", dispatched)
     with pytest.raises(SubmissionUncertainError if create else MutationUncertainError):
-        getattr(client.notebooks, action)(*args)
+        getattr(client.notebooks, action)(*args, **({"name": "snapshot"} if action == "save_image" else {}))
     assert len(calls) == 1
 
 
@@ -320,13 +320,13 @@ def test_discovery_status_and_cursor(client, catalog, monkeypatch):
         "get_notebook_detail",
         lambda **kw: next(x for x in rows if x["id"] == kw["notebook_id"]),
     )
-    assert [x.status for x in client.notebooks.status(["first", "SECOND"], "Workspace")] == [
+    assert [x.status for x in client.notebooks.status(["first", "SECOND"], workspace="Workspace")] == [
         "RUNNING",
         "STOPPED",
     ]
     rows.append({"id": "c", "name": "First", "status": "RUNNING"})
     with pytest.raises(AmbiguousResourceError):
-        client.notebooks.get("first", "Workspace")
+        client.notebooks.get("first", workspace="Workspace")
 
 
 def test_detail_fields_match_cli_projection(client, ref, monkeypatch):
@@ -465,7 +465,7 @@ def test_save_image_estimate_visibility_and_wait(client, ref, monkeypatch):
         calls.append(kw)
 
     monkeypatch.setattr(api, "update_image", update)
-    handle = client.notebooks.save_image(ref, "snapshot", flatten=True, visibility="project")
+    handle = client.notebooks.save_image(ref, name="snapshot", flatten=True, visibility="project")
     assert len(calls) == 2
     assert calls[0]["flatten"] is True and calls[0]["version"] == "v1"
     assert "visibility" not in calls[0]
@@ -479,7 +479,7 @@ def test_save_image_estimate_visibility_and_wait(client, ref, monkeypatch):
     assert calls[-1]["image_id"] == "saved"
     estimate.notebook_running = False
     with pytest.raises(ValidationError, match="not running"):
-        client.notebooks.save_image(ref, "snapshot")
+        client.notebooks.save_image(ref, name="snapshot")
 
 
 def test_save_missing_identity_and_visibility_failure(client, ref, monkeypatch):
@@ -487,7 +487,7 @@ def test_save_missing_identity_and_visibility_failure(client, ref, monkeypatch):
     calls = []
     monkeypatch.setattr(api, "save_notebook_as_image", lambda **kw: calls.append(kw) or {})
     monkeypatch.setattr(api, "list_images_by_source", lambda **kw: [])
-    handle = client.notebooks.save_image(ref, "snapshot", visibility="public")
+    handle = client.notebooks.save_image(ref, name="snapshot", visibility="public")
     assert handle.ref is None and handle.warning
     assert len(calls) == 1
     with pytest.raises(ValidationError, match="identity"):

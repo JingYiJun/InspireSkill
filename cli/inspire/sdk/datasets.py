@@ -28,14 +28,14 @@ class Datasets(Service):
     def list(
         self,
         keyword: str | None = None,
-        tag: str | Sequence[str] | None = None,
         *,
+        tag: str | Sequence[str] | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[DatasetInfo]:
         tags = [tag] if isinstance(tag, str) else list(tag or ())
         tag_ids = plaza.resolve_tag_ids(tags, session=self.session)
-        rows = self.collect_pages(
+        rows = self._collect_pages(
             lambda **paging: plaza.list_datasets(
                 keyword=keyword, tag_ids=tag_ids, session=self.session, **paging
             ),
@@ -43,21 +43,25 @@ class Datasets(Service):
         )
         items = [
             DatasetInfo.from_view(
-                views.dataset_row(x), ref=self.ref(DatasetRef, x.code, x.dataset_id)
+                views.dataset_row(x), ref=self._make_ref(DatasetRef, x.code, x.dataset_id)
             )
             for x in rows
         ]
-        return self.page(items, limit=limit, cursor=cursor, query=(keyword, tags))
+        return self._page(items, limit=limit, cursor=cursor, query=(keyword, tags))
 
     @operation
-    def get(self, name: str) -> DatasetDetail:
-        summary = plaza.resolve_dataset_by_code(name, session=self.session)
-        detail = plaza.get_dataset_detail(summary.dataset_id, session=self.session)
+    def get(self, ref: str | DatasetRef) -> DatasetDetail:
+        if isinstance(ref, DatasetRef):
+            self.client._validate_ref(ref, DatasetRef)
+            key = int(ref.key)
+        else:
+            key = plaza.resolve_dataset_by_code(ref, session=self.session).dataset_id
+        detail = plaza.get_dataset_detail(key, session=self.session)
         version_views = views.version_views(detail)
         versions = tuple(
             DatasetVersion.from_view(
                 view,
-                ref=self.ref(DatasetVersionRef, version.code, version.version_id)
+                ref=self._make_ref(DatasetVersionRef, version.code, version.version_id)
                 if version.version_id
                 else None,
             )
@@ -65,7 +69,7 @@ class Datasets(Service):
         )
         return DatasetDetail.from_view(
             {**views.dataset_detail_view(detail), "versions": version_views},
-            ref=self.ref(DatasetRef, detail.code, summary.dataset_id),
+            ref=self._make_ref(DatasetRef, detail.code, key),
             versions=versions,
         )
 
@@ -74,7 +78,7 @@ class Datasets(Service):
         return tuple(
             DatasetTag.from_view(
                 {"name": x.name, "category": x.category},
-                ref=self.ref(DatasetTagRef, x.name, x.tag_id),
+                ref=self._make_ref(DatasetTagRef, x.name, x.tag_id),
             )
             for x in plaza.list_dataset_tags(session=self.session)
         )
@@ -83,21 +87,21 @@ class Datasets(Service):
     def applications(
         self,
         name: str | None = None,
+        *,
         to_approve: bool = False,
         keyword: str | None = None,
-        *,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[DatasetApplication]:
         if name is not None:
             positive(limit)
-            offset, query = self.cursor_offset(cursor, (name, to_approve, keyword))
+            offset, query = self._cursor_offset(cursor, (name, to_approve, keyword))
             rows = plaza.find_dataset_applications(
                 name, incoming=to_approve, session=self.session, limit=offset + limit + 1
             )
         else:
             lister = plaza.list_dataset_approvals if to_approve else plaza.list_dataset_applications
-            rows = self.collect_pages(
+            rows = self._collect_pages(
                 lambda **paging: lister(keyword=keyword, session=self.session, **paging),
                 lambda x: x.application_id,
             )
@@ -106,7 +110,7 @@ class Datasets(Service):
                 views.application_detail_view(x)
                 if name is not None
                 else views.application_row(x, incoming=to_approve),
-                ref=self.ref(DatasetApplicationRef, x.dataset, x.application_id),
+                ref=self._make_ref(DatasetApplicationRef, x.dataset, x.application_id),
             )
             for x in rows
         ]
@@ -114,14 +118,17 @@ class Datasets(Service):
             end = offset + limit
             return Page(
                 tuple(items[offset:end]),
-                self.encode_cursor(end, query) if len(items) > end else None,
+                self._encode_cursor(end, query) if len(items) > end else None,
                 None,
             )
-        return self.page(items, limit=limit, cursor=cursor, query=(name, to_approve, keyword))
+        return self._page(items, limit=limit, cursor=cursor, query=(name, to_approve, keyword))
 
     @operation
     def validate(
-        self, specs: Sequence[str | DatasetMount], workspace: str | WorkspaceRef
+        self,
+        specs: Sequence[str | DatasetMount],
+        *,
+        workspace: str | WorkspaceRef,
     ) -> tuple[DatasetValidation, ...]:
         from inspire.services.datasets import DatasetSpecError, parse_dataset_spec
 

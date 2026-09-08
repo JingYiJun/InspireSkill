@@ -101,3 +101,9 @@ class ServingFailedError(InspireError):
     def __init__(self, serving):
         self.serving = serving
         super().__init__(f"Serving {serving.name!r} reached {serving.status}.")
+
+
+class TensorboardFailedError(InspireError):
+    def __init__(self, tensorboard):
+        self.tensorboard = tensorboard
+        super().__init__(f"TensorBoard {tensorboard.name!r} reached {tensorboard.status}.")

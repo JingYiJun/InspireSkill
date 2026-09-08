@@ -116,7 +116,7 @@ from .models_serving import (
     ModelRegisterHandle,
 )
 from inspire.services.serving_instances import ServingInstanceView
-from .exceptions import ServingFailedError
+from .exceptions import ServingFailedError, TensorboardFailedError
 
 
 __all__ = [
@@ -133,6 +133,7 @@ __all__ = [
     "ImageRegisterHandle",
     "ModelRegisterHandle",
     "ServingFailedError",
+    "TensorboardFailedError",
     "HPCJob",
     "HPCJobRef",
     "HPCJobCreateSpec",

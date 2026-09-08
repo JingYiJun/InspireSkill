@@ -63,14 +63,14 @@ def test_single_dispatch(client, catalog, monkeypatch, kind, action, outcome):
         service = getattr(client, kind)
         if action == "register":
             if kind == "images":
-                return service.register("image", "Workspace", version="v2", visibility="project")
+                return service.register("image", workspace="Workspace", version="v2", visibility="project")
             return service.register(
-                "model", "/inspire/models", "Workspace", "Project", type=["llm"], tag=["tag"]
+                "model", source_path="/inspire/models", workspace="Workspace", project="Project", type=["llm"], tag=["tag"]
             )
         cls = ImageRef if kind == "images" else ModelRef
         ref = cls("name", client.account, client.base_url, "key", "ws-test")
         if action == "set_visibility":
-            return service.set_visibility(ref, "public")
+            return service.set_visibility(ref, visibility="public")
         return service.delete(ref, **({"force": True} if kind == "models" else {}))
 
     if outcome == "ok":
@@ -133,6 +133,6 @@ def test_missing_registration_id_uncertain(client, catalog, monkeypatch, kind):
     )
     with pytest.raises(SubmissionUncertainError):
         if kind == "images":
-            client.images.register("image", "Workspace")
+            client.images.register("image", workspace="Workspace")
         else:
-            client.models.register("model", "/inspire/models", "Workspace", "Project")
+            client.models.register("model", source_path="/inspire/models", workspace="Workspace", project="Project")

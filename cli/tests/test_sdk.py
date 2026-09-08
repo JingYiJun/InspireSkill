@@ -179,10 +179,10 @@ def test_invalid_ref_and_cursor_rejected(client):
     ref = JobRef("job", "beta", client.base_url, "key", "ws-test")
     with pytest.raises(ValidationError):
         client.jobs.get(ref)
-    first = client.jobs.page(list(range(25)), query=("query",))
+    first = client.jobs._page(list(range(25)), query=("query",))
     assert first.items == tuple(range(20))
     with pytest.raises(ValidationError):
-        client.jobs.page(list(range(25)), cursor=first.next_cursor, query=("other",))
+        client.jobs._page(list(range(25)), cursor=first.next_cursor, query=("other",))
     ref = JobRef("job", "alpha", client.base_url, "key", "ws-test")
     assert JobRef.from_dict(ref.to_dict()) == ref
     assert "key" not in repr(ref)
@@ -461,19 +461,19 @@ def planned(client, monkeypatch):
     from inspire.services.quotas import ResolvedQuota
 
     ws = Resource(
-        "workspace", client.workspaces.ref(WorkspaceRef, "workspace", "ws-test", "ws-test")
+        "workspace", client.workspaces._make_ref(WorkspaceRef, "workspace", "ws-test", "ws-test")
     )
-    project = Resource("project", client.projects.ref(ProjectRef, "project", "p", "ws-test"))
-    group = Resource("group", client.compute_groups.ref(ComputeGroupRef, "group", "g", "ws-test"))
+    project = Resource("project", client.projects._make_ref(ProjectRef, "project", "p", "ws-test"))
+    group = Resource("group", client.compute_groups._make_ref(ComputeGroupRef, "group", "g", "ws-test"))
     img = Image(
         "image:v1",
-        client.images.ref(ImageRef, "image:v1", "i", "ws-test"),
+        client.images._make_ref(ImageRef, "image:v1", "i", "ws-test"),
         "private",
         "registry/image:v1",
     )
     quota = Quota(1, 20, 200)
     option = QuotaOption(
-        "1,20,200", client.jobs.ref(QuotaRef, "1,20,200", "q", "ws-test"), quota, group.ref, "GPU"
+        "1,20,200", client.jobs._make_ref(QuotaRef, "1,20,200", "q", "ws-test"), quota, group.ref, "GPU"
     )
     resolved = ResolvedQuota(
         "q", "g", "group", 1, 20, 200, "GPU", {"gpu_info": {"gpu_type": "GPU"}}
@@ -645,13 +645,13 @@ def test_cursor_encodes_query_by_plain_equality(client):
     import base64
     import json
 
-    page = client.jobs.page(list(range(25)), query=("workspace", "running"))
+    page = client.jobs._page(list(range(25)), query=("workspace", "running"))
     decoded = json.loads(base64.urlsafe_b64decode(page.next_cursor))
     assert decoded == {
         "offset": 20,
         "query": ["alpha", client.base_url, "Jobs", ["workspace", "running"]],
     }
-    assert client.jobs.page(
+    assert client.jobs._page(
         list(range(25)), cursor=page.next_cursor, query=("workspace", "running")
     ).items == tuple(range(20, 25))
 

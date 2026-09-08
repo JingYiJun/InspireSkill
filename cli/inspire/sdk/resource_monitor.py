@@ -22,7 +22,11 @@ from .resources import Service, operation
 class Resources(Service):
     @operation
     def availability(
-        self, workspace: str | WorkspaceRef, group: str | None = None, include_cpu: bool = False
+        self,
+        workspace: str | WorkspaceRef,
+        *,
+        group: str | None = None,
+        include_cpu: bool = False,
     ) -> tuple[ResourceAvailability, ...]:
         ws = self.client.workspaces.get(workspace)
         rows = browser_api.get_resource_inventory(
@@ -38,13 +42,16 @@ class Resources(Service):
             if not view["workspace"]:
                 view["workspace"] = ws.name
             key = getattr(row, "group_id", "")
-            ref = self.ref(ComputeGroupRef, row.group_name, key, ws.ref.key) if key else None
+            ref = self._make_ref(ComputeGroupRef, row.group_name, key, ws.ref.key) if key else None
             result.append(ResourceAvailability.from_view(view, ref=ref))
         return tuple(result)
 
     @operation
     def policy(
-        self, workspace: str | WorkspaceRef, workload: str | None = None
+        self,
+        workspace: str | WorkspaceRef,
+        *,
+        workload: str | None = None,
     ) -> tuple[WorkloadSchedulePolicy, ...]:
         ws = self.client.workspaces.get(workspace)
         return tuple(
@@ -57,13 +64,13 @@ class Resources(Service):
     def usage(
         self,
         workspace: str | WorkspaceRef,
+        *,
         project: str | None = None,
         user: str | None = None,
         task: str | None = None,
         group: str | None = None,
         mine: bool = False,
         details: bool = False,
-        *,
         limit: int | None = None,
     ) -> ResourceUsage:
         if mine and (group or user or task or details):
@@ -128,11 +135,11 @@ class Resources(Service):
     def node_events(
         self,
         nodes: str | Sequence[str],
+        *,
         since: datetime | float | None = None,
         type: str | None = None,
         reason: str | None = None,
         limit: int | None = None,
-        *,
         from_component: str | None = None,
     ) -> EventResult:
         events = browser_api.list_node_events(

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         ImageRegisterHandle as ImageRegisterHandle,
         ModelRegisterHandle as ModelRegisterHandle,
         ServingFailedError as ServingFailedError,
+        TensorboardFailedError as TensorboardFailedError,
         HPCJob as HPCJob,
         HPCJobRef as HPCJobRef,
         HPCJobCreateSpec as HPCJobCreateSpec,

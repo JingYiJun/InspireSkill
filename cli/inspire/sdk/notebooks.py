@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Iterator, Sequence, Literal
 
 from inspire.platform.web import browser_api
+from inspire.platform.web.browser_api import CustomImageInfo
 from inspire.services import notebooks as core
 from inspire.services.notebook_output import public_notebook, public_runs
 from inspire.services.notebook_status import (
@@ -81,7 +82,7 @@ class Notebooks(Service):
             sub_status=str(data.get("sub_status") or ""),
         )
         return Notebook(
-            ref=ref or self.ref(NotebookRef, name, core.extract_notebook_id(data), workspace_id),
+            ref=ref or self._make_ref(NotebookRef, name, core.extract_notebook_id(data), workspace_id),
             **view,
         )
 
@@ -120,6 +121,7 @@ class Notebooks(Service):
     def list(
         self,
         workspace: str | WorkspaceRef,
+        *,
         status: str | None = None,
         keyword: str | None = None,
         limit: int = 20,
@@ -133,7 +135,7 @@ class Notebooks(Service):
                 for r in rows
                 if status.casefold() in (r.status.casefold(), r.raw_status.casefold())
             ]
-        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
+        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
 
     def iter(
         self,
@@ -175,19 +177,25 @@ class Notebooks(Service):
 
     @operation
     def get(
-        self, name_or_ref: str | NotebookRef, workspace: str | WorkspaceRef | None = None
+        self,
+        ref: str | NotebookRef,
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> Notebook:
-        ref = self._resolve(name_or_ref, workspace)
-        data = browser_api.get_notebook_detail(notebook_id=ref.key, session=self.session)
+        resolved = self._resolve(ref, workspace)
+        data = browser_api.get_notebook_detail(notebook_id=resolved.key, session=self.session)
         if not data:
             raise ResourceNotFoundError("Notebook no longer exists or is not visible.")
-        return self._notebook(data, ref.workspace_id, ref)
+        return self._notebook(data, resolved.workspace_id, resolved)
 
     @operation
     def status(
-        self, names: Sequence[str | NotebookRef], workspace: str | WorkspaceRef | None = None
+        self,
+        refs: Sequence[str | NotebookRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Notebook, ...]:
-        return tuple(self.get(name, workspace) for name in names)
+        return tuple(self.get(name, workspace=workspace) for name in refs)
 
     def _groups(self, ws):
         return browser_api.list_notebook_compute_groups(
@@ -218,9 +226,9 @@ class Notebooks(Service):
     def quotas(
         self,
         workspace: str | WorkspaceRef,
+        *,
         group: str | ComputeGroupRef | None = None,
         include_empty: bool = False,
-        *,
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[QuotaOption]:
@@ -248,14 +256,14 @@ class Notebooks(Service):
         sort_quota_rows(views)
         for view in views:
             triple = parse_quota(view["quota"]) if view["quota"] else None
-            group_ref = self.ref(
+            group_ref = self._make_ref(
                 ComputeGroupRef, view["compute_group"], view["group_id"], ws.ref.key
             )
             levels = view["allowed_priority_levels"]
             rows.append(
                 QuotaOption(
                     view["quota"],
-                    self.ref(
+                    self._make_ref(
                         QuotaRef, view["quota"], view["quota_id"] or view["group_id"], ws.ref.key
                     ),
                     Quota(triple.gpu_count, triple.cpu_count, triple.memory_gib)
@@ -269,7 +277,7 @@ class Notebooks(Service):
                     view["points_per_hour"],
                 )
             )
-        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
+        return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
 
     def _plan(self, spec):
         from inspire.services.datasets import parse_dataset_specs, resolve_dataset_info
@@ -299,7 +307,7 @@ class Notebooks(Service):
         group_resources = [
             Resource(
                 str(g.get("name") or g.get("logic_compute_group_name") or ""),
-                self.ref(
+                self._make_ref(
                     ComputeGroupRef,
                     str(g.get("name") or g.get("logic_compute_group_name") or ""),
                     g.get("id") or g.get("logic_compute_group_id"),
@@ -333,7 +341,7 @@ class Notebooks(Service):
         )
         projects = browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
         project_values = [
-            Resource(p.name, self.ref(ProjectRef, p.name, p.project_id, ws.ref.key))
+            Resource(p.name, self._make_ref(ProjectRef, p.name, p.project_id, ws.ref.key))
             for p in projects
         ]
         project_ref = exact(project_values, spec.project, ProjectRef, self.client, ws.ref.key).ref
@@ -372,7 +380,7 @@ class Notebooks(Service):
             selected_image = core.resolve_notebook_image(images, spec.image)
             image = Image(
                 selected_image.name,
-                self.ref(ImageRef, selected_image.name, selected_image.image_id, ws.ref.key),
+                self._make_ref(ImageRef, selected_image.name, selected_image.image_id, ws.ref.key),
                 "",
                 selected_image.url,
             )
@@ -424,7 +432,12 @@ class Notebooks(Service):
         return self._plan(spec)
 
     @operation
-    def create(self, spec: NotebookCreateSpec, operation_id: str | None = None) -> NotebookHandle:
+    def create(
+        self,
+        spec: NotebookCreateSpec,
+        *,
+        operation_id: str | None = None,
+    ) -> NotebookHandle:
         plan = self._plan(spec)
         identifier = uuid.uuid4().hex if operation_id is None else operation_id
         if not isinstance(identifier, str) or not identifier:
@@ -448,17 +461,17 @@ class Notebooks(Service):
         if not key:
             raise SubmissionUncertainError(identifier)
         return NotebookHandle(
-            plan.name, self.ref(NotebookRef, plan.name, key, plan.workspace.ref.key), identifier
+            plan.name, self._make_ref(NotebookRef, plan.name, key, plan.workspace.ref.key), identifier
         )
 
     def wait(
         self,
         ref: str | NotebookRef,
+        *,
         timeout: float = 600,
         poll_interval: float = 5,
         target: Literal["RUNNING", "STOPPED"] = "RUNNING",
         raise_on_failure: bool = False,
-        *,
         workspace: str | WorkspaceRef | None = None,
     ) -> Notebook:
         _duration(timeout)
@@ -502,9 +515,9 @@ class Notebooks(Service):
     def events(
         self,
         ref: str | NotebookRef,
+        *,
         keyword: str | None = None,
         limit: int = 100,
-        *,
         workspace: str | WorkspaceRef | None = None,
     ) -> EventResult:
         from inspire.services.job_events import matching_events
@@ -540,8 +553,8 @@ class Notebooks(Service):
     def lifecycle(
         self,
         ref: str | NotebookRef,
-        limit: int | None = None,
         *,
+        limit: int | None = None,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[dict[str, Any], ...]:
         if limit is not None:
@@ -557,13 +570,13 @@ class Notebooks(Service):
     def metrics(
         self,
         ref: str | NotebookRef,
+        *,
         metric: str = "core",
         window: str = "1h",
         start: str | datetime | None = None,
         end: str | datetime | None = None,
         interval: str | None = None,
         group: str | ComputeGroupRef | None = None,
-        *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[MetricGroup, ...]:
         from inspire.services.metrics import resolve_metrics, parse_window, parse_absolute
@@ -635,12 +648,12 @@ class Notebooks(Service):
     def save_image(
         self,
         ref: str | NotebookRef,
+        *,
         name: str,
         version: str | None = None,
         description: str | None = None,
         visibility: str | None = None,
         flatten: bool = False,
-        *,
         workspace: str | WorkspaceRef | None = None,
     ) -> ImageSaveHandle:
         resolved = self._resolve(ref, workspace)
@@ -672,7 +685,7 @@ class Notebooks(Service):
             result, name=name, version=version, workspace_id=resolved.workspace_id, session=session
         )
         image_ref = (
-            self.ref(ImageRef, f"{name}:{version}", key, resolved.workspace_id) if key else None
+            self._make_ref(ImageRef, f"{name}:{version}", key, resolved.workspace_id) if key else None
         )
         warning = None
         if visibility_value and key:
@@ -701,20 +714,24 @@ class Notebooks(Service):
         return self._mutate(ref, browser_api.cancel_notebook_image_save, workspace)
 
     def wait_image_ready(
-        self, image: ImageSaveHandle | ImageRef, timeout: float = 600, poll_interval: float = 5
-    ):
+        self,
+        ref: ImageSaveHandle | ImageRef,
+        *,
+        timeout: float = 600,
+        poll_interval: float = 5,
+    ) -> CustomImageInfo:
         _duration(timeout)
         _duration(poll_interval)
-        ref = image.ref if isinstance(image, ImageSaveHandle) else image
-        if ref is None:
+        resolved = ref.ref if isinstance(ref, ImageSaveHandle) else ref
+        if resolved is None:
             raise ValidationError(
-                "Image identity is not available yet; resolve it in the image catalog first."
+                "Image identity is not available yet; resolve it in the resolved catalog first."
             )
-        self.client._validate_ref(ref, ImageRef)
+        self.client._validate_ref(resolved, ImageRef)
         with self.client._transport.scope(timeout=timeout):
             try:
                 return browser_api.wait_for_image_ready(
-                    image_id=ref.key,
+                    image_id=resolved.key,
                     session=self.session,
                     timeout=timeout,
                     poll_interval=poll_interval,

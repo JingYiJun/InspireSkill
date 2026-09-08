@@ -413,7 +413,7 @@ def check_discovery(kind, client, catalog, monkeypatch):
     monkeypatch.setattr(
         module,
         f"list_{kind}_jobs",
-        lambda **kw: (rows[(kw["page_num"] - 1) * 100 : kw["page_num"] * 100], len(rows)),
+        lambda **kw: (rows[(kw["page_num"] - 1) * kw["page_size"] : kw["page_num"] * kw["page_size"]], len(rows)),
     )
     assert len(tuple(service.iter("Workspace"))) == 105
     page = service.list("Workspace", keyword="item10", limit=2)
@@ -555,3 +555,44 @@ def test_hpc_spec_defaults_match_cli_options():
         assert (defaults[name] if defaults[name] is not None else "") == (
             options[option_name] if options[option_name] is not None else ""
         ), name
+
+
+def test_hpc_list_respects_action_page_size(client, catalog, monkeypatch):
+    """A small catalog must never receive the old, rejected page_size=100."""
+    from inspire.platform.web.browser_api.hpc_jobs import HPCJobInfo
+    from inspire.platform.web.browser_api import hpc_jobs
+
+    rows = [HPCJobInfo.from_api_response({"job_id": f"hpc-{i}", "name": f"job-{i}"})
+            for i in range(45)]
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append((kwargs["page_num"], kwargs["page_size"]))
+        if kwargs["page_size"] > 50:
+            raise ValueError("InvalidParameter: page or page_size too large")
+        return rows[:kwargs["page_size"]], len(rows)
+
+    monkeypatch.setattr(hpc_jobs, "list_hpc_jobs", fetch)
+    page = client.hpc.list(catalog.ws.ref, limit=50)
+    assert len(page.items) == page.total == 45
+    assert len(tuple(client.hpc.iter(catalog.ws.ref))) == 45
+    assert calls and all(call == (1, 50) for call in calls)
+
+
+@pytest.mark.parametrize("kind,size", [("hpc", 50), ("ray", 20)])
+def test_workload_expands_first_page_once(client, catalog, monkeypatch, kind, size):
+    module = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    platform = import_module(f"inspire.platform.web.browser_api.{kind}_jobs")
+    info = platform.HPCJobInfo if kind == "hpc" else platform.RayJobInfo
+    key = "job_id" if kind == "hpc" else "ray_job_id"
+    rows = [info.from_api_response({key: f"key-{i}", "name": f"job-{i}"})
+            for i in range(73)]
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append((kwargs["page_num"], kwargs["page_size"]))
+        return rows[:kwargs["page_size"]], len(rows)
+
+    monkeypatch.setattr(module, f"list_{kind}_jobs", fetch)
+    assert len(getattr(client, kind).list(catalog.ws.ref, limit=100).items) == 73
+    assert calls == [(1, size), (1, 73)]

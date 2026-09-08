@@ -255,7 +255,7 @@ def test_image_catalog_sources_keyword_dedupe_detail(client, catalog, monkeypatc
     from inspire.cli.commands.image import image_commands
 
     monkeypatch.setattr(image_commands, "_resolve_image_name", lambda *a, **kw: "image-a")
-    assert client.images.detail(page.items[0].ref, catalog.ref).to_dict() == cli_json(
+    assert client.images.detail(page.items[0].ref, workspace=catalog.ref).to_dict() == cli_json(
         "image", "detail", "Image:v1", "--workspace", "Workspace"
     )
 
@@ -305,7 +305,7 @@ def test_datasets_pagination_detail_tags_and_validation(client, catalog, monkeyp
         return verdicts
 
     monkeypatch.setattr(mounts_api, "validate_dataset_mounts", validate)
-    sdk = client.datasets.validate(["data-0:v1", DatasetMount("data-1", "v2")], catalog.ref)
+    sdk = client.datasets.validate(["data-0:v1", DatasetMount("data-1", "v2")], workspace=catalog.ref)
     assert sdk[1].reason == "平台：无权限" and not sdk[1].mountable
     from inspire.cli.commands.dataset import dataset_commands
 
@@ -319,7 +319,7 @@ def test_datasets_pagination_detail_tags_and_validation(client, catalog, monkeyp
     assert result.exit_code != 0
     assert [x.to_dict() for x in sdk] == json.loads(result.output)["data"]["items"]
     with pytest.raises(ValidationError, match="expects"):
-        client.datasets.validate(["bad"], catalog.ref)
+        client.datasets.validate(["bad"], workspace=catalog.ref)
 
 
 def test_dataset_applications_modes(client, catalog, monkeypatch):
@@ -335,7 +335,7 @@ def test_dataset_applications_modes(client, catalog, monkeypatch):
             x.to_dict() for x in client.datasets.applications(to_approve=incoming).items
         ] == cli_json("dataset", "applications", *flags)["items"]
         assert [
-            x.to_dict() for x in client.datasets.applications("data", incoming).items
+            x.to_dict() for x in client.datasets.applications("data", to_approve=incoming).items
         ] == cli_json("dataset", "applications", "data", *flags)["items"]
 
 
@@ -374,12 +374,14 @@ def test_model_status_versions_deploy_config_and_json(client, catalog, monkeypat
     assert [x.to_dict() for x in client.models.list(catalog.ref).items] == cli_json(
         "model", "list", "--workspace", "Workspace"
     )["items"]
-    status = client.models.status("MODEL", catalog.ref)
+    status = client.models.status(["MODEL"], workspace=catalog.ref)[0]
+    assert client.models.status([]) == ()
+    assert client.models.status([status.ref, status.ref]) == (status, status)
     assert status.version == "V2" and status.vllm_ready is True and status.pending_serving
     assert status.servings == [{"name": "live", "status": "RUNNING"}]
     assert status.other_versions_in_use == ["V1"] and "version" not in pending_calls[0]
     assert status.to_dict() == cli_json("model", "status", "Model", "--workspace", "Workspace")
-    assert [x.to_dict() for x in client.models.versions(status.ref, catalog.ref)] == cli_json(
+    assert [x.to_dict() for x in client.models.versions(status.ref, workspace=catalog.ref)] == cli_json(
         "model", "versions", "Model", "--workspace", "Workspace"
     )["items"]
     monkeypatch.setattr(
@@ -393,7 +395,7 @@ def test_model_status_versions_deploy_config_and_json(client, catalog, monkeypat
         },
     )
     monkeypatch.setattr(api, "check_model_vllm_compatible", lambda *a, **kw: True)
-    assert client.models.deploy_config(status.ref, catalog.ref).to_dict() == cli_json(
+    assert client.models.deploy_config(status.ref, workspace=catalog.ref).to_dict() == cli_json(
         "model", "deploy-config", "Model", "--workspace", "Workspace"
     )
 
@@ -406,13 +408,13 @@ def test_model_exact_resolution_pagination_and_ref_scope(client, catalog, monkey
         client.models.list(catalog.ref, limit=1, cursor=page.next_cursor).items[0].ref.key == "two"
     )
     with pytest.raises(AmbiguousResourceError):
-        client.models.get("same", catalog.ref)
-    assert client.models.get(page.items[0].ref, catalog.ref).name == "same"
+        client.models.get("same", workspace=catalog.ref)
+    assert client.models.get(page.items[0].ref, workspace=catalog.ref).name == "same"
     with pytest.raises(ValidationError):
-        client.models.status(replace(page.items[0].ref, account="other"), catalog.ref)
+        client.models.status([replace(page.items[0].ref, account="other")], workspace=catalog.ref)[0]
     monkeypatch.setattr(api, "list_models", lambda **kw: ([models[0]], 2))
     with pytest.raises(ResolutionIncompleteError):
-        client.models.get("same", catalog.ref)
+        client.models.get("same", workspace=catalog.ref)
 
 
 @pytest.mark.parametrize("details,mine", [(False, False), (True, False), (False, True)])
@@ -555,7 +557,7 @@ def test_collect_pages_deduplicates_overlapping_pages(client):
         calls.append(page)
         return pages[page]
 
-    assert client.datasets.collect_pages(fetch, str) == ["a", "b", "c"]
+    assert client.datasets._collect_pages(fetch, str) == ["a", "b", "c"]
     assert calls == [1, 2]
 
 
@@ -568,7 +570,7 @@ def test_collect_pages_rejects_incomplete_catalog(client, empty):
         return ([] if empty else ["same"], 101)
 
     with pytest.raises(ResolutionIncompleteError):
-        client.datasets.collect_pages(fetch, str)
+        client.datasets._collect_pages(fetch, str)
     assert len(calls) == (1 if empty else 100)
 
 
@@ -610,7 +612,7 @@ def test_dataset_validation_parses_strings_once_and_preserves_mounts(client, cat
 
     monkeypatch.setattr(datasets, "parse_dataset_spec", parse)
     monkeypatch.setattr(mounts_api, "validate_dataset_mounts", validate)
-    assert client.datasets.validate([" data-0 : v1 ", mount], catalog.ref) == ()
+    assert client.datasets.validate([" data-0 : v1 ", mount], workspace=catalog.ref) == ()
     assert calls == [" data-0 : v1 "]
     with pytest.raises(ValidationError, match="--dataset data-1:v2 was given more than once"):
-        client.datasets.validate([mount, " data-1 : v2 "], catalog.ref)
+        client.datasets.validate([mount, " data-1 : v2 "], workspace=catalog.ref)

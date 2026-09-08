@@ -29,4 +29,4 @@ Project documentation:
 
 ## Python SDK
 
-The package also exposes an experimental synchronous `InspireClient` for Python orchestration. Existing CLI defaults and installation dependencies are unchanged. See the [SDK guide](../references/sdk.md) for account setup, resource references, single-dispatch submission, bounded logs and validation limits.
+实验性同步入口 `from inspire import InspireClient` 覆盖全部平台侧 CLI 命令组，复用同一包的账号与共享服务。Client 提供 `workspaces`、`projects`、`compute_groups`、`images`、`datasets`、`models`、`resources`、`account_info`、`api_keys`、`jobs`、`notebooks`、`hpc`、`ray`、`servings`、`tensorboards`。本地配置、连接工具和终端渲染仍由 CLI 提供；参见 [Python SDK 指南](../references/sdk.md)。

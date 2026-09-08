@@ -47,6 +47,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
     _model = Serving
     _failure = ServingFailedError
     _binding = WorkloadBinding[ServingInstanceView](
+        list_page_size=20,
+        expand_list=True,
         list_jobs=core.list_servings,
         get_detail=api.get_serving_detail,
         start=api.start_serving,
@@ -79,7 +81,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     def _all(self, ws, project=None, keyword=None):
         project_id = self._project(ws, project).ref.key if project is not None else None
-        rows = self.collect_pages(
+        rows = self._collect_pages(
             lambda **paging: api.list_servings(
                 workspace_id=ws.ref.key,
                 project_ids=[project_id] if project_id else None,
@@ -88,6 +90,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 **paging,
             ),
             lambda row: row.inference_serving_id,
+            page_size=self._binding.list_page_size,
+            expand_list=self._binding.expand_list,
         )
         return [
             self._job(
@@ -104,7 +108,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         rows = [
             Resource(
                 str(row.get("project_name") or row.get("name") or ""),
-                self.ref(
+                self._make_ref(
                     ProjectRef,
                     str(row.get("project_name") or row.get("name") or ""),
                     str(row.get("project_id") or row.get("id") or ""),
@@ -118,9 +122,14 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def list(
-        self, workspace: str | WorkspaceRef, project: str | ProjectRef | None = None,
-        status: str | None = None, keyword: str | None = None, *,
-        limit: int = 20, cursor: str | None = None,
+        self,
+        workspace: str | WorkspaceRef,
+        *,
+        project: str | ProjectRef | None = None,
+        status: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
     ) -> Page[Serving]:
         ws = self.client.workspaces.get(workspace)
         rows = [
@@ -128,7 +137,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             for r in self._all(ws, project, keyword)
             if statuses.matches_status(r.raw_status, status)
         ]
-        return self.page(
+        return self._page(
             rows, limit=limit, cursor=cursor, query=(ws.ref.key, project, status, keyword)
         )
 
@@ -141,7 +150,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         cursor: str | None = None
         seen: set[str] = set()
         while True:
-            page = self.list(workspace, project, status, keyword, cursor=cursor)
+            page = self.list(workspace, project=project, status=status, keyword=keyword, cursor=cursor)
             for row in page.items:
                 if row.ref.key not in seen:
                     seen.add(row.ref.key)
@@ -173,9 +182,12 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def status(
-        self, names: Sequence[str | ServingRef], workspace: str | WorkspaceRef | None = None
+        self,
+        refs: Sequence[str | ServingRef],
+        *,
+        workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Serving, ...]:
-        return tuple(self.get(ref, workspace=workspace) for ref in names)
+        return tuple(self.get(ref, workspace=workspace) for ref in refs)
 
     @operation
     def plan(self, spec: ServingCreateSpec) -> ServingPlan:
@@ -211,7 +223,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 return exact(
                     [
                         Resource(
-                            row["name"], self.ref(ModelRef, row["name"], row["id"], ws.ref.key)
+                            row["name"], self._make_ref(ModelRef, row["name"], row["id"], ws.ref.key)
                         )
                         for row in candidates
                     ],
@@ -295,7 +307,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             project,
             Resource(
                 quota.compute_group_name,
-                self.ref(
+                self._make_ref(
                     ComputeGroupRef,
                     quota.compute_group_name,
                     quota.logic_compute_group_id,
@@ -313,7 +325,10 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def create(
-        self, spec: ServingCreateSpec, operation_id: str | None = None
+        self,
+        spec: ServingCreateSpec,
+        *,
+        operation_id: str | None = None,
     ) -> ServingHandle:
         identifier = uuid4().hex if operation_id is None else operation_id
         if not isinstance(identifier, str) or not identifier:
@@ -326,7 +341,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         if not key:
             raise SubmissionUncertainError(identifier)
         return ServingHandle(
-            plan.name, self.ref(ServingRef, plan.name, key, plan.workspace.ref.key), identifier
+            plan.name, self._make_ref(ServingRef, plan.name, key, plan.workspace.ref.key), identifier
         )
 
     @operation
@@ -335,7 +350,11 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def scale(
-        self, ref: str | ServingRef, replicas: int, *, workspace: str | WorkspaceRef | None = None
+        self,
+        ref: str | ServingRef,
+        *,
+        replicas: int,
+        workspace: str | WorkspaceRef | None = None,
     ) -> None:
         if type(replicas) is not int or replicas < 0:
             raise ValidationError("replicas must be a non-negative integer.")
@@ -345,7 +364,11 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def rollback(
-        self, ref: str | ServingRef, version: int, *, workspace: str | WorkspaceRef | None = None
+        self,
+        ref: str | ServingRef,
+        *,
+        version: int,
+        workspace: str | WorkspaceRef | None = None,
     ) -> None:
         if type(version) is not int or version < 1:
             raise ValidationError("version must be a positive integer.")
@@ -354,8 +377,13 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         )
 
     def wait(
-        self, ref: str | ServingRef, timeout: float = 3600, poll_interval: float = 10,
-        raise_on_failure: bool = False, *, workspace: str | WorkspaceRef | None = None,
+        self,
+        ref: str | ServingRef,
+        *,
+        timeout: float = 3600,
+        poll_interval: float = 10,
+        raise_on_failure: bool = False,
+        workspace: str | WorkspaceRef | None = None,
         target: str = "RUNNING",
     ) -> Serving:
         duration(timeout)
@@ -388,11 +416,11 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         limit: int = 20, cursor: str | None = None,
     ) -> Page[dict[str, Any]]:
         resolved = self._resolve(ref, workspace)
-        rows = self.collect_pages(
+        rows = self._collect_pages(
             lambda **kw: api.list_serving_scale_history(resolved.key, session=self.session, **kw),
             lambda row: row.get("id") or repr(row),
         )
-        return self.page(
+        return self._page(
             [public_scale_history_entry(row) for row in rows],
             limit=limit,
             cursor=cursor,
@@ -408,7 +436,10 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def api(
-        self, ref: str | ServingRef, affinity_key: str | None = None, *,
+        self,
+        ref: str | ServingRef,
+        *,
+        affinity_key: str | None = None,
         workspace: str | WorkspaceRef | None = None,
     ) -> dict[str, Any]:
         resolved = self._resolve(ref, workspace)
@@ -422,8 +453,13 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
 
     @operation
     def api_metrics(
-        self, ref: str | ServingRef, metric: str | None = None, window: str = "1h",
-        interval: str | None = None, *, workspace: str | WorkspaceRef | None = None,
+        self,
+        ref: str | ServingRef,
+        *,
+        metric: str | None = None,
+        window: str = "1h",
+        interval: str | None = None,
+        workspace: str | WorkspaceRef | None = None,
     ) -> dict[str, Any]:
         from inspire.platform.web.browser_api.metrics import INTERVAL_CHOICES
 

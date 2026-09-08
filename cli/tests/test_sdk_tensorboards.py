@@ -143,7 +143,7 @@ def test_wait_and_data(client, catalog, monkeypatch):
     ref = TensorboardRef("board", client.account, client.base_url, "tb-test", "ws-test")
     statuses = iter(["creating", "running"])
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board(next(statuses)))
-    assert client.tensorboards.wait(ref, "TB_STATUS_RUNNING", poll_interval=0.001).status == "running"
+    assert client.tensorboards.wait(ref, target="TB_STATUS_RUNNING", poll_interval=0.001).status == "running"
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board())
     monkeypatch.setattr(api, "read_tensorboard_runs", lambda *a, **kw: ["."])
     monkeypatch.setattr(api, "read_tensorboard_scalar_tags", lambda *a, **kw: {".": ["loss"]})
@@ -151,7 +151,7 @@ def test_wait_and_data(client, catalog, monkeypatch):
         api, "read_tensorboard_scalar_series", lambda *a, **kw: [(1.0, 2, 0.2), (2.0, 1, 0.8)]
     )
     assert client.tensorboards.tags(ref)["runs"] == ["."]
-    series = client.tensorboards.scalars(ref, "loss", points=1)["series"][0]
+    series = client.tensorboards.scalars(ref, tag="loss", points=1)["series"][0]
     assert (
         series["first_value"] == 0.8
         and series["last_value"] == 0.2
@@ -162,10 +162,27 @@ def test_wait_and_data(client, catalog, monkeypatch):
     with pytest.raises(ValidationError):
         client.tensorboards.tags(ref)
     with pytest.raises(WaitTimeoutError):
-        client.tensorboards.wait(ref, "running", timeout=0.002, poll_interval=0.001)
+        client.tensorboards.wait(ref, target="running", timeout=0.002, poll_interval=0.001)
 
 
 def test_list_job_filter(client, catalog, monkeypatch):
     monkeypatch.setattr(api, "list_tensorboards", lambda **kw: ([board()], 1))
     assert client.tensorboards.list("Workspace", job="train").items[0].name == "board"
     assert not client.tensorboards.list("Workspace", job="another").items
+
+
+def test_batch_status_and_failed_wait(client, catalog, monkeypatch):
+    from inspire import TensorboardFailedError
+
+    ref = TensorboardRef("board", client.account, client.base_url, "tb-test", "ws-test")
+    monkeypatch.setattr(api, "list_tensorboards", lambda **kw: ([board()], 1))
+    monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board())
+    assert client.tensorboards.status([]) == ()
+    snapshots = client.tensorboards.status(["board", ref], workspace="Workspace")
+    assert isinstance(snapshots, tuple) and len(snapshots) == 2
+    assert all(snapshot.ref.key == ref.key for snapshot in snapshots)
+    monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board("failed"))
+    assert client.tensorboards.wait(ref).status == "failed"
+    with pytest.raises(TensorboardFailedError) as error:
+        client.tensorboards.wait(ref, raise_on_failure=True)
+    assert error.value.tensorboard.ref == ref
