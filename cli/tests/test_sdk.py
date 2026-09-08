@@ -69,6 +69,7 @@ import inspire.services.notebooks
 import inspire.services.notebook_status
 import inspire.services.notebook_output
 import inspire.services.workload_quota
+import inspire.services.job_output
 for kind in ("hpc", "ray"):
     for module in ("submission", "status", "instances", "logs", "events", "output"):
         importlib.import_module(f"inspire.services.{kind}_{module}")
@@ -717,10 +718,55 @@ def test_status_batch_and_command(client, monkeypatch):
         calls.append(key)
         return {"name": key, "status": "job_running", "command": "echo hello"}
 
+    batch_calls = []
+
+    def batch(keys, **kw):
+        batch_calls.append((keys, kw["workspace_id"]))
+        return {key: {"status": "job_running", "priority": 6, "command": "echo hello"}
+                for key in reversed(keys)}
+
     monkeypatch.setattr("inspire.platform.web.browser_api.jobs.get_job_detail_v2", detail)
-    assert [j.name for j in client.jobs.status(refs)] == ["first", "second"]
+    monkeypatch.setattr("inspire.platform.web.browser_api.jobs.list_jobs_by_ids", batch)
+    result = client.jobs.status([refs[1], refs[0], refs[1]])
+    assert [j.name for j in result] == ["second", "first", "second"]
+    assert batch_calls == [(["second", "first", "second"], "ws-test")]
+    for job in result:
+        assert job.view == {"name": job.name, "status": "job_running", "priority": 6}
+        assert job.to_dict() == job.view
+        assert job.raw["command"] == "echo hello"
     assert client.jobs.command(refs[0]) == "echo hello"
-    assert calls == ["first", "second", "first"]
+    assert calls == ["first"]
+
+
+def test_training_job_status_workspace_groups(client, monkeypatch):
+    refs = [JobRef("Training", "alpha", client.base_url, "same-key", ws)
+            for ws in ("ws-first", "ws-second")]
+    calls = []
+
+    def batch(keys, *, workspace_id, session):
+        calls.append(workspace_id)
+        return {"same-key": {"workspace_id": workspace_id, "priority": len(calls)}}
+
+    monkeypatch.setattr("inspire.platform.web.browser_api.jobs.list_jobs_by_ids", batch)
+    result = client.jobs.status(refs)
+    assert [job.view["priority"] for job in result] == [1, 2]
+    assert [job.ref for job in result] == refs
+    assert calls == ["ws-first", "ws-second"]
+    assert client.jobs.status([]) == ()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("record", [None, {"workspace_id": "wrong-workspace"}])
+def test_training_job_status_rejects_missing_or_wrong_workspace(client, monkeypatch, record):
+    from inspire import ResourceNotFoundError
+
+    ref = JobRef("Training", "alpha", client.base_url, "job-test", "ws-test")
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.jobs.list_jobs_by_ids",
+        lambda *a, **kw: {} if record is None else {ref.key: record},
+    )
+    with pytest.raises(ResourceNotFoundError if record is None else ValidationError):
+        client.jobs.status([ref])
 
 
 def test_events_filters_and_structured_instances(client, monkeypatch):

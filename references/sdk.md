@@ -62,6 +62,8 @@ client.close()
 
 集合接口为 `list(workspace, *, ...filters, limit=20, cursor=None)`、`iter(workspace, *, ...filters, max_items=None)` 和 `quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)`；无工作区的目录保留其首个选择参数或无参数。以工作区为主要操作对象的方法（包括 `resources.availability/policy/usage`、`account_info.permissions` 和 `servings.configs`）将 `workspace` 作为首参数，接受位置或关键字传入，其余参数仅接受关键字；`account_info.permissions(workspace=None)` 的工作区可省略。其他方法中的工作区筛选参数仅接受关键字。单资源操作第一参数统一叫 `ref`，其余参数只接受关键字；批量 `status(refs, *, workspace=None)` 接受名称或类型化引用的序列，按输入顺序返回元组，空序列返回空元组。
 
+训练 Jobs 和 HPC 的 `status()` 在解析引用后通过平台批量 Action 查询，按工作区分组，每 20 个引用一次请求（重复 ID 在分块前去重）。Ray、Serving、Notebook 仍逐个引用读取。两种路径返回的资源对象与 `get()` 完全相同，包括 `raw` 和 `view`；输入顺序和重复引用均保留。名称选择仍需先进行名称解析。
+
 `Page` 提供 `items`、`next_cursor`、`total`，通过相同过滤条件与 `cursor=page.next_cursor` 继续。Jobs、Notebook、HPC、Ray、Serving 的列表采用服务端分页，按需取页直到收集到 `limit` 项或目录结束；游标记录平台行偏移，并绑定账号、门面及查询条件，不是平台快照。迭代器沿游标继续并对身份去重，`max_items` 控制产出数。Notebook、HPC、Ray、Serving 列表未应用本地过滤时，`total` 使用平台报告的总数；应用本地状态或关键词过滤时为 `None`，平台未提供可靠总数时也为 `None`。其他目录（包括 TensorBoard）仍可能先有界枚举再做本地分页。
 
 HPC、Ray、Serving 的请求页大小固定为 50、20、20，Notebook 为 100；不会按总数扩大请求。平台列表接口只服务 `page_num × page_size ≤ 5000` 的请求（更深的页返回 `InvalidParameter`），因此任何列表或迭代最多能到达第 5000 行；SDK 在发出这类请求之前就抛 `ResolutionIncompleteError`，提示用 `status`/`keyword` 收窄或用 `max_items` 截止。缺页、重复页或单次扫描超过 100 页时同样抛 `ResolutionIncompleteError`。Serving、Notebook、TensorBoard 名称解析先发送 `keyword` 再精确匹配；当前 HPC/Ray ListJobs 合同不支持关键词过滤，名称解析最多扫描 100 页，无法确认唯一性时抛 `ResolutionIncompleteError`，可使用已有类型化引用直接查询。
@@ -203,6 +205,8 @@ with InspireClient(catalog_ttl=60) as client:
 | `jobs.status(refs, *, workspace=None)` | `job status` |
 | `jobs.stop(ref, *, workspace=None)` | `job stop` |
 | `jobs.wait(ref, *, workspace=None, timeout=3600, poll_interval=10, raise_on_failure=False)` | `job wait` |
+
+与 HPC、Ray、Serving 一样，训练任务 `Job.raw` 保留平台载荷，`Job.view` 是稳定的公开投影，`Job.to_dict()` 返回 `view` 的浅拷贝。`jobs.get()` 的 `view` 与同一详情载荷的 `inspire job status --json` 业务字段一致；`list()` / `iter()` 和批量 `status()` 也提供 `raw` / `view`，字段取决于平台记录。计算组、资源、节点与优先级等公开字段可从 `view` 读取；镜像等未进入公开投影的详情字段可从 `raw` 读取。
 
 `jobs.logs()` 的默认时间范围及显式 `window` 最长为 30 天：保留结束时间并向后移动开始时间；CLI `job logs` 复用同一截断逻辑。
 

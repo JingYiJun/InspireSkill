@@ -625,3 +625,83 @@ def test_dataset_validation_parses_strings_once_and_preserves_mounts(client, cat
     assert calls == [" data-0 : v1 "]
     with pytest.raises(ValidationError, match="--dataset data-1:v2 was given more than once"):
         client.datasets.validate([mount, " data-1 : v2 "], workspace=catalog.ref)
+
+
+@pytest.mark.parametrize("include_name", [True, False])
+def test_training_job_detail_matches_cli_json(client, catalog, monkeypatch, include_name):
+    from inspire import JobRef
+    from inspire.cli.commands.job import job_commands as cli
+    from inspire.platform.web.browser_api import jobs
+
+    ref = JobRef("Training", client.account, client.base_url, "job-test", catalog.ref.key)
+    detail = {
+        "job_id": ref.key,
+        "workspace_id": catalog.ref.key,
+        "status": "job_running",
+        "project_name": "Project",
+        "logic_compute_group_name": "Group",
+        "framework_config": [{
+            "cpu": 8, "memory_size": 32, "gpu_count": 1, "instance_count": 2,
+            "image": "registry.example.test/training:v1",
+        }],
+        "priority": 6,
+        "created_at": "1700000000000",
+        "node_infos": [{"node_name": "worker-a"}],
+        "command": "python train.py",
+    }
+    if include_name:
+        detail["name"] = ref.name
+    calls = []
+
+    def fake_detail(key, **kwargs):
+        calls.append(key)
+        return detail
+
+    monkeypatch.setattr(jobs, "get_job_detail_v2", fake_detail)
+    monkeypatch.setattr(api, "get_job_detail_v2", fake_detail)
+    monkeypatch.setattr(
+        cli, "_run_readonly_web_job_operation",
+        lambda **kw: kw["operation"](ref.key, client._transport.session),
+    )
+    monkeypatch.setattr(cli, "_close_web_client", lambda: None)
+    job = client.jobs.get(ref)
+    assert job.view == cli_json("job", "status", ref.name, "--workspace", catalog.name)
+    assert calls == [ref.key, ref.key]
+    assert job.view["name"] == ref.name
+    assert job.view["compute_group"] == "Group"
+    assert job.view["resource"]["nodes"] == 2
+    assert job.view["priority"] == 6
+    assert job.raw == detail and job.raw is not detail
+    assert job.raw["command"] == "python train.py"
+    assert "command" not in job.view and "framework_config" not in job.view
+    assert job.to_dict() == job.view and job.to_dict() is not job.view
+
+
+@pytest.mark.parametrize("nested_raw", [False, True])
+def test_training_job_list_and_iter_views(client, catalog, monkeypatch, nested_raw):
+    from dataclasses import dataclass, field
+    from typing import Any
+    from inspire.platform.web.browser_api import jobs
+
+    @dataclass
+    class JobWithRaw(jobs.JobInfo):
+        raw: dict[str, Any] = field(default_factory=dict)
+
+    model = JobWithRaw if nested_raw else jobs.JobInfo
+    row = model.from_api_response({
+        "job_id": "job-test", "name": "Training", "status": "job_running",
+        "project_name": "Project", "logic_compute_group_name": "Group",
+        "framework_config": [{"cpu": 8, "instance_count": 2}],
+    })
+    if nested_raw:
+        row.raw = {"name": "stale-name", "image": "training:v1", "priority_level": "high"}
+    monkeypatch.setattr(jobs, "list_jobs", lambda **kw: ([row], 1))
+    for job in (*client.jobs.list(catalog.ref).items, *client.jobs.iter(catalog.ref)):
+        assert job.view["name"] == "Training"
+        assert job.view["compute_group"] == "Group"
+        assert job.view["resource"]["cpu"] == 8
+        assert job.to_dict() == job.view
+        assert "raw" not in job.raw
+        if nested_raw:
+            assert job.raw["image"] == "training:v1"
+            assert job.view["priority_level"] == "high"

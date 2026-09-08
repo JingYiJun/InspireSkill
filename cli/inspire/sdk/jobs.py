@@ -38,6 +38,7 @@ from .exceptions import (
     SubmissionUncertainError,
     JobFailedError,
 )
+from inspire.services.job_output import public_job_status
 from inspire.services.job_status import normalize_status, TERMINAL_STATUSES
 
 
@@ -103,6 +104,9 @@ class Jobs(Service):
         raise ResolutionIncompleteError("Job scan exceeded 100 pages; narrow the query.")
 
     def _job(self, data, workspace_id, ref=None):
+        data = dict(data)
+        nested_raw = data.pop("raw", None) or {}
+        data = dict(nested_raw, **data)
         name = str(data.get("name") or (ref.name if ref else ""))
         key = data.get("job_id") or (ref.key if ref else "")
         raw = str(data.get("status") or "")
@@ -114,6 +118,8 @@ class Jobs(Service):
             str(data.get("project_name") or ""),
             str(data.get("created_at") or ""),
             str(data.get("finished_at") or ""),
+            dict(data),
+            public_job_status(data, fallback_name=name),
         )
 
     @operation
@@ -543,7 +549,25 @@ class Jobs(Service):
         *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Job, ...]:
-        return tuple(self.get(ref, workspace=workspace) for ref in refs)
+        from inspire.platform.web.browser_api.jobs import list_jobs_by_ids
+
+        resolved = [self._resolve(ref, workspace) for ref in refs]
+        groups: dict[str, builtins.list[str]] = {}
+        for ref in resolved:
+            groups.setdefault(ref.workspace_id, []).append(ref.key)
+        records = {
+            ws: list_jobs_by_ids(keys, workspace_id=ws, session=self.session)
+            for ws, keys in groups.items()
+        }
+        jobs = []
+        for ref in resolved:
+            data = records[ref.workspace_id].get(ref.key)
+            if not data:
+                raise ResourceNotFoundError("Job no longer exists or is not visible.")
+            if data.get("workspace_id") and data["workspace_id"] != ref.workspace_id:
+                raise ValidationError("Job reference workspace does not match platform detail.")
+            jobs.append(self._job(data, ref.workspace_id, ref))
+        return tuple(jobs)
 
     @operation
     def command(

@@ -137,6 +137,12 @@ class Job:
     created_at: str = ""
     finished_at: str = ""
 
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
+    view: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.view)
+
 
 @dataclass(frozen=True)
 class JobHandle:

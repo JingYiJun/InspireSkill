@@ -26,6 +26,8 @@ from inspire import (
     MutationUncertainError,
     AmbiguousResourceError,
     ResolutionIncompleteError,
+    ResourceNotFoundError,
+    ServingRef,
 )
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.projects import ProjectInfo
@@ -450,6 +452,11 @@ def check_discovery(kind, client, catalog, monkeypatch):
     monkeypatch.setattr(
         module, f"get_{kind}_job_detail", lambda *a, **kw: {"name": "item100", "status": "FAILED"}
     )
+    if kind == "hpc":
+        monkeypatch.setattr(
+            module, "list_hpc_jobs_by_ids",
+            lambda keys, **kw: {key: {"name": "item100", "status": "FAILED"} for key in keys},
+        )
     assert service.status([selected])[0].status == "FAILED"
     rows[0].name = "item100"
     with pytest.raises(AmbiguousResourceError):
@@ -744,3 +751,77 @@ def test_hpc_iter_stops_before_platform_row_cap(client, catalog, monkeypatch):
     assert len(seen) == 5000
     assert calls == list(range(1, 101))
     assert len(list(client.hpc.iter("Workspace", max_items=5000))) == 5000
+
+
+@pytest.mark.parametrize("workspace_ids", [("ws-test",), ("ws-test", "ws-other")])
+def test_hpc_status_batches_in_input_order(client, monkeypatch, workspace_ids):
+    module = import_module("inspire.platform.web.browser_api.hpc_jobs")
+    refs = [
+        HPCJobRef(str(i), client.account, client.base_url, f"key{i}", ws)
+        for ws in workspace_ids for i in reversed(range(21))
+    ]
+    refs.insert(1, refs[-1])
+    calls = []
+
+    def detail(key, *, session):
+        return {"job_id": key, "name": key, "status": "RUNNING", "priority": 6,
+                "entrypoint": "echo hello", "project_name": "Project"}
+
+    def batch(keys, *, workspace_id, session):
+        calls.append((list(keys), workspace_id))
+        assert session is client._transport._session
+        return {key: detail(key, session=session) for key in reversed(keys)}
+
+    monkeypatch.setattr(module, "list_hpc_jobs_by_ids", batch)
+    monkeypatch.setattr(module, "get_hpc_job_detail", detail)
+    expected = tuple(client.hpc.get(ref) for ref in refs)
+    monkeypatch.setattr(module, "get_hpc_job_detail", lambda *a, **kw: pytest.fail("detail fan-out"))
+    result = client.hpc.status(refs)
+    assert calls == [
+        ([ref.key for ref in refs if ref.workspace_id == ws], ws) for ws in workspace_ids
+    ]
+    assert tuple(job.ref for job in result) == tuple(refs)
+    assert result == expected
+    assert all(job.raw == other.raw and job.view == other.view
+               for job, other in zip(result, expected))
+    calls.clear()
+    assert client.hpc.status([]) == ()
+    assert calls == []
+
+
+@pytest.mark.parametrize("record", [None, {"workspace_id": "ws-other"}])
+def test_hpc_status_errors_match_get(client, monkeypatch, record):
+    module = import_module("inspire.platform.web.browser_api.hpc_jobs")
+    ref = HPCJobRef("job", client.account, client.base_url, "key", "ws-test")
+    monkeypatch.setattr(module, "get_hpc_job_detail", lambda *a, **kw: record)
+    monkeypatch.setattr(
+        module, "list_hpc_jobs_by_ids", lambda keys, **kw: {} if record is None else {"key": record}
+    )
+    error = ResourceNotFoundError if record is None else ValidationError
+    with pytest.raises(error) as detail_error:
+        client.hpc.get(ref)
+    with pytest.raises(error) as batch_error:
+        client.hpc.status([ref])
+    assert str(batch_error.value) == str(detail_error.value)
+
+
+@pytest.mark.parametrize("kind,ref_type", [("ray", RayJobRef), ("servings", ServingRef)])
+def test_status_without_batch_hook_keeps_detail_fanout(client, monkeypatch, kind, ref_type):
+    service = getattr(client, kind)
+    refs = [ref_type(key, client.account, client.base_url, key, "ws-test")
+            for key in ("second", "first", "second")]
+    calls = []
+
+    def detail(key, *, session):
+        calls.append(key)
+        return {"name": key, "status": "RUNNING"}
+
+    assert service._binding.get_details_by_ids is None
+    monkeypatch.setattr(service, "_binding", replace(service._binding, get_detail=detail))
+    result = service.status(refs)
+    assert calls == [ref.key for ref in refs]
+    assert tuple(job.ref for job in result) == tuple(refs)
+    assert result == tuple(service.get(ref) for ref in refs)
+    calls.clear()
+    assert service.status([]) == ()
+    assert calls == []

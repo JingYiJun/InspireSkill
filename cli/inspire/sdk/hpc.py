@@ -81,6 +81,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         list_page_size=50,
         list_jobs=lambda **kwargs: api.list_hpc_jobs(**kwargs),
         get_detail=lambda key, **kwargs: api.get_hpc_job_detail(key, **kwargs),
+        get_details_by_ids=lambda keys, **kwargs: api.list_hpc_jobs_by_ids(keys, **kwargs),
         stop=lambda key, **kwargs: api.stop_hpc_job(key, **kwargs),
         delete=lambda key, **kwargs: api.delete_hpc_job(key, **kwargs),
         start=None,

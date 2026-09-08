@@ -72,6 +72,7 @@ class WorkloadBinding(Generic[V]):
     task_type: str
     metric_group: Callable[[object], str | None]
     expand_tail_fetch: bool
+    get_details_by_ids: Callable[..., dict[str, dict]] | None = None
 
 
 def duration(value: float) -> None:
@@ -246,7 +247,30 @@ class ComputeJobs(Service, Generic[R, J, V]):
         *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[J, ...]:
-        return tuple(self.get(ref, workspace=workspace) for ref in refs)
+        get_details = self._binding.get_details_by_ids
+        if get_details is None:
+            return tuple(self.get(ref, workspace=workspace) for ref in refs)
+        resolved = [self._resolve(ref, workspace) for ref in refs]
+        groups: dict[str, builtins.list[str]] = {}
+        for ref in resolved:
+            groups.setdefault(ref.workspace_id, []).append(ref.key)
+        records = {
+            ws: get_details(keys, workspace_id=ws, session=self.session)
+            for ws, keys in groups.items()
+        }
+        jobs = []
+        for ref in resolved:
+            data = records[ref.workspace_id].get(ref.key)
+            if not data:
+                raise ResourceNotFoundError("Job no longer exists or is not visible.")
+            if (
+                ref.workspace_id
+                and data.get("workspace_id")
+                and data["workspace_id"] != ref.workspace_id
+            ):
+                raise ValidationError("Job reference workspace does not match platform detail.")
+            jobs.append(self._job(data, ref.workspace_id, ref))
+        return tuple(jobs)
 
     def wait(
         self,
