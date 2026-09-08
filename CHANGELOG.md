@@ -2,8 +2,25 @@
 
 ## Unreleased
 
-- Serving 的 list/status/create 输出平台 Endpoint；列表完整保留已校验地址，不清洗域名中的句柄或截断长地址。新增 `serving api`，生成 Bearer 鉴权、`INF_API_KEY` 和可选 `x-inspire-inference-key` 亲和性 Header 的调用说明与 curl 示例。CUSTOM 服务不假定 OpenAI 兼容。
-- 新增 `account api-key list/create/export/run/delete`，按名称管理账号推理密钥。export 支持 raw、dotenv、sh、powershell 格式、私有文件和显式 stdout；run 将密钥直接注入子进程环境。文件在 POSIX 使用 `0600`、Windows 使用经校验的当前用户 ACL，原子发布且不覆盖已有文件；普通输出和 JSON 不含密钥值；创建和删除后读回确认，读取失败时明确标记 confirmation pending。
+## v7.1.8
+
+### 新增
+
+- **Serving 输出可直接使用的平台 Endpoint。** `serving list/status` 展示已校验的完整地址，`serving create` 成功后尝试读取地址，尚未取得时提示稍后查询。表格和 JSON 保留域名中的必要句柄，列表不截断长地址；地址在服务停止后仍可能保留，不能据此判断服务已就绪。
+
+- **新增 `serving api` 调用说明与 curl 示例。** 输出 Endpoint、`INF_API_KEY` 环境变量及 `Authorization: Bearer` 鉴权用法，支持 `--format curl` 和根级 `--json`；`--affinity-key` 可生成用于节点亲和性的 `x-inspire-inference-key` Header。CUSTOM 服务的路径、方法和请求体由容器定义，不假定 OpenAI 兼容；EXCLUSIVE / SERVERLESS 类型提供 `/v1` 与 `/v1/chat/completions` 示例。命令只生成说明，不发送推理请求或获取密钥。
+
+- **新增账号推理密钥管理命令。** `account api-key list/create/export/run/delete` 按名称管理所选账号的 API Key，同名对象使用 `--pick` 消歧。列表只显示名称和创建时间；创建、删除后读回确认，确认读取失败时明确显示 `confirmation pending`，便于先查询结果再决定是否重试。
+
+- **密钥可导出为文件、Shell 赋值或直接注入客户端。** `export` 支持 `raw`、`dotenv`、`sh`、`powershell`，通过 `--output` 新建私有文件或用显式 `--stdout` 输出明文；`run` 将密钥注入子进程的 `INF_API_KEY` 并传播退出状态，`--env-name` 可指定变量名。普通输出、文件导出结果和 JSON 不含密钥值，明文 stdout 与 `--json` 不能同时使用。
+
+### 修复与维护
+
+- **密钥文件导出支持原生 Windows 权限。** Linux / macOS 使用 `0600`，Windows 通过当前 PowerShell 引擎对应的安全模块设置并读回校验仅当前用户的受保护 ACL；文件完整写入后原子发布，不覆盖已有文件或符号链接。Shell 格式按对应语法引用字面值，dotenv 拒绝可能触发变量或波浪号展开的值，并提示改用其他格式。
+
+- **镜像列表测试兼容并发获取顺序。** 仍要求每类镜像来源恰好读取一次，移除对线程执行顺序的假设，避免正确的并发行为导致测试偶发失败。
+
+- **同步 Serving 与 API Key 的使用和开发参考。** 明确推理密钥与部署配置、用户中心 AccessKey、SSH 公钥的边界，说明 Endpoint 校验、亲和性 Header、导出格式和权限合同；移除已退役的 Serving Profile 指引，补齐命令输出、名称消歧、Shell 转义及 Windows ACL 回归覆盖。
 
 ## v7.1.7
 
