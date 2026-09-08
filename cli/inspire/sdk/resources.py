@@ -6,7 +6,8 @@ import base64
 import json
 from functools import wraps
 from typing import Callable, TypeVar, cast, Any
-
+from inspire.platform.web.browser_api.images import CustomImageInfo
+from .models_serving import ImageRegisterHandle
 from .models_resources import ProjectInfo, ProjectDetail, ProjectOwner, ProjectOwnerRef, ImageDetail
 from .exceptions import (
     InspireError,
@@ -375,3 +376,104 @@ class Images(Service):
             ref = self.get(name_or_ref, workspace=ws.ref).ref
         row = browser_api.get_image_detail(image_id=ref.key, session=self.session)
         return ImageDetail.from_view(image_summary(row), ref=ref)
+
+    def _write_ref(self, ref, workspace=None):
+        if isinstance(ref, ImageRef):
+            ws = self.client.workspaces.get(workspace).ref.key if workspace is not None else None
+            self.client._validate_ref(ref, ImageRef, ws)
+            return ref
+        if workspace is None:
+            raise ValidationError("workspace is required when selecting an image by name.")
+        return self.get(ref, workspace=workspace).ref
+
+    @operation
+    def register(
+        self, name: str, workspace: str | WorkspaceRef, version: str | None = None,
+        description: str | None = None, visibility: str | None = None, *,
+        operation_id: str | None = None,
+    ) -> ImageRegisterHandle:
+        from uuid import uuid4
+        from inspire.platform.web import browser_api
+        from inspire.services.image_writes import (
+            parse_visibility_value,
+            IMAGE_ADD_METHOD_LOCAL_PUSH,
+        )
+        from .exceptions import SubmissionUncertainError
+
+        identifier = uuid4().hex if operation_id is None else operation_id
+        if not isinstance(identifier, str) or not identifier:
+            raise ValidationError("operation_id must be a non-empty string.")
+        ws = self.client.workspaces.get(workspace)
+        session = self.session
+        visibility_value = parse_visibility_value(visibility or "private")
+        assert visibility_value is not None
+        with self.client._transport.single_send(identifier, create=True):
+            result = browser_api.create_image(
+                name=name,
+                version=version or "v1",
+                workspace_id=ws.ref.key,
+                description=description or "",
+                visibility=visibility_value,
+                add_method=IMAGE_ADD_METHOD_LOCAL_PUSH,
+                session=session,
+            )
+        data = result.get("image") or {}
+        key = data.get("image_id") or result.get("image_id")
+        if not key:
+            raise SubmissionUncertainError(identifier)
+        label = f"{name}:{version or 'v1'}"
+        return ImageRegisterHandle(
+            label,
+            self.ref(ImageRef, label, key, ws.ref.key),
+            identifier,
+            data.get("address") or result.get("address") or "",
+        )
+
+    def wait_ready(
+        self, ref: str | ImageRef | ImageSelector, timeout: float = 600, poll_interval: float = 5,
+        *, workspace: str | WorkspaceRef | None = None,
+    ) -> CustomImageInfo:
+        from inspire.platform.web import browser_api
+        from .compute_jobs import duration
+        from .exceptions import WaitTimeoutError
+
+        duration(timeout)
+        duration(poll_interval)
+        with self.client._transport.scope(timeout=timeout):
+            resolved = self._write_ref(ref, workspace)
+            try:
+                return browser_api.wait_for_image_ready(
+                    image_id=resolved.key,
+                    session=self.session,
+                    timeout=timeout,
+                    poll_interval=poll_interval,
+                )
+            except TimeoutError as exc:
+                raise WaitTimeoutError(str(exc)) from exc
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+
+    @operation
+    def delete(
+        self, ref: str | ImageRef | ImageSelector, *, workspace: str | WorkspaceRef | None = None
+    ) -> None:
+        from inspire.platform.web import browser_api
+
+        resolved = self._write_ref(ref, workspace)
+        session = self.session
+        with self.client._transport.single_send():
+            browser_api.delete_image(image_id=resolved.key, session=session)
+
+    @operation
+    def set_visibility(
+        self, ref: str | ImageRef | ImageSelector, visibility: str, *,
+        workspace: str | WorkspaceRef | None = None
+    ) -> None:
+        from inspire.platform.web import browser_api
+        from inspire.services.image_writes import parse_visibility_value
+
+        resolved = self._write_ref(ref, workspace)
+        value = parse_visibility_value(visibility)
+        session = self.session
+        with self.client._transport.single_send():
+            browser_api.update_image(image_id=resolved.key, visibility=value, session=session)

@@ -290,8 +290,8 @@ class Notebooks(Service):
         _, _, _, shm = core.resolve_create_inputs(
             config=self.client._config,
             quota=quota_text,
-            project=spec.project,
-            image=spec.image,
+            project=spec.project.name if isinstance(spec.project, ProjectRef) else spec.project,
+            image=spec.image if isinstance(spec.image, str) else spec.image.name,
             shm_size=spec.shm_gib,
         )
         ws = self.client.workspaces.get(spec.workspace)

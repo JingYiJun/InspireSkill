@@ -15,7 +15,6 @@ from .models_compute import (
 from inspire.services.hpc_instances import HPCInstanceView
 from inspire.services.ray_instances import RayInstanceView
 from .exceptions import HPCJobFailedError, RayJobFailedError
-
 from inspire.platform.web.browser_api.notebooks import (
     NotebookImageSizeEstimate,
     NotebookResourceSnapshot,
@@ -28,7 +27,6 @@ from .models_notebooks import (
     NotebookHandle,
     ImageSaveHandle,
 )
-
 from .client import InspireClient
 from .models_resources import (
     AccountInfo,
@@ -104,8 +102,37 @@ from .exceptions import (
     JobFailedError,
     NotebookFailedError,
 )
+from .models_serving import (
+    Serving,
+    ServingRef,
+    ServingCreateSpec,
+    ServingPlan,
+    ServingHandle,
+    Tensorboard,
+    TensorboardRef,
+    TensorboardCreateSpec,
+    TensorboardHandle,
+    ImageRegisterHandle,
+    ModelRegisterHandle,
+)
+from inspire.services.serving_instances import ServingInstanceView
+from .exceptions import ServingFailedError
+
 
 __all__ = [
+    "ServingInstanceView",
+    "Serving",
+    "ServingRef",
+    "ServingCreateSpec",
+    "ServingPlan",
+    "ServingHandle",
+    "Tensorboard",
+    "TensorboardRef",
+    "TensorboardCreateSpec",
+    "TensorboardHandle",
+    "ImageRegisterHandle",
+    "ModelRegisterHandle",
+    "ServingFailedError",
     "HPCJob",
     "HPCJobRef",
     "HPCJobCreateSpec",

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import builtins
+from typing import Any
 from inspire.platform.web import browser_api
 from inspire.services import models as views
 from inspire.services.collections import bound_collection
 from .exceptions import ResourceNotFoundError, ValidationError
 from .models import Page, WorkspaceRef, ProjectRef
 from .models_resources import ModelRef, ModelInfo, ModelStatus, ModelVersion, ModelDeployConfig
+from .models_serving import ModelRegisterHandle
 from .resources import Service, operation, exact
 
 
@@ -21,7 +24,7 @@ class Models(Service):
             else [self.client.workspaces.get(workspace)]
         )
         user_id = views.current_user_id(self.session)
-        items = []
+        items: list[tuple[ModelInfo, Any]] = []
         matched = project is None
         for ws in workspaces:
             try:
@@ -172,3 +175,64 @@ class Models(Service):
         compatible = browser_api.check_model_vllm_compatible(model.ref.key, **kwargs)
         view = views.model_deploy_config_view(model.name, version, recommended, compatible)
         return ModelDeployConfig.from_view(view)
+
+    @operation
+    def register(
+        self, name: str, source_path: str, workspace: str | WorkspaceRef,
+        project: str | ProjectRef, type: str | builtins.list[str] | None = None,
+        tag: str | builtins.list[str] | None = None, description: str | None = None, *,
+        operation_id: str | None = None,
+    ) -> ModelRegisterHandle:
+        from uuid import uuid4
+        from inspire.services.model_writes import created_model_id
+        from .exceptions import SubmissionUncertainError
+
+        identifier = uuid4().hex if operation_id is None else operation_id
+        if not isinstance(identifier, str) or not identifier:
+            raise ValidationError("operation_id must be a non-empty string.")
+        ws = self.client.workspaces.get(workspace)
+        proj = self.client.projects.get(project, workspace=ws.ref)
+        session = self.session
+        with self.client._transport.single_send(identifier, create=True):
+            result = browser_api.create_model(
+                name=name,
+                project_id=proj.ref.key,
+                workspace_id=ws.ref.key,
+                model_source_path=source_path,
+                model_type=[type] if isinstance(type, str) else type,
+                tags=[tag] if isinstance(tag, str) else tag,
+                description=description or "",
+                model_source_type=1,
+                session=session,
+            )
+        key = created_model_id(result)
+        if not key:
+            raise SubmissionUncertainError(identifier)
+        return ModelRegisterHandle(name, self.ref(ModelRef, name, key, ws.ref.key), identifier)
+
+    @operation
+    def delete(
+        self, ref: str | ModelRef, force: bool = False, *, workspace: str | WorkspaceRef | None = None,
+        project: str | ProjectRef | None = None,
+    ) -> None:
+        from inspire.services.model_writes import model_usage
+
+        if isinstance(ref, ModelRef):
+            ws = self.client.workspaces.get(workspace).ref.key if workspace is not None else None
+            self.client._validate_ref(ref, ModelRef, ws)
+        else:
+            if workspace is None:
+                raise ValidationError("workspace is required when selecting a model by name.")
+            ref = self._ref(ref, workspace, project)
+        assert isinstance(ref, ModelRef)
+        session = self.session
+        if not force:
+            references, pending = model_usage(
+                ref.key, session=session, workspace_id=ref.workspace_id
+            )
+            if references or pending:
+                from inspire.services.model_writes import in_use_message
+
+                raise ValidationError(in_use_message(ref.name, references, pending=pending))
+        with self.client._transport.single_send():
+            browser_api.delete_model(ref.key, session=session, workspace_id=ref.workspace_id)

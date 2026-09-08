@@ -58,6 +58,24 @@
 | job_commands 的终态集合 | services.job_status | CLI wait/logs 使用同一共享集合；SDK 同一词表 |
 | browser_api 聚合导出 | 延迟 __getattr__ + TYPE_CHECKING | 原公共名字保留；测试仍 patch 实际 CLI 调用模块 |
 
+Phase E 新增共享模块及兼容落点：
+
+| 原调用点 | 共享实现 | 兼容方式 |
+|---|---|---|
+| serving_commands 创建镜像／模型／资源价格／域名解析 | services.serving_submission | CLI 保留私有别名及 Click 参数适配；SDK 公开核心调用，模型候选由各自名称选择器消歧 |
+| Serving 生命周期等待 | services.serving_status | 独立 RUNNING 目标及 FAILED / ERROR / STOPPED / DELETED 终态，不套用 Job 成功词表 |
+| serving public_output / access | services.serving_output / serving_access | CLI 兼容导出；SDK 返回相同公开视图与结构化调用信息 |
+| serving 实例／版本／扩缩容历史视图 | services.serving_instances / serving_views | CLI 原名字兼容；SDK 使用公开名称，实例标签和 pod 映射一致 |
+| serving events / logs | services.serving_events / serving_logs | 共享事件合并与 pod 日志读取；CLI 保留格式与展示预算 |
+| serving api-metrics | services.serving_api_metrics | 核心使用 ValueError；CLI wrapper 保留 click.BadParameter；共享别名、窗口与摘要 |
+| tensorboard_commands | services.tensorboards | 共享组与关联任务候选、创建后查找及 await_status；SDK single_send 后显式确认身份 |
+| tensorboard_data | services.tensorboard_data | 共享标量集合、按 step 排序的摘要和尾部点集 |
+| image_commands | services.image_writes | 可见性映射共享；平台等待继续使用 browser_api.images.wait_for_image_ready |
+| model_commands | services.model_writes | 共享创建 ID 提取、所有版本引用、pending 检查和 in-use 文案；force 仅跳过 CLI 同款预检 |
+| id_resolver / quota_resolver 纯名称检查 | services.identifiers / services.quotas | 抽取无 Click 的纯检查；CLI 公开函数兼容，禁止 SDK 经 CLI 依赖加载 Click |
+
+新增 `test_sdk_servings.py`、`test_sdk_tensorboards.py`、`test_sdk_image_model_writes.py`；覆盖 dry-run 与创建参数等价、每个写方法的单次分派、原始平台错误链、创建缺 ID／确认失败、状态等待、实例事件日志、API 端点及流量摘要、镜像就绪轮询。`test_sdk.py::test_imports_are_lazy` 扩展到全部 Phase E 共享服务。
+
 扫描口径：下表枚举当前测试源码中引用 job_submit、quota_resolver、quota_cache、job_commands、image_resolver 或 browser_api 聚合模块的文件，分类直接 import 与 patch/monkeypatch 语句。它是静态落点审计，不把命中次数当成测试覆盖率；未迁移的 CLI wrapper 保持原替身落点。SDK 新测试直接 patch SDK 实际消费的底层 API，额外验证 CLI/SDK payload 等价。
 
 | 测试文件 | 相关模块 | 替身形式 |

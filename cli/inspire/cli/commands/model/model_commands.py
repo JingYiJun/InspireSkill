@@ -8,21 +8,14 @@ from inspire.services.models import (
     status_label,
     SERVING_PAGE_SIZE,
     serving_views,
-    version_label,
     model_list_view,
-    version_inner,
-    version_items,
-    version_number,
     reported_version,
     other_versions_in_use,
     model_detail_view,
     model_version_views,
 )
-
 from typing import Any, Optional
-
 import click
-
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -65,6 +58,13 @@ from inspire.config.workspaces import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.services.model_writes import created_model_id as _created_model_id
+from inspire.services.model_writes import in_use_message as _in_use_message
+
+
+
+
+
 
 
 def _resolve_workspace_id(workspace: Optional[str], *, session=None) -> Optional[str]:
@@ -105,18 +105,6 @@ def _resolve_project_id(
 # rejects `page_size: -1`, so "everything" has to be a real number.
 
 
-def _created_model_id(value: Any) -> str:
-    if not isinstance(value, dict):
-        return ""
-    for key in ("model_id", "id"):
-        candidate = str(value.get(key) or "").strip()
-        if candidate:
-            return candidate
-    for key in ("model", "data", "result"):
-        candidate = _created_model_id(value.get(key))
-        if candidate:
-            return candidate
-    return ""
 
 
 def _format_model_rows(rows: list[dict[str, str]]) -> str:
@@ -150,53 +138,8 @@ def _format_model_rows(rows: list[dict[str, str]]) -> str:
     )
 
 
-def _model_references(
-    model_id: str,
-    version_data: dict[str, Any],
-    *,
-    session,  # noqa: ANN001
-    workspace_id: Optional[str],
-) -> list[str]:
-    """Name every deployment that would break if this model went away.
-
-    Deletion is not version-scoped, so this asks per version instead of only
-    about the one `model status` reports on. The `running_infrence_serving`
-    count already on each version record is not enough on its own either: it
-    counts running deployments, while a stopped or sleeping serving can be
-    started again and therefore still holds the version. Failed servings are
-    dropped by `serving_views` -- they hold nothing.
-    """
-    references: list[str] = []
-    for item in version_items(version_data):
-        inner = version_inner(item)
-        version = version_number(inner.get("version") or inner.get("model_version"))
-        if version is None:
-            continue
-        servings, _total = browser_api_module.list_model_inference_servings(
-            model_id=model_id,
-            version=version,
-            page=1,
-            page_size=SERVING_PAGE_SIZE,
-            session=session,
-            workspace_id=workspace_id,
-        )
-        label = version_label(version)
-        for serving in serving_views(servings):
-            status = serving.get("status")
-            suffix = f" ({status})" if status else ""
-            references.append(f"{label} {serving['name']}{suffix}")
-    return references
 
 
-def _in_use_message(name: str, references: list[str], *, pending: bool) -> str:
-    """One line naming what still holds the model, within the output budget."""
-    page = bound_collection(references, limit=DEFAULT_COLLECTION_LIMIT)
-    parts = list(page.items)
-    if page.truncated:
-        parts.append(f"and {page.total - page.shown} more")
-    if pending:
-        parts.append("a deployment is queued on this model")
-    return f"Model {scrub_raw_ids(name)} is still in use: {'; '.join(parts)}."
 
 
 def _format_model_detail(view: dict[str, Any]) -> str:
@@ -1098,25 +1041,8 @@ def delete_model_cmd(
 
     if not force:
         try:
-            version_data = browser_api_module.list_model_version_records(
-                model_id=model_id,
-                session=session,
-                workspace_id=workspace_id,
-            )
-            references = _model_references(
-                model_id,
-                version_data,
-                session=session,
-                workspace_id=workspace_id,
-            )
-            # No version goes in: the platform reads a missing version as
-            # "any", which is the only signal that catches a deployment queued
-            # behind a busy quota rather than already running.
-            pending = browser_api_module.check_model_inference_serving_pending(
-                model_id=model_id,
-                session=session,
-                workspace_id=workspace_id,
-            )
+            from inspire.services.model_writes import model_usage
+            references, has_pending = model_usage(model_id, session=session, workspace_id=workspace_id)
         except SessionExpiredError as e:
             _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
             return
@@ -1132,7 +1058,6 @@ def delete_model_cmd(
             )
             return
 
-        has_pending = pending.get("has_pending_serving") is True
         if references or has_pending:
             _handle_error(
                 ctx,

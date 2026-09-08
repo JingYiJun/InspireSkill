@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Sequence
 from uuid import uuid4
 from inspire.services import ray_submission as core
+from inspire.services.metrics import metric_group
 from inspire.services.ray_instances import RayInstanceView, fetch_ray_instances, ray_instance_views
 from inspire.services.task_priority import resolve_workspace_task_priority
 from inspire.platform.web.browser_api import ray_jobs as api
@@ -27,24 +28,6 @@ from .models import (
 )
 from .models_compute import RayJob, RayJobRef, RayJobCreateSpec, RayJobPlan, RayJobHandle
 from .exceptions import ValidationError, RayJobFailedError, SubmissionUncertainError
-
-
-def metric_group(detail: object) -> str | None:
-    if isinstance(detail, dict):
-        for key in ("logic_compute_group_id", "compute_group_id"):
-            value = detail.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        for value in detail.values():
-            found = metric_group(value)
-            if found:
-                return found
-    elif isinstance(detail, list):
-        for value in detail:
-            found = metric_group(value)
-            if found:
-                return found
-    return None
 
 
 class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):

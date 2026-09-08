@@ -1,0 +1,391 @@
+"""Serving payload equivalence and single-dispatch lifecycle contracts."""
+
+from __future__ import annotations
+from dataclasses import replace
+from types import SimpleNamespace
+import json
+import pytest
+import requests
+from click.testing import CliRunner
+from test_sdk import client as client
+from test_sdk_hpc import catalog as base_catalog  # noqa: F401
+from inspire import ServingCreateSpec, ServingRef, ServingFailedError
+from inspire import SubmissionUncertainError, MutationUncertainError, AmbiguousResourceError
+from inspire.platform.web import browser_api as api
+from inspire.platform.web.browser_api.servings import ServingInfo
+from inspire.platform.web.browser_api.images import CustomImageInfo
+
+
+@pytest.fixture
+def catalog(client, base_catalog, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(api, "get_quota_priority_levels", lambda **kw: {})
+    c = base_catalog
+    c.group["support_job_type_list"] = '["inference_serving_customize", "tensorboard"]'
+    monkeypatch.setattr(
+        api,
+        "list_serving_user_project",
+        lambda **kw: {
+            "projects": [{"project_id": c.project.project_id, "project_name": "Project"}]
+        },
+    )
+    monkeypatch.setattr(api, "get_current_user", lambda **kw: {"id": "user-test"})
+    monkeypatch.setattr(
+        api,
+        "list_models",
+        lambda **kw: (
+            [
+                SimpleNamespace(
+                    name="Model",
+                    model_id="model-test",
+                    status="READY",
+                    created_at="",
+                    latest_version="3",
+                )
+            ],
+            1,
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "list_images_by_source",
+        lambda **kw: [
+            CustomImageInfo(
+                "image-test",
+                "registry/image:v1",
+                "Image",
+                "",
+                "v1",
+                "SOURCE_PRIVATE",
+                "READY",
+                "",
+                "",
+            )
+        ],
+    )
+    c.serving = ServingCreateSpec(
+        "example",
+        "Model",
+        "python serve.py",
+        8000,
+        "Workspace",
+        "Project",
+        "Group",
+        "0,8,32",
+        "Image",
+    )
+    return c
+
+
+def test_payload_equivalent_to_cli_dry_run(client, catalog, monkeypatch):
+    from inspire.cli.commands.serving import serving_commands as cli
+    from inspire.cli.utils import quota_resolver
+    from inspire.cli.main import main
+
+    spec = replace(
+        catalog.serving,
+        model_version=2,
+        replicas=3,
+        nodes_per_replica=2,
+        shm_gib=8,
+        priority=6,
+        custom_domain="test-domain",
+        description="description",
+        auto_scaling=True,
+        public_path_readonly=False,
+    )
+    plan = client.servings.plan(spec)
+    monkeypatch.setattr(cli, "get_web_session", lambda: client._transport._session)
+    monkeypatch.setattr(cli, "select_workspace_id", lambda **kw: "ws-test")
+    monkeypatch.setattr(cli, "workspace_label", lambda *a: "Workspace")
+    monkeypatch.setattr(cli, "_resolve_project_id", lambda **kw: "project-test")
+    monkeypatch.setattr(cli, "resolve_by_name", lambda *a, **kw: "model-test")
+    monkeypatch.setattr(quota_resolver, "resolve_quota", lambda **kw: catalog.resolved)
+    captured = []
+    monkeypatch.setattr(
+        api, "create_serving", lambda **kw: captured.append(kw) or {"id": "serving-test"}
+    )
+    args = [
+        "--json",
+        "serving",
+        "create",
+        "--name",
+        "example",
+        "--model",
+        "Model",
+        "--model-version",
+        "2",
+        "--command",
+        "python serve.py",
+        "--port",
+        "8000",
+        "--workspace",
+        "Workspace",
+        "--project",
+        "Project",
+        "--group",
+        "Group",
+        "--quota",
+        "0,8,32",
+        "--image",
+        "Image",
+        "--replicas",
+        "3",
+        "--nodes-per-replica",
+        "2",
+        "--shm-size",
+        "8",
+        "--priority",
+        "6",
+        "--custom-domain",
+        "test-domain",
+        "--description",
+        "description",
+        "--auto-scaling",
+        "--no-public-path-readonly",
+    ]
+    result = CliRunner().invoke(main, [*args, "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"] == plan.to_dict()
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, result.output
+    assert {k: v for k, v in captured[0].items() if k != "session"} == plan.create_kwargs
+    assert plan.create_kwargs["resource_spec_price"]["cpu_type"] == "cpu"
+
+
+@pytest.mark.parametrize("action", ["create", "start", "stop", "delete", "scale", "rollback"])
+@pytest.mark.parametrize("outcome", ["ok", "timeout", "platform"])
+def test_single_dispatch(client, catalog, monkeypatch, action, outcome):
+    ref = ServingRef("example", client.account, client.base_url, "serving-test", "ws-test")
+    plan = client.servings.plan(catalog.serving)
+    monkeypatch.setattr(client.servings, "plan", lambda spec: plan)
+    calls = []
+
+    def once(method, path, body, *a, **kw):
+        calls.append((path, {"body": body}))
+        assert client._transport._write is not None
+        client._transport._write["sent"] = True
+        if outcome == "timeout":
+            raise requests.ReadTimeout("lost response")
+        if outcome == "platform":
+            return {
+                "ResponseMetadata": {
+                    "Error": {"Code": "InvalidParameter", "Message": "平台原始错误"}
+                }
+            }
+        return {"Result": {"inference_serving_id": "serving-test"}}
+
+    monkeypatch.setattr(client._transport, "_once", once)
+    monkeypatch.setattr(client._transport, "_refresh", lambda: pytest.fail("refreshed write"))
+
+    def invoke():
+        if action == "create":
+            return client.servings.create(catalog.serving, operation_id="diagnostic")
+        return getattr(client.servings, action)(
+            ref, *([2] if action in ("scale", "rollback") else [])
+        )
+
+    if outcome == "ok":
+        invoke()
+    else:
+        with pytest.raises(
+            SubmissionUncertainError if action == "create" else MutationUncertainError
+        ) as exc:
+            invoke()
+        if outcome == "platform":
+            assert "平台原始错误" in str(exc.value.__cause__)
+    assert len(calls) == 1
+    expected = {
+        "create": "CreateServingConsole",
+        "start": "StartServing",
+        "stop": "StopServing",
+        "delete": "DeleteServing",
+        "scale": "ScaleServing",
+        "rollback": "RollbackServing",
+    }[action]
+    assert calls[0][0].endswith("Action=" + expected)
+    if action == "scale":
+        assert calls[0][1]["body"]["replica"] == 2
+
+
+def test_endpoint_and_traffic(client, monkeypatch):
+    ref = ServingRef("example", client.account, client.base_url, "serving-test", "ws-test")
+    monkeypatch.setattr(
+        client.servings, "_binding",
+        replace(client.servings._binding, get_detail=lambda *a, **kw: {
+            "name": "example",
+            "status": "RUNNING",
+            "inference_serving_type": "EXCLUSIVE",
+            "extra_info": {"service": "https://serving.example/"},
+        }),
+    )
+    info = client.servings.api(ref, affinity_key="session-1")
+    assert info["endpoint"] == "https://serving.example"
+    assert info["base_url"] == "https://serving.example/v1"
+    assert "session-1" in info["example"]
+    calls = []
+
+    def metrics(*a, **kw):
+        calls.append(kw)
+        return [
+            {
+                "metric_type": "QPS",
+                "time_series": [{"data": "2"}, {"data": "4"}, {"data": "invalid"}],
+            }
+        ]
+
+    monkeypatch.setattr(api, "get_serving_api_metrics", metrics)
+    result = client.servings.api_metrics(ref, metric="qps", window="30m")
+    assert result["series"][0] == dict(metric="QPS", count=2, min=2, max=4, avg=3, last=4, total=6)
+    assert calls[0]["end_timestamp"] - calls[0]["start_timestamp"] == 1800
+
+
+def test_list_get_wait_and_missing_identity(client, catalog, monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "list_servings",
+        lambda **kw: (
+            [ServingInfo("s1", "same", "running"), ServingInfo("s2", "SAME", "stopped")],
+            2,
+        ),
+    )
+    assert len(client.servings.list("Workspace", status="running").items) == 1
+    with pytest.raises(AmbiguousResourceError):
+        client.servings.get("same", workspace="Workspace")
+    ref = ServingRef("same", client.account, client.base_url, "s1", "ws-test")
+    monkeypatch.setattr(
+        client.servings, "_binding",
+        replace(client.servings._binding, get_detail=lambda *a, **kw: {"name": "same", "status": "FAILED"}),
+    )
+    rows = client.servings.status([ref])
+    assert isinstance(rows, tuple) and rows[0].status == "FAILED"
+    assert client.servings.status([]) == ()
+    with pytest.raises(ServingFailedError):
+        client.servings.wait(ref, raise_on_failure=True)
+    monkeypatch.setattr(api, "create_serving", lambda **kw: {})
+    with pytest.raises(SubmissionUncertainError):
+        client.servings.create(catalog.serving)
+
+
+def test_events_logs_instances_and_follow(client, monkeypatch):
+    ref = ServingRef("example", client.account, client.base_url, "s1", "ws-test")
+    monkeypatch.setattr(
+        api,
+        "list_serving_instances",
+        lambda *a, **kw: (
+            [{"name": "project/sv-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa-0", "rank": 0}],
+            1,
+        ),
+    )
+    assert client.servings.instances(ref)[0].label == "rank=0"
+    monkeypatch.setattr(
+        api,
+        "list_serving_events",
+        lambda *a, **kw: [
+            {
+                "type": "Warning",
+                "reason": "Scheduling",
+                "object_id": kw.get("pod_names", [""])[0],
+                "message": "pending",
+            }
+        ],
+    )
+    assert len(client.servings.events(ref, instance="0", reason="sched").items) == 1
+    gen = client.servings.follow_events(ref, interval=0.001, instance="0")
+    assert next(gen).items
+    gen.close()
+
+    def logs(**kw):
+        assert kw["inference_serving_id"] == "s1"
+        assert kw["pod_names"] == ["project/sv-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa-0"]
+        return [{"timestamp": 1, "message": "first"}, {"timestamp": 2, "message": "last"}], 3
+
+    monkeypatch.setattr(api, "list_serving_logs", logs)
+    result = client.servings.logs(ref, instance="0", window="30m", tail=1)
+    assert result.items[-1]["message"] == "last" and result.truncated
+
+
+def test_scale_zero_and_quota_priority(client, catalog, monkeypatch):
+    from inspire import ValidationError
+
+    ref = ServingRef("example", client.account, client.base_url, "s1", "ws-test")
+    calls = []
+    monkeypatch.setattr(api, "scale_serving", lambda *a, **kw: calls.append(kw))
+    client.servings.scale(ref, 0)
+    assert calls[0]["replica"] == 0
+    monkeypatch.setattr(api, "get_quota_priority_levels", lambda **kw: {"quota-test": ("low",)})
+    with pytest.raises(ValidationError, match="published as LOW-priority only"):
+        client.servings.plan(replace(catalog.serving, priority=10))
+
+
+def test_quotas_metrics_configs_and_history(client, catalog, monkeypatch):
+    from inspire.platform.web.browser_api import metrics as metric_api
+
+    ref = ServingRef("example", client.account, client.base_url, "s1", "ws-test")
+    price_calls = []
+    monkeypatch.setattr(
+        api, "get_resource_prices", lambda **kw: price_calls.append(kw) or [catalog.price]
+    )
+    assert client.servings.quotas("Workspace").items[0].quota.cpu == 8
+    assert price_calls[0]["schedule_config_type"] == "SCHEDULE_CONFIG_TYPE_SERVE"
+    monkeypatch.setattr(
+        client.servings, "_binding",
+        replace(client.servings._binding, get_detail=lambda *a, **kw: {"status": "RUNNING", "logic_compute_group_id": "group-test"}),
+    )
+    calls = []
+    monkeypatch.setattr(
+        metric_api, "get_resource_metrics_by_time", lambda **kw: calls.append(kw) or []
+    )
+    assert client.servings.metrics(ref, metric="cpu", window="30m") == ()
+    assert calls[0]["task_type"] == "inference_serving"
+    assert calls[0]["logic_compute_group_id"] == "group-test"
+    monkeypatch.setattr(api, "get_serving_configs", lambda **kw: {})
+    assert isinstance(client.servings.configs("Workspace"), dict)
+    monkeypatch.setattr(
+        api,
+        "list_serving_versions",
+        lambda *a, **kw: ([{"version": 2, "command": "python serve.py"}], 1),
+    )
+    assert client.servings.versions(ref)[0]["version"] == 2
+    monkeypatch.setattr(
+        api,
+        "list_serving_scale_history",
+        lambda *a, **kw: ([{"id": "h1", "replicas_before_scale": 1, "replicas_after_scale": 2}], 1),
+    )
+    assert client.servings.scale_history(ref).items[0]["replicas_to"] == 2
+
+
+@pytest.mark.parametrize("via_binding", [False, True])
+def test_instances_expand_to_reported_total(client, monkeypatch, via_binding):
+    ref = ServingRef("example", client.account, client.base_url, "s1", "ws-test")
+    rows = [{"name": f"project/pod-{rank}", "rank": rank} for rank in range(201)]
+    calls = []
+
+    def fetch(key, *, page, page_size, session):
+        assert key == ref.key
+        calls.append((page, page_size))
+        return rows[:page_size], len(rows)
+
+    monkeypatch.setattr(api, "list_serving_instances", fetch)
+    if via_binding:
+        result, total = client.servings._binding.fetch_instances(
+            ref.key, session=client._transport.session
+        )
+        assert total == 201
+    else:
+        result = client.servings.instances(ref)
+    assert len(result) == 201
+    assert calls == [(1, 200), (1, 201)]
+
+
+def test_binding_adapts_serving_paging(client, monkeypatch):
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        return [], 0
+
+    monkeypatch.setattr(api, "list_servings", fetch)
+    assert client.servings._binding.list_jobs(
+        workspace_id="ws-test", page_num=2, page_size=50, session=None
+    ) == ([], 0)
+    assert calls == [dict(workspace_id="ws-test", page=2, page_size=50, session=None)]

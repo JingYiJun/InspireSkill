@@ -19,13 +19,11 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from typing import Any, Callable, Iterable, Optional
-
 from inspire.services.quotas import (
     QuotaParseError, QuotaMatchError, QuotaCatalogUnavailable, QuotaSpec,
     ResolvedQuota, parse_quota, build_resource_spec_price,
 )
-
-from inspire.cli.utils.id_resolver import is_full_uuid, is_stale_handle_error
+from inspire.cli.utils.id_resolver import is_stale_handle_error
 from inspire.cli.utils.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
@@ -43,7 +41,6 @@ from inspire.cli.utils.resource_index import (
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.availability import QUOTA_PRIORITY_SPEC_FIELDS
 from inspire.platform.web.session import WebSession, is_transient_api_error
-
 from inspire.services.workload_quota import (
     workload_publishes_priority_levels as workload_publishes_priority_levels,
     allowed_priority_levels_for as allowed_priority_levels_for,
@@ -53,6 +50,12 @@ from inspire.services.workload_quota import (
     match_quota_rows,
     format_row_catalog as format_row_catalog,
 )
+from inspire.services.quotas import validate_compute_group_name as validate_compute_group_name
+
+
+
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +145,6 @@ def load_quota_priority_levels(
         return None
 
 
-def validate_compute_group_name(value: str) -> str:
-    """Reject platform handles while preserving a user-facing group name."""
-    name = str(value or "").strip()
-    if not name:
-        raise QuotaMatchError("--group value cannot be empty")
-    if name.casefold().startswith("lcg-") or is_full_uuid(name):
-        raise QuotaMatchError("--group takes a compute group name.")
-    return name
 
 
 def _default_groups_loader(

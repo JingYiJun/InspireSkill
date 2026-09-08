@@ -84,3 +84,21 @@ def resolve_metrics(selector: Optional[str]) -> list[str]:
     if not out:
         raise ValueError("no metrics selected")
     return out
+
+
+def metric_group(detail: object) -> str | None:
+    if isinstance(detail, dict):
+        for key in ("logic_compute_group_id", "compute_group_id"):
+            value = detail.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for value in detail.values():
+            found = metric_group(value)
+            if found:
+                return found
+    elif isinstance(detail, list):
+        for value in detail:
+            found = metric_group(value)
+            if found:
+                return found
+    return None

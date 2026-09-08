@@ -52,22 +52,34 @@ class InspireClient:
 
         self.jobs = Jobs(self)
         from .hpc import HPC
-        from .ray import Ray
 
         self.hpc = HPC(self)
+        from .ray import Ray
+
         self.ray = Ray(self)
+        from .servings import Servings
+
+        self.servings = Servings(self)
+        from .tensorboards import Tensorboards
+
+        self.tensorboards = Tensorboards(self)
         from .notebooks import Notebooks
 
         self.notebooks = Notebooks(self)
-        from .account import AccountInformation, APIKeys
-        from .datasets import Datasets
-        from .model_registry import Models
-        from .resource_monitor import Resources
+        from .account import AccountInformation
 
         self.account_info = AccountInformation(self)
+        from .account import APIKeys
+
         self.api_keys = APIKeys(self)
+        from .datasets import Datasets
+
         self.datasets = Datasets(self)
+        from .model_registry import Models
+
         self.models = Models(self)
+        from .resource_monitor import Resources
+
         self.resources = Resources(self)
 
     @property

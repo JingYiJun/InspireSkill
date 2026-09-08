@@ -1,6 +1,7 @@
 """SDK behavior contracts; all account state is isolated and all network calls are fake."""
 
 from __future__ import annotations
+
 import ast
 import subprocess
 import sys
@@ -8,7 +9,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-
 import pytest
 from inspire.sdk import (
     InspireClient,
@@ -27,6 +27,8 @@ from inspire.sdk import (
 )
 from inspire.sdk.transport import Transport
 from inspire.platform.web.session.models import WebSession, SessionExpiredError, TransientAPIError
+
+
 
 
 @pytest.fixture
@@ -64,6 +66,8 @@ for kind in ("hpc", "ray"):
     for module in ("submission", "status", "instances", "logs", "events", "output"):
         importlib.import_module(f"inspire.services.{kind}_{module}")
 import inspire.services.ray_scaling
+for module in ("serving_submission", "serving_status", "serving_instances", "serving_events", "serving_logs", "serving_views", "serving_access", "serving_output", "serving_api_metrics", "tensorboards", "tensorboard_data", "image_writes", "model_writes"):
+    importlib.import_module("inspire.services." + module)
 import inspire.services.image_resolution
 import inspire.services.task_priority
 assert not any(x.startswith(("playwright", "click")) for x in sys.modules)

@@ -1,17 +1,14 @@
 """Shared SDK paging, identity, observation and quota mechanics for HPC/Ray."""
 
 from __future__ import annotations
+
 import builtins
 import math
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar
+from typing import Any, Callable, Generic, Iterator, Protocol, Sequence, TypeVar
 from inspire.platform.web import browser_api
-from inspire.services.hpc_instances import HPCInstanceView
-from inspire.services.ray_instances import RayInstanceView
-from inspire.platform.web.browser_api.hpc_jobs import HPCJobInfo
-from inspire.platform.web.browser_api.ray_jobs import RayJobInfo
 from inspire.services.quotas import parse_quota
 from inspire.services.workload_quota import selected_groups, match_quota_rows, quota_values
 from .resources import Service, operation, exact, positive
@@ -31,14 +28,25 @@ from .models import (
 from .models_compute import WorkloadJob
 from .exceptions import ValidationError, ResolutionIncompleteError, ResourceNotFoundError
 
+
 R = TypeVar("R", bound=ResourceRef)
 J = TypeVar("J", bound=WorkloadJob)
-V = TypeVar("V", HPCInstanceView, RayInstanceView)
+
+
+class InstanceView(Protocol):
+    @property
+    def handle(self) -> str: ...
+
+    @property
+    def label(self) -> str: ...
+
+
+V = TypeVar("V", bound=InstanceView)
 
 
 @dataclass(frozen=True)
 class WorkloadBinding(Generic[V]):
-    list_jobs: Callable[..., tuple[Sequence[HPCJobInfo | RayJobInfo], int]]
+    list_jobs: Callable[..., tuple[Sequence[Any], int]]
     get_detail: Callable[..., dict[str, Any]]
     stop: Callable[..., object]
     delete: Callable[..., object]

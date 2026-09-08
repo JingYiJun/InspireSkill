@@ -89,7 +89,7 @@ API key 创建接口没有返回 ID 或创建时间，因此 `create()` 的成�
 
 resources availability、policy、usage 与 CLI 一样只接受单工作区；模型 list 和账号 permissions 支持工作区 fan-out。usage 的 project/user/task/group 都是 CLI 的子串过滤，mine 与 group/user/task/details 不可组合。
 
-CLI-only：账号本地管理 `account add/use/rename/remove/list`、`api-key export` 的文件格式／权限／stdout 和 `api-key run` 的子进程及环境处理、`init/update/uninstall/cache`、YAML batch、SSH/shell/exec/scp/连接安装与代理入口，以及指标绘图和终端渲染。image/model 注册、更新和删除仍属于后续写操作阶段，尚未加入这些资源门面。
+CLI-only：账号本地管理 `account add/use/rename/remove/list`、`api-key export` 的文件格式／权限／stdout 和 `api-key run` 的子进程及环境处理、`init/update/uninstall/cache`、YAML batch、SSH/shell/exec/scp/连接安装与代理入口，以及指标绘图和终端渲染。image/model 的注册、删除和镜像可见性更新已在 Phase E 接入，见后文。
 
 ## 规划、提交和等待
 
@@ -331,6 +331,95 @@ print(client.ray.plan(ray_spec).summary)
 HPC 默认日志窗口取实例创建 / 结束时间，Ray 取任务详情中的时间；显式 window 使用当前时间，start/end 接受成对 datetime。两个工作负载均将窗口限制为最近 30 天。tail/head 互斥，日志按共享排序与标签核心选择。HPC 平台接口截断尾部且忽略页码，因此 tail 或默认查询在 total 大于返回记录数时会扩大一次请求；head 不扩大。Ray 普通查询只在本次返回样本中选择 tail/head。SDK 不承诺全局最后 N 条或无损续读，不附加 CLI 的默认文本字符预算；记录未覆盖 total 时 truncated=True。
 
 HPC / Ray 的 shell、YAML batch 和 `metrics --plot/--open/--sparkline` 保留为 CLI 功能。真实平台创建及清理闭环仍属于 Phase F；Phase D 使用隔离账号配置与模拟平台请求验收。
+
+## Serving、TensorBoard 与镜像／模型写操作（Phase E）
+
+`client.servings`、`client.tensorboards` 以及镜像／模型注册与变更均已接入。名称选择须指定 workspace；类型化 `ServingRef`、`TensorboardRef`、`ImageRef`、`ModelRef` 可直接用于对应单资源写操作并省略 workspace，仍验证账号、来源和资源类型。创建返回 frozen handle，包含 name、ref、operation_id；镜像注册另外返回 registry 推送地址。
+
+| CLI | SDK 方法 | 返回值与语义 |
+|---|---|---|
+| serving list | `servings.list(workspace, project=None, status=None, keyword=None, limit=20, cursor=None)` / `iter(..., max_items=None)` | Page[Serving] / 迭代器；完整分页后过滤；名称完整匹配并消歧 |
+| serving status | `get(ref, workspace=None)` / `status(names, workspace=None)` | get 返回 Serving；status 接受名称／引用序列并返回 tuple[Serving, ...]；状态保留平台词表 |
+| serving create --dry-run | `plan(ServingCreateSpec)` | ServingPlan；create_kwargs 是 browser_api 创建参数，payload / to_dict() 对应 CLI dry-run 业务视图；summary 不包含启动命令 |
+| serving create | `create(spec, operation_id=None)` | ServingHandle；重新规划后单次发送，缺少创建 ID 抛 SubmissionUncertainError |
+| serving start / stop / delete | `start(ref)` / `stop(ref)` / `delete(ref)` | 每个操作单次发送；不添加删除终态门控 |
+| serving scale / rollback | `scale(ref, replicas)` / `rollback(ref, version)` | replicas 可为 0，与 CLI 一致；version 为正整数部署版本；单次发送 |
+| 等待 Serving 状态 | `wait(ref, timeout=3600, poll_interval=10, raise_on_failure=False, target="RUNNING")` | 返回 Serving；目标已达到直接返回，FAILED / ERROR / STOPPED / DELETED 为停止等待状态；raise_on_failure=True 时非目标终态抛 ServingFailedError，`.serving` 携带快照 |
+| serving versions / scale-history | `versions(ref)` / `scale_history(ref, limit=20, cursor=None)` | 历史版本公开字典元组 / 扩缩容历史 Page；不返回平台内部 ID |
+| serving configs | `configs(workspace)` | CLI 同形配置业务字典 |
+| serving api | `api(ref, affinity_key=None)` | 共享 access 核心返回 endpoint、认证头约定、可选 OpenAI base_url 与 example；不携带凭据。端点存在不表示服务已就绪 |
+| serving api-metrics | `api_metrics(ref, metric=None, window="1h", interval=None)` | 业务字典含 metrics、time_range、series；默认 QPS / SUCCESS_RATE / LATENCY；series 含 count/min/max/avg/last/total，默认间隔 1m |
+| serving events | `events(ref, type=None, reason=None, instance=None, workload_level=False, limit=100)` / `follow_events(ref, interval=5, **filters)` | EventResult / 新增事件生成器；共享控制器与副本事件合并、排序和标签，follow 持续到调用方关闭 |
+| serving instances | `instances(ref)` | tuple[ServingInstanceView, ...]；handle 为内部 pod 引用，label 为 rank 标签，role 为角色 |
+| serving logs | `logs(ref, instance=None, window=None, start=None, end=None, tail=None, head=None, limit=None)` | LogResult；默认 24h / 100 条；使用共享 pod 选择和 GetServingLog，tail/head 互斥，truncated 表示未覆盖全部记录；不承诺全局最后 N 条 |
+| serving metrics / quota | `metrics(ref, metric="core", window="1h", start=None, end=None, interval=None, group=None)` / `quotas(workspace, group=None, include_empty=False, limit=20, cursor=None)` | tuple[MetricGroup, ...] / Page[QuotaOption]；使用 serving 调度类型及工作区发布的优先级菜单 |
+| tensorboard list | `tensorboards.list(workspace, status=None, job=None, keyword=None, limit=20, cursor=None)` | Page[Tensorboard]；job 可为名称或 JobRef |
+| tensorboard status | `get(ref, workspace=None)` / `status(ref, workspace=None)` | Tensorboard，包含 status、summary_path、url、job、project、compute_group 和时间字段 |
+| tensorboard create | `create(TensorboardCreateSpec, operation_id=None)` | TensorboardHandle；CreateTensorboard 本身不返回 ID，复用 CLI 创建后查找核心；查找失败或没有可确认 ID 时抛 SubmissionUncertainError，不重新创建 |
+| tensorboard start / stop / delete | `start(ref)` / `stop(ref)` / `delete(ref)` | 单次发送；运行中能否删除由平台决定，不隐式 stop |
+| 等待 TensorBoard | `wait(ref, target, timeout=60, poll_interval=3)` | 复用 CLI await_status 核心，达到目标返回 Tensorboard，超时抛 WaitTimeoutError；使用 running / stopped / creating 词表 |
+| tensorboard tags / scalars | `tags(ref)` / `scalars(ref, tag="", run=None, points=None)` | 与 CLI 对应的业务字典；要求 running；按 step 汇总首末值和 min/max，points 为非负数，缺省只返回摘要 |
+| TensorBoard 应用 URL | `url(ref)` | 使用 tensorboard_app_url 规范化平台地址 |
+| image register | `images.register(name, workspace, version=None, description=None, visibility=None, operation_id=None)` | ImageRegisterHandle；version 默认 v1，description 默认空，visibility 默认 private；add_method=2，预留本地推送槽位，registry 是推送地址 |
+| image register --wait | `images.wait_ready(ref, timeout=600, poll_interval=5)` | 复用 wait_for_image_ready，返回 CustomImageInfo；READY / SUCCESS / SUCCEEDED 等成功词表沿用 CLI，失败保留原错误，超时抛 WaitTimeoutError |
+| image delete / set-visibility | `images.delete(ref, workspace=None)` / `images.set_visibility(ref, visibility, workspace=None)` | 每个操作单次发送；平台权限错误保留在异常链中 |
+| model register | `models.register(name, source_path, workspace, project, type=None, tag=None, description=None, operation_id=None)` | ModelRegisterHandle；type/tag 接受字符串或字符串序列；注册平台共享存储目录，不上传本地文件 |
+| model delete | `models.delete(ref, force=False, workspace=None, project=None)` | 复用 CLI model_usage / model_references 检查所有版本引用和排队部署；force=True 跳过同一检查；删除请求单次发送 |
+
+`servings.instances` 与共享 binding 首次请求第 1 页、page_size=200；若 total 大于已取条数，则与 CLI `serving instances --all` 一样按 total 扩大 page_size 再取第 1 页一次，结果以该次响应为界，不持续翻页追踪新增实例。
+
+上表 Serving / TensorBoard 的单资源方法均接受 `workspace=...`。创建、注册发送后失败抛 SubmissionUncertainError；其他写操作发送后失败抛 MutationUncertainError，异常链保留平台原始文本。创建后的只读确认不在 single_send 内；operation_id 仅作诊断关联，不是平台幂等键。
+
+`ServingCreateSpec` 覆盖全部 serving create 平台选项：
+
+| 字段 | 类型／默认值 |
+|---|---|
+| name / command / port | 必填 str / str / 1–65535 的 int |
+| model | 必填模型名称或 ModelRef；model_version 为正整数或 None，None 取目录最新版本 |
+| workspace / project / group | 必填名称或对应 Ref |
+| quota / image | 必填 Quota、QuotaRef 或 `"gpu,cpu,mem"`；镜像名称、URL、ImageRef 或 ImageSelector |
+| replicas / nodes_per_replica | int，默认均为 1，至少 1 |
+| shm_gib / priority | int 或 None；共享内存为正数 GiB，优先级复用工作区策略和配额限制 |
+| custom_domain / description | str 或 None / str，默认空描述；域名前缀复用 CLI 小写字母、数字和连字符规则 |
+| auto_scaling / public_path_readonly | bool 或 None；None 留给平台默认，False 显式发送 |
+
+`TensorboardCreateSpec` 必填 name、workspace、project、group；summary_path 默认为 None，但创建时与 CLI 一样要求非空路径。job 是可选名称或 JobRef，仅记录关联，不推导 summary_path。auto_stop_hours 默认 None，创建时使用 CLI 默认 24 小时，平台最多 72 小时；CPU／内存规格由平台固定。
+
+```python
+from inspire import ServingCreateSpec, TensorboardCreateSpec
+
+spec = ServingCreateSpec(
+    name="sdk-serving", model="模型名称", command="python serve.py", port=8000,
+    workspace="工作区名称", project="项目名称", group="完整计算组名称",
+    quota="1,8,32", image="镜像名称:v1",
+)
+plan = client.servings.plan(spec)
+print(plan.to_dict())
+# 显式创建及后续生命周期控制：
+handle = client.servings.create(spec)
+ready = client.servings.wait(handle.ref, raise_on_failure=True)
+print(client.servings.api(ready.ref)["endpoint"])
+
+board_spec = TensorboardCreateSpec(
+    name="sdk-curves", workspace="工作区名称", project="项目名称", group="完整计算组名称",
+    summary_path="/inspire/shared/runs", auto_stop_hours=2,
+)
+board_handle = client.tensorboards.create(board_spec)
+client.tensorboards.wait(board_handle.ref, "running")
+print(client.tensorboards.scalars(board_handle.ref, "train/loss", points=20))
+```
+
+Phase E 的验收使用隔离账号配置和模拟平台请求，不执行真实资源创建、扩容或删除；真实平台闭环仍在 Phase F 验证。
+
+## 最终 CLI-only 范围
+
+- 本机初始化、配置、安装与缓存：`init`、`config *`、`update`、`uninstall`、`cache *`，以及账号本地管理 `account add/use/rename/remove/list`。
+- `api-key export` 的文件格式、权限和 stdout 渲染，以及 `api-key run` 的子进程和环境处理；平台密钥读写由 `client.api_keys` 提供。
+- 所有工作负载的 YAML `batch`；SDK 应用自行循环或编排。
+- Notebook 的 `ssh/shell/exec/scp/ssh-config/ssh-proxy/connection */install-deps/proxy-url`、创建后的 `--post-start/--post-start-script`，以及 `job/hpc/ray/serving shell`。
+- 日志 SSH 文件来源选项 `--path/--remote-log-path/--notebook/--source`，及终端专用格式、字符展示预算；SDK 使用平台日志来源并返回结构化记录。
+- 指标 `--plot/--open/--sparkline` 和 TensorBoard 终端趋势渲染；SDK 返回样本或标量摘要。
+- `serving api --format` 的 shell 格式输出；SDK 返回共享 access 核心的结构化 endpoint / invocation 信息。
 
 ## 日志、事件与指标
 

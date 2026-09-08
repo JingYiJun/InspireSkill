@@ -1,8 +1,11 @@
 """Quota values and payload construction shared by CLI and SDK."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any
+from inspire.services.identifiers import is_full_uuid
+
 
 
 class QuotaParseError(ValueError):
@@ -103,3 +106,13 @@ def build_resource_spec_price(*, quota: ResolvedQuota) -> dict[str, Any]:
     if quota.gpu_count <= 0:
         payload.pop("gpu_type", None)
     return payload
+
+
+def validate_compute_group_name(value: str) -> str:
+    """Reject platform handles while preserving a user-facing group name."""
+    name = str(value or "").strip()
+    if not name:
+        raise QuotaMatchError("--group value cannot be empty")
+    if name.casefold().startswith("lcg-") or is_full_uuid(name):
+        raise QuotaMatchError("--group takes a compute group name.")
+    return name

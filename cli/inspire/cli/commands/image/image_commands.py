@@ -11,13 +11,10 @@ from inspire.services.images import (
     VISIBILITY_PROJECT,
     VISIBILITY_PRIVATE,
 )
-
 import contextlib
 import io
 from typing import Any, Optional
-
 import click
-
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -53,6 +50,12 @@ from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.services.image_writes import parse_visibility_value as _parse_visibility_value
+
+
+
+
+
 
 
 _IMAGE_LIST_COMMAND = "inspire image list --workspace <workspace-name>"
@@ -228,10 +231,6 @@ def _platform_reason(error: Exception) -> str:
     return "."
 
 
-def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
-    if visibility is None:
-        return None
-    return _VISIBILITY_BY_NAME.get(visibility.lower(), VISIBILITY_PRIVATE)
 
 
 def _parse_source_value(_ctx: click.Context, _param: click.Parameter, value: str) -> str:

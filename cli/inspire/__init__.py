@@ -2,6 +2,7 @@
 
 from typing import TYPE_CHECKING
 
+
 __version__ = "7.1.8"
 
 
@@ -16,6 +17,19 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        ServingInstanceView as ServingInstanceView,
+        Serving as Serving,
+        ServingRef as ServingRef,
+        ServingCreateSpec as ServingCreateSpec,
+        ServingPlan as ServingPlan,
+        ServingHandle as ServingHandle,
+        Tensorboard as Tensorboard,
+        TensorboardRef as TensorboardRef,
+        TensorboardCreateSpec as TensorboardCreateSpec,
+        TensorboardHandle as TensorboardHandle,
+        ImageRegisterHandle as ImageRegisterHandle,
+        ModelRegisterHandle as ModelRegisterHandle,
+        ServingFailedError as ServingFailedError,
         HPCJob as HPCJob,
         HPCJobRef as HPCJobRef,
         HPCJobCreateSpec as HPCJobCreateSpec,

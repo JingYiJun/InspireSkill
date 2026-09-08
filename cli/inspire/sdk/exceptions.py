@@ -95,3 +95,9 @@ class RayJobFailedError(InspireError):
     def __init__(self, job):
         super().__init__(f"Ray job reached terminal state {job.status}.")
         self.job = job
+
+
+class ServingFailedError(InspireError):
+    def __init__(self, serving):
+        self.serving = serving
+        super().__init__(f"Serving {serving.name!r} reached {serving.status}.")
