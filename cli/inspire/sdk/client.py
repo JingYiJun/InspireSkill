@@ -51,6 +51,9 @@ class InspireClient:
         from .jobs import Jobs
 
         self.jobs = Jobs(self)
+        from .notebooks import Notebooks
+
+        self.notebooks = Notebooks(self)
         from .account import AccountInformation, APIKeys
         from .datasets import Datasets
         from .model_registry import Models

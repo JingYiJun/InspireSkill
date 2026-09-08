@@ -1,6 +1,14 @@
 """Public SDK errors, preserving platform and validation messages."""
 
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models_notebooks import Notebook
+
+
 class InspireError(Exception):
     retryable = False
 
@@ -69,3 +77,9 @@ class JobFailedError(InspireError):
     def __init__(self, job):
         super().__init__(f"Job reached terminal state {job.status}.")
         self.job = job
+
+
+class NotebookFailedError(InspireError):
+    def __init__(self, notebook: Notebook):
+        super().__init__(f"Notebook reached terminal state {notebook.status}.")
+        self.notebook = notebook

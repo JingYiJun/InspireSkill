@@ -1,0 +1,725 @@
+"""Notebook discovery, submission, lifecycle and image snapshots."""
+
+from __future__ import annotations
+import builtins
+import math
+import time
+import uuid
+from dataclasses import replace
+from datetime import datetime
+from typing import Any, Iterator, Sequence, Literal
+
+from inspire.platform.web import browser_api
+from inspire.services import notebooks as core
+from inspire.services.notebook_output import public_notebook, public_runs
+from inspire.services.notebook_status import (
+    normalize_status,
+    TERMINAL_STATUSES,
+)
+from inspire.services.quotas import parse_quota
+from inspire.services.workload_quota import (
+    selected_groups,
+    quota_values,
+    match_quota_rows,
+    ensure_priority_allowed,
+    allowed_priority_levels_for,
+)
+from .resources import Service, operation, exact, positive
+from .models import (
+    Page,
+    WorkspaceRef,
+    ProjectRef,
+    ComputeGroupRef,
+    ImageRef,
+    Image,
+    QuotaRef,
+    Quota,
+    QuotaOption,
+    ImageSelector,
+    DatasetMount,
+    Resource,
+    EventResult,
+    MetricGroup,
+)
+from .models_notebooks import (
+    Notebook,
+    NotebookRef,
+    NotebookCreateSpec,
+    NotebookPlan,
+    NotebookHandle,
+    ImageSaveHandle,
+)
+from .exceptions import (
+    NotebookFailedError,
+    ValidationError,
+    ResolutionIncompleteError,
+    ResourceNotFoundError,
+    SubmissionUncertainError,
+    WaitTimeoutError,
+)
+
+
+def _duration(value: float) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValidationError("Wait durations must be finite positive seconds.")
+
+
+class Notebooks(Service):
+    def _notebook(self, data, workspace_id, ref=None):
+        view = public_notebook(data, fallback_name=ref.name if ref else "")
+        raw = str(data.get("status") or "")
+        name = str(data.get("name") or (ref.name if ref else ""))
+        view.update(
+            name=name,
+            status=normalize_status(raw),
+            raw_status=raw,
+            sub_status=str(data.get("sub_status") or ""),
+        )
+        return Notebook(
+            ref=ref or self.ref(NotebookRef, name, core.extract_notebook_id(data), workspace_id),
+            **view,
+        )
+
+    def _all(self, ws, *, keyword=None, status=None):
+        user_ids = core.current_user_ids(self.session)
+        rows, seen, previous = [], set(), None
+        for page in range(1, 101):
+            items, total = browser_api.list_notebooks(
+                ws.ref.key,
+                user_ids=user_ids,
+                keyword=keyword or "",
+                status=[status.upper()] if status else None,
+                page=page,
+                page_size=100,
+                session=self.session,
+            )
+            keys = tuple(core.extract_notebook_id(x) for x in items)
+            if keys and (not all(keys) or keys == previous):
+                raise ResolutionIncompleteError(
+                    "Platform repeated a notebook page or omitted an identity."
+                )
+            previous = keys
+            for item, key in zip(items, keys):
+                if key not in seen:
+                    rows.append(self._notebook(item, ws.ref.key))
+                    seen.add(key)
+            if not items:
+                if total is not None and len(seen) < total:
+                    raise ResolutionIncompleteError("Platform omitted a notebook page.")
+                return rows
+            if (total is not None and page * 100 >= total) or (total is None and len(items) < 100):
+                return rows
+        raise ResolutionIncompleteError("Notebook scan exceeded 100 pages; narrow the query.")
+
+    @operation
+    def list(
+        self,
+        workspace: str | WorkspaceRef,
+        status: str | None = None,
+        keyword: str | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> Page[Notebook]:
+        ws = self.client.workspaces.get(workspace)
+        rows = self._all(ws, keyword=keyword, status=status)
+        if status:
+            rows = [
+                r
+                for r in rows
+                if status.casefold() in (r.status.casefold(), r.raw_status.casefold())
+            ]
+        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, status, keyword))
+
+    def iter(
+        self,
+        workspace: str | WorkspaceRef,
+        *,
+        status: str | None = None,
+        keyword: str | None = None,
+        max_items: int | None = None,
+    ) -> Iterator[Notebook]:
+        if max_items is not None:
+            positive(max_items, "max_items", 100000)
+        cursor, seen = None, set()
+        while True:
+            page = self.list(workspace, status=status, keyword=keyword, cursor=cursor)
+            for item in page.items:
+                if item.ref.key not in seen:
+                    seen.add(item.ref.key)
+                    yield item
+                    if max_items is not None and len(seen) >= max_items:
+                        return
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
+
+    def _resolve(self, selector, workspace=None):
+        if isinstance(selector, NotebookRef):
+            self.client._validate_ref(selector, NotebookRef)
+            if workspace is not None:
+                self.client._validate_ref(
+                    selector, NotebookRef, self.client.workspaces.get(workspace).ref.key
+                )
+            return selector
+        if workspace is None:
+            raise ValidationError("workspace is required when selecting a notebook by name.")
+        ws = self.client.workspaces.get(workspace)
+        return exact(
+            self._all(ws, keyword=selector), selector, NotebookRef, self.client, ws.ref.key
+        ).ref
+
+    @operation
+    def get(
+        self, name_or_ref: str | NotebookRef, workspace: str | WorkspaceRef | None = None
+    ) -> Notebook:
+        ref = self._resolve(name_or_ref, workspace)
+        data = browser_api.get_notebook_detail(notebook_id=ref.key, session=self.session)
+        if not data:
+            raise ResourceNotFoundError("Notebook no longer exists or is not visible.")
+        return self._notebook(data, ref.workspace_id, ref)
+
+    @operation
+    def status(
+        self, names: Sequence[str | NotebookRef], workspace: str | WorkspaceRef | None = None
+    ) -> tuple[Notebook, ...]:
+        return tuple(self.get(name, workspace) for name in names)
+
+    def _groups(self, ws):
+        return browser_api.list_notebook_compute_groups(
+            workspace_id=ws.ref.key, session=self.session
+        )
+
+    def _prices(self, ws, group):
+        return browser_api.get_resource_prices(
+            workspace_id=ws.ref.key,
+            logic_compute_group_id=group,
+            schedule_config_type="SCHEDULE_CONFIG_TYPE_DSW",
+            session=self.session,
+        )
+
+    def _priority_levels(self, ws):
+        from inspire.platform.web.browser_api.availability import QUOTA_PRIORITY_SPEC_FIELDS
+
+        try:
+            return browser_api.get_quota_priority_levels(
+                workspace_id=ws.ref.key,
+                spec_field=QUOTA_PRIORITY_SPEC_FIELDS["notebook"],
+                session=self.session,
+            )
+        except Exception:
+            return None
+
+    @operation
+    def quotas(
+        self,
+        workspace: str | WorkspaceRef,
+        group: str | ComputeGroupRef | None = None,
+        include_empty: bool = False,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> Page[QuotaOption]:
+        ws = self.client.workspaces.get(workspace)
+        if isinstance(group, ComputeGroupRef):
+            self.client._validate_ref(group, ComputeGroupRef, ws.ref.key)
+        from inspire.services.workload_quota import query_workspace_quotas, sort_quota_rows
+
+        groups = self._groups(ws)
+        if isinstance(group, ComputeGroupRef):
+            groups = [
+                g for g in groups if (g.get("logic_compute_group_id") or g.get("id")) == group.key
+            ]
+        views = query_workspace_quotas(
+            workspace_name=ws.name,
+            workload="notebook",
+            group_filter=group.casefold() if isinstance(group, str) else "",
+            include_empty=include_empty,
+            groups=groups,
+            load_prices=lambda key: self._prices(ws, key),
+            load_levels=lambda: self._priority_levels(ws),
+            include_identity=True,
+        )
+        rows = []
+        sort_quota_rows(views)
+        for view in views:
+            triple = parse_quota(view["quota"]) if view["quota"] else None
+            group_ref = self.ref(
+                ComputeGroupRef, view["compute_group"], view["group_id"], ws.ref.key
+            )
+            levels = view["allowed_priority_levels"]
+            rows.append(
+                QuotaOption(
+                    view["quota"],
+                    self.ref(
+                        QuotaRef, view["quota"], view["quota_id"] or view["group_id"], ws.ref.key
+                    ),
+                    Quota(triple.gpu_count, triple.cpu_count, triple.memory_gib)
+                    if triple
+                    else None,
+                    group_ref,
+                    view["gpu_type"],
+                    ws.name,
+                    view["priority"],
+                    tuple(levels) if levels is not None else None,
+                    view["points_per_hour"],
+                )
+            )
+        return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
+
+    def _plan(self, spec):
+        from inspire.services.datasets import parse_dataset_specs, resolve_dataset_info
+        from inspire.task_priority import resolve_task_priority
+        from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
+
+        if not isinstance(spec, NotebookCreateSpec):
+            raise ValidationError("Pass a NotebookCreateSpec.")
+        if spec.auto_stop_after is not None and (
+            type(spec.auto_stop_after) is not int or spec.auto_stop_after < 2
+        ):
+            raise ValidationError("auto_stop_after must be at least 2 minutes.")
+        quota_text = (
+            f"{spec.quota.gpu},{spec.quota.cpu},{spec.quota.memory_gib}"
+            if isinstance(spec.quota, Quota)
+            else (spec.quota.name if isinstance(spec.quota, QuotaRef) else spec.quota)
+        )
+        _, _, _, shm = core.resolve_create_inputs(
+            config=self.client._config,
+            quota=quota_text,
+            project=spec.project,
+            image=spec.image,
+            shm_size=spec.shm_gib,
+        )
+        ws = self.client.workspaces.get(spec.workspace)
+        groups = builtins.list(selected_groups(self._groups(ws), "notebook"))
+        group_resources = [
+            Resource(
+                str(g.get("name") or g.get("logic_compute_group_name") or ""),
+                self.ref(
+                    ComputeGroupRef,
+                    str(g.get("name") or g.get("logic_compute_group_name") or ""),
+                    g.get("id") or g.get("logic_compute_group_id"),
+                    ws.ref.key,
+                ),
+            )
+            for g in groups
+        ]
+        group = exact(group_resources, spec.group, ComputeGroupRef, self.client, ws.ref.key)
+        group_data = groups[group_resources.index(group)]
+        prices = self._prices(ws, group.ref.key)
+        if isinstance(spec.quota, QuotaRef):
+            self.client._validate_ref(spec.quota, QuotaRef, ws.ref.key)
+            prices = [
+                p for p in prices if (p.get("quota_id") or p.get("spec_id")) == spec.quota.key
+            ]
+            if not prices:
+                raise ResourceNotFoundError(
+                    "No quota matches this reference in the selected group."
+                )
+            gpu, cpu, mem, _ = quota_values(prices[0])
+            quota_text = f"{gpu},{cpu},{mem}"
+        quota = match_quota_rows(
+            parse_quota(quota_text), [(group_data, p) for p in prices], group_override=group.name
+        )
+        quota = replace(
+            quota,
+            allowed_priority_levels=allowed_priority_levels_for(
+                self._priority_levels(ws), quota.quota_id, workload="notebook"
+            ),
+        )
+        projects = browser_api.list_projects(workspace_id=ws.ref.key, session=self.session)
+        project_values = [
+            Resource(p.name, self.ref(ProjectRef, p.name, p.project_id, ws.ref.key))
+            for p in projects
+        ]
+        project_ref = exact(project_values, spec.project, ProjectRef, self.client, ws.ref.key).ref
+        project, _ = core.resolve_notebook_project(
+            projects=projects,
+            config=self.client._config,
+            project=project_ref.name,
+            needs_gpu_quota=quota.gpu_count > 0,
+            workspace_id=ws.ref.key,
+            session=self.session,
+        )
+        priority = resolve_task_priority(
+            spec.priority,
+            fair_scheduling=is_fair_scheduling_workspace(self.session, ws.ref.key),
+            project_limit=project.priority_name,
+        )
+        ensure_priority_allowed(quota, priority, quota_command="inspire notebook quota")
+        if isinstance(spec.image, (ImageRef, ImageSelector)):
+            image = self.client.images.get(spec.image, workspace=ws.ref)
+        else:
+            images = browser_api.list_images(workspace_id=ws.ref.key, session=self.session)
+            if not core.find_image_match(images, spec.image):
+                from inspire.platform.web.session import TransientAPIError
+
+                for source in ("SOURCE_PUBLIC", "SOURCE_PRIVATE"):
+                    try:
+                        images += browser_api.list_images(
+                            workspace_id=ws.ref.key, source=source, session=self.session
+                        )
+                    except TransientAPIError:
+                        raise
+                    except Exception:
+                        continue
+                    if core.find_image_match(images, spec.image):
+                        break
+            selected_image = core.resolve_notebook_image(images, spec.image)
+            image = Image(
+                selected_image.name,
+                self.ref(ImageRef, selected_image.name, selected_image.image_id, ws.ref.key),
+                "",
+                selected_image.url,
+            )
+        mounts = parse_dataset_specs(
+            [
+                f"{x.dataset}:{x.version}" if isinstance(x, DatasetMount) else x
+                for x in spec.datasets
+            ]
+        )
+        dataset_info = resolve_dataset_info(mounts, workspace_id=ws.ref.key, session=self.session)
+        stop_hour, stop_minute = core.split_auto_stop_after(spec.auto_stop_after)
+        name = spec.name or f"notebookrun-{uuid.uuid4().hex[:8]}"
+        kwargs = core.build_notebook_create_kwargs(
+            name=name,
+            project_id=project.project_id,
+            project_name=project.name,
+            image_id=image.ref.key,
+            image_url=image.url,
+            quota=quota,
+            shm_size=shm,
+            auto_stop=spec.auto_stop or spec.auto_stop_after is not None,
+            workspace_id=ws.ref.key,
+            task_priority=priority,
+            node_id=spec.node,
+            dataset_info=dataset_info or None,
+            enable_notification=spec.enable_notification,
+            stop_hour=stop_hour,
+            stop_minute=stop_minute,
+            public_path_readonly=spec.public_path_readonly,
+            project_path_readonly=spec.project_path_readonly,
+        )
+        return NotebookPlan(
+            name,
+            ws,
+            Resource(project_ref.name, project_ref),
+            group,
+            image,
+            Quota(quota.gpu_count, quota.cpu_count, quota.memory_gib),
+            priority,
+            shm,
+            kwargs["auto_stop"],
+            spec.auto_stop_after,
+            tuple(mounts),
+            kwargs,
+        )
+
+    @operation
+    def plan(self, spec: NotebookCreateSpec) -> NotebookPlan:
+        return self._plan(spec)
+
+    @operation
+    def create(self, spec: NotebookCreateSpec, operation_id: str | None = None) -> NotebookHandle:
+        plan = self._plan(spec)
+        identifier = uuid.uuid4().hex if operation_id is None else operation_id
+        if not isinstance(identifier, str) or not identifier:
+            raise ValidationError("operation_id must be a non-empty string.")
+        try:
+            taken = browser_api.notebook_name_exists(
+                plan.name, workspace_id=plan.workspace.ref.key, session=self.session
+            )
+        except Exception:
+            taken = False
+        if taken:
+            raise ValidationError(
+                f"A notebook named '{plan.name}' already exists in this workspace."
+            )
+        session = self.session
+        with self.client._transport.single_send(identifier, create=True):
+            result = browser_api.create_notebook(**plan.create_kwargs, session=session)
+        key = core.extract_notebook_id(result) or core.resolve_created_notebook_id(
+            name=plan.name, workspace_id=plan.workspace.ref.key, session=session
+        )
+        if not key:
+            raise SubmissionUncertainError(identifier)
+        return NotebookHandle(
+            plan.name, self.ref(NotebookRef, plan.name, key, plan.workspace.ref.key), identifier
+        )
+
+    def wait(
+        self,
+        ref: str | NotebookRef,
+        timeout: float = 600,
+        poll_interval: float = 5,
+        target: Literal["RUNNING", "STOPPED"] = "RUNNING",
+        raise_on_failure: bool = False,
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> Notebook:
+        _duration(timeout)
+        _duration(poll_interval)
+        if target not in ("RUNNING", "STOPPED"):
+            raise ValidationError("target must be RUNNING or STOPPED.")
+        with self.client._transport.scope(timeout=timeout):
+            resolved = self._resolve(ref, workspace)
+            while True:
+                self.client._transport.remaining()
+                notebook = self.get(resolved)
+                if notebook.status == target:
+                    return notebook
+                if notebook.status in TERMINAL_STATUSES:
+                    if raise_on_failure:
+                        raise NotebookFailedError(notebook)
+                    return notebook
+                time.sleep(min(poll_interval, self.client._transport.remaining()))
+
+    def _mutate(self, ref, action, workspace=None):
+        resolved = self._resolve(ref, workspace)
+        session = self.session
+        with self.client._transport.single_send():
+            return action(notebook_id=resolved.key, session=session)
+
+    @operation
+    def start(self, ref: str | NotebookRef, *, workspace: str | WorkspaceRef | None = None) -> None:
+        self._mutate(ref, browser_api.start_notebook, workspace)
+
+    @operation
+    def stop(self, ref: str | NotebookRef, *, workspace: str | WorkspaceRef | None = None) -> None:
+        self._mutate(ref, browser_api.stop_notebook, workspace)
+
+    @operation
+    def delete(
+        self, ref: str | NotebookRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> None:
+        self._mutate(ref, browser_api.delete_notebook, workspace)
+
+    @operation
+    def events(
+        self,
+        ref: str | NotebookRef,
+        keyword: str | None = None,
+        limit: int = 100,
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> EventResult:
+        from inspire.services.job_events import matching_events
+
+        positive(limit)
+        resolved = self._resolve(ref, workspace)
+        rows = matching_events(
+            browser_api.list_notebook_events(resolved.key, session=self.session),
+            keyword_filter=keyword,
+        )
+        return EventResult(tuple(rows[-limit:]), len(rows) > limit)
+
+    def follow_events(
+        self, ref: str | NotebookRef, *, interval: float = 5, **filters: Any
+    ) -> Iterator[EventResult]:
+        _duration(interval)
+        with self.client._transport.scope(timeout=self.client.operation_timeout):
+            resolved = self._resolve(ref, filters.pop("workspace", None))
+        seen = set()
+        while True:
+            result = self.events(resolved, **filters)
+            rows = []
+            for row in result.items:
+                key = repr(sorted(row.items()))
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+            if rows:
+                yield EventResult(tuple(rows), result.truncated)
+            time.sleep(interval)
+
+    @operation
+    def lifecycle(
+        self,
+        ref: str | NotebookRef,
+        limit: int | None = None,
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        if limit is not None:
+            positive(limit)
+        resolved = self._resolve(ref, workspace)
+        rows = sorted(
+            browser_api.list_notebook_runs(resolved.key, session=self.session),
+            key=lambda x: x.get("index", 0),
+        )
+        return tuple(public_runs(rows[-limit:] if limit is not None else rows))
+
+    @operation
+    def metrics(
+        self,
+        ref: str | NotebookRef,
+        metric: str = "core",
+        window: str = "1h",
+        start: str | datetime | None = None,
+        end: str | datetime | None = None,
+        interval: str | None = None,
+        group: str | ComputeGroupRef | None = None,
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> tuple[MetricGroup, ...]:
+        from inspire.services.metrics import resolve_metrics, parse_window, parse_absolute
+        from inspire.platform.web.browser_api.metrics import INTERVAL_CHOICES, TASK_TYPE_BY_RESOURCE
+
+        resolved = self._resolve(ref, workspace)
+        interval = interval or "1m"
+        if interval not in INTERVAL_CHOICES:
+            raise ValidationError(
+                f"Invalid interval {interval!r}; choose from: {', '.join(INTERVAL_CHOICES)}"
+            )
+
+        def timestamp(value):
+            return int(value.timestamp()) if isinstance(value, datetime) else parse_absolute(value)
+
+        end_ts = timestamp(end) if end is not None else int(time.time())
+        start_ts = timestamp(start) if start is not None else end_ts - parse_window(window)
+        if end_ts <= start_ts:
+            raise ValidationError("end time must be after start time")
+        if group is not None:
+            ws = WorkspaceRef(
+                "",
+                resolved.account,
+                resolved.base_url,
+                resolved.workspace_id,
+                resolved.workspace_id,
+            )
+            lcg = self.client.compute_groups.get(group, workspace=ws).ref.key
+        else:
+            lcg = core.notebook_lcg_from_detail(
+                browser_api.get_notebook_detail(notebook_id=resolved.key, session=self.session)
+            )
+        if not lcg:
+            raise ValidationError("Unable to resolve compute group; pass group.")
+        return tuple(
+            browser_api.get_resource_metrics_by_time(
+                task_id=resolved.key,
+                task_type=TASK_TYPE_BY_RESOURCE["notebook"],
+                logic_compute_group_id=lcg,
+                metric_types=resolve_metrics(metric),
+                start_timestamp=start_ts,
+                end_timestamp=end_ts,
+                interval_second=INTERVAL_CHOICES[interval],
+                session=self.session,
+            )
+        )
+
+    @operation
+    def realtime_metrics(
+        self, ref: str | NotebookRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> tuple[browser_api.NotebookResourceSnapshot, ...]:
+        resolved = self._resolve(ref, workspace)
+        return tuple(
+            browser_api.get_notebook_realtime_metrics(
+                notebook_id=resolved.key, session=self.session
+            )
+        )
+
+    @operation
+    def estimate_image_size(
+        self, ref: str | NotebookRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> browser_api.NotebookImageSizeEstimate:
+        resolved = self._resolve(ref, workspace)
+        return browser_api.estimate_notebook_image_size(
+            notebook_id=resolved.key, session=self.session
+        )
+
+    @operation
+    def save_image(
+        self,
+        ref: str | NotebookRef,
+        name: str,
+        version: str | None = None,
+        description: str | None = None,
+        visibility: str | None = None,
+        flatten: bool = False,
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> ImageSaveHandle:
+        resolved = self._resolve(ref, workspace)
+        version = "v1" if version is None else version
+        visibility_value = None
+        if visibility is not None:
+            if visibility.lower() not in ("private", "project", "public"):
+                raise ValidationError("visibility must be private, project or public.")
+            visibility_value = "VISIBILITY_" + visibility.upper()
+        try:
+            estimate = self.estimate_image_size(resolved)
+        except Exception:
+            estimate = None
+        if estimate is not None and not estimate.notebook_running:
+            raise ValidationError(
+                f"Notebook {resolved.name} is not running, so there is nothing to snapshot."
+            )
+        session = self.session
+        with self.client._transport.single_send():
+            result = browser_api.save_notebook_as_image(
+                notebook_id=resolved.key,
+                name=name,
+                version=version,
+                description=description or "",
+                flatten=flatten,
+                session=session,
+            )
+        key = core.resolve_saved_image_id(
+            result, name=name, version=version, workspace_id=resolved.workspace_id, session=session
+        )
+        image_ref = (
+            self.ref(ImageRef, f"{name}:{version}", key, resolved.workspace_id) if key else None
+        )
+        warning = None
+        if visibility_value and key:
+            try:
+                with self.client._transport.single_send():
+                    browser_api.update_image(
+                        image_id=key, visibility=visibility_value, session=session
+                    )
+            except Exception as error:
+                warning = f"Visibility was not updated: {error}"
+        elif visibility_value:
+            warning = "Set visibility after the image appears in the catalog."
+        return ImageSaveHandle(
+            f"{name}:{version}",
+            image_ref,
+            resolved,
+            flatten=flatten,
+            estimated_size_bytes=estimate.size_bytes if estimate else None,
+            warning=warning,
+        )
+
+    @operation
+    def cancel_save_image(
+        self, ref: str | NotebookRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> bool:
+        return self._mutate(ref, browser_api.cancel_notebook_image_save, workspace)
+
+    def wait_image_ready(
+        self, image: ImageSaveHandle | ImageRef, timeout: float = 600, poll_interval: float = 5
+    ):
+        _duration(timeout)
+        _duration(poll_interval)
+        ref = image.ref if isinstance(image, ImageSaveHandle) else image
+        if ref is None:
+            raise ValidationError(
+                "Image identity is not available yet; resolve it in the image catalog first."
+            )
+        self.client._validate_ref(ref, ImageRef)
+        with self.client._transport.scope(timeout=timeout):
+            try:
+                return browser_api.wait_for_image_ready(
+                    image_id=ref.key,
+                    session=self.session,
+                    timeout=timeout,
+                    poll_interval=poll_interval,
+                )
+            except TimeoutError as error:
+                raise WaitTimeoutError(str(error)) from error
+            except ValueError as error:
+                raise ValidationError(str(error)) from error

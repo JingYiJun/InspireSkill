@@ -56,6 +56,10 @@ def test_imports_are_lazy():
 import inspire.sdk
 for module in pkgutil.iter_modules(inspire.sdk.__path__):
     importlib.import_module("inspire.sdk." + module.name)
+import inspire.services.notebooks
+import inspire.services.notebook_status
+import inspire.services.notebook_output
+import inspire.services.workload_quota
 assert not any(x.startswith(("playwright", "click")) for x in sys.modules)
 '''
     subprocess.run([sys.executable, "-c", script], check=True)
@@ -977,9 +981,34 @@ def test_operation_keeps_original_validation_message(client, monkeypatch):
 def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
     root = Path(__file__).resolve().parents[1] / "inspire"
     violations = []
+    private_services = []
     for package in ("services", "sdk"):
         for path in (root / package).rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            imports = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        imports[alias.asname or alias.name.split(".")[0]] = (
+                            alias.name if alias.asname else alias.name.split(".")[0]
+                        )
+                elif isinstance(node, ast.ImportFrom) and not node.level:
+                    for alias in node.names:
+                        imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+            def qualified_name(node):
+                if isinstance(node, ast.Name):
+                    return imports.get(node.id, node.id)
+                if isinstance(node, ast.Attribute):
+                    return f"{qualified_name(node.value)}.{node.attr}"
+                return ""
+
+            for node in ast.walk(tree):
+                if package == "sdk" and isinstance(node, ast.Attribute):
+                    if node.attr.startswith("_") and qualified_name(node.value).startswith(
+                        "inspire.services."
+                    ):
+                        private_services.append(f"{path.relative_to(root)}:{node.lineno}")
                 modules = []
                 if isinstance(node, ast.Import):
                     modules = [alias.name for alias in node.names]
@@ -989,6 +1018,9 @@ def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
                         parts = list(path.relative_to(root.parent).parts[:-1])
                         module = ".".join(parts[:len(parts) - node.level + 1] + [module]).rstrip(".")
                     modules = [module, *(f"{module}.{alias.name}" for alias in node.names)]
+                    if package == "sdk" and module.startswith("inspire.services."):
+                        if any(alias.name.startswith("_") for alias in node.names):
+                            private_services.append(f"{path.relative_to(root)}:{node.lineno}")
                 forbidden = ("inspire.cli", "click", "rich", "playwright")
                 if any(
                     name == prefix or name.startswith(prefix + ".")
@@ -997,6 +1029,7 @@ def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
                 ):
                     violations.append(f"{path.relative_to(root)}:{node.lineno}")
     assert not violations, "CLI/UI imports in shared layers: " + ", ".join(violations)
+    assert not private_services, "Private service names in SDK: " + ", ".join(private_services)
 
 
 @pytest.mark.parametrize("allow_browser", [False, True])

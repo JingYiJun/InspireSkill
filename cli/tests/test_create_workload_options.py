@@ -255,7 +255,7 @@ def test_auto_stop_after_splits_into_hours_and_minutes(
 ) -> None:
     from inspire.cli.commands.notebook import notebook_create_flow
 
-    assert notebook_create_flow._split_auto_stop_after(minutes) == expected
+    assert notebook_create_flow.split_auto_stop_after(minutes) == expected
 
 
 # ---------------------------------------------------------------------------

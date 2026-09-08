@@ -1,5 +1,18 @@
 """Experimental synchronous SDK. CLI installation requirements are unchanged."""
 
+from inspire.platform.web.browser_api.notebooks import (
+    NotebookImageSizeEstimate,
+    NotebookResourceSnapshot,
+)
+from .models_notebooks import (
+    Notebook,
+    NotebookRef,
+    NotebookCreateSpec,
+    NotebookPlan,
+    NotebookHandle,
+    ImageSaveHandle,
+)
+
 from .client import InspireClient
 from .models_resources import (
     AccountInfo,
@@ -73,9 +86,21 @@ from .exceptions import (
     MutationUncertainError,
     WaitTimeoutError,
     JobFailedError,
+    NotebookFailedError,
 )
 
 __all__ = [
+    "NotebookImageSizeEstimate",
+    "NotebookResourceSnapshot",
+
+    "Notebook",
+    "NotebookRef",
+    "NotebookCreateSpec",
+    "NotebookPlan",
+    "NotebookHandle",
+    "ImageSaveHandle",
+    "NotebookFailedError",
+
     "AccountInfo",
     "AccountCheck",
     "AccountContext",

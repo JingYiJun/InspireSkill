@@ -200,17 +200,10 @@ class Jobs(Service):
             key = str(row.get("quota_id") or row.get("spec_id") or "")
             if not key:
                 raise ResolutionIncompleteError("Quota catalog omitted a tier identity.")
-            quota = Quota(
-                int(row.get("gpu_count") or 0),
-                int(row.get("cpu_count") or 0),
-                int(
-                    row.get("memory_size_gib")
-                    or row.get("memory_size")
-                    or row.get("memory_size_gb")
-                    or 0
-                ),
-            )
-            gpu = str((row.get("gpu_info") or {}).get("gpu_type") or row.get("gpu_type") or "")
+            from inspire.services.workload_quota import quota_values
+
+            gpu_count, cpu_count, memory_gib, gpu = quota_values(row)
+            quota = Quota(gpu_count, cpu_count, memory_gib)
             name = f"{quota.gpu},{quota.cpu},{quota.memory_gib}"
             public = QuotaOption(
                 name, self.ref(QuotaRef, name, key, ws.ref.key), quota, group.ref, gpu
@@ -231,32 +224,65 @@ class Jobs(Service):
         limit: int = 20,
         cursor: str | None = None,
     ) -> Page[QuotaOption]:
-        from inspire.services.compute_groups import group_supports_workload
+        from dataclasses import replace
+        from inspire.services.workload_quota import query_workspace_quotas
 
         ws = self.client.workspaces.get(workspace)
         groups = self.client.compute_groups._all(ws)
         if isinstance(group, ComputeGroupRef):
             self.client._validate_ref(group, ComputeGroupRef, ws.ref.key)
-        rows = []
-        for selected, data in groups:
-            if not group_supports_workload(data, "job"):
-                continue
-            if isinstance(group, ComputeGroupRef) and selected.ref.key != group.key:
-                continue
-            if isinstance(group, str) and group.casefold() not in selected.name.casefold():
-                continue
-            options = [row[0] for row in self._quota_rows(ws, selected)]
-            rows.extend(options)
-            if not options and include_empty:
+            groups = [(item, data) for item, data in groups if item.ref.key == group.key]
+        by_group = {item.ref.key: item for item, _ in groups}
+        options, levels = {}, {}
+
+        def prices(key):
+            rows = []
+            for option, resolved in self._quota_rows(ws, by_group[key]):
+                options[(key, option.ref.key)] = option
+                if resolved.allowed_priority_levels is not None:
+                    levels[option.ref.key] = resolved.allowed_priority_levels
                 rows.append(
-                    QuotaOption(
-                        "",
-                        self.ref(QuotaRef, "", selected.ref.key, ws.ref.key),
-                        None,
-                        selected.ref,
-                        "",
+                    dict(
+                        resolved.raw_price,
+                        quota_id=option.ref.key,
+                        gpu_count=resolved.gpu_count,
+                        cpu_count=resolved.cpu_count,
+                        memory_size_gib=resolved.memory_gib,
                     )
                 )
+            return rows
+
+        views = query_workspace_quotas(
+            workspace_name=ws.name,
+            workload="job",
+            group_filter=group.casefold() if isinstance(group, str) else "",
+            include_empty=include_empty,
+            groups=[
+                dict(data, id=item.ref.key, logic_compute_group_id=item.ref.key, name=item.name)
+                for item, data in groups
+            ],
+            load_prices=prices,
+            load_levels=lambda: levels,
+            include_identity=True,
+        )
+        rows = []
+        for view in views:
+            key = view["group_id"]
+            option = options.get((key, view["quota_id"]))
+            if option is None:
+                option = QuotaOption(
+                    "", self.ref(QuotaRef, "", key, ws.ref.key), None, by_group[key].ref, ""
+                )
+            allowed = view["allowed_priority_levels"]
+            rows.append(
+                replace(
+                    option,
+                    workspace=ws.name,
+                    priority=view["priority"],
+                    allowed_priority_levels=tuple(allowed) if allowed is not None else None,
+                    points_per_hour=view["points_per_hour"],
+                )
+            )
         return self.page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
 
     def _plan(self, spec):

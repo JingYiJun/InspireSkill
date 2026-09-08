@@ -16,6 +16,17 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        NotebookImageSizeEstimate as NotebookImageSizeEstimate,
+        NotebookResourceSnapshot as NotebookResourceSnapshot,
+
+        Notebook as Notebook,
+        NotebookRef as NotebookRef,
+        NotebookCreateSpec as NotebookCreateSpec,
+        NotebookPlan as NotebookPlan,
+        NotebookHandle as NotebookHandle,
+        ImageSaveHandle as ImageSaveHandle,
+        NotebookFailedError as NotebookFailedError,
+
         AccountInfo as AccountInfo,
         AccountCheck as AccountCheck,
         AccountContext as AccountContext,

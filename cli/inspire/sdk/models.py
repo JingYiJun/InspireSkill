@@ -102,6 +102,23 @@ class QuotaOption(Resource[QuotaRef]):
     quota: Quota | None
     group: ComputeGroupRef
     gpu_type: str
+    workspace: str = ""
+    priority: str = ""
+    allowed_priority_levels: tuple[str, ...] | None = None
+    points_per_hour: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workspace": self.workspace,
+            "compute_group": self.group.name,
+            "gpu_type": self.gpu_type,
+            "quota": self.name,
+            "priority": self.priority,
+            "allowed_priority_levels": list(self.allowed_priority_levels)
+            if self.allowed_priority_levels is not None
+            else None,
+            "points_per_hour": self.points_per_hour,
+        }
 
 
 @dataclass(frozen=True)

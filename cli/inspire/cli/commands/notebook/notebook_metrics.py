@@ -9,6 +9,8 @@ compute-group handle, and exists only on the notebook route.
 
 from __future__ import annotations
 
+from inspire.services.notebooks import notebook_lcg_from_detail
+
 import inspect
 from typing import Any, Callable, Optional, cast
 
@@ -32,27 +34,9 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, WebSession
 
 
-def _notebook_lcg_from_detail(detail: object) -> Optional[str]:
-    """Pull the compute-group handle from one notebook detail payload."""
-    if not isinstance(detail, dict):
-        return None
-    start_cfg = detail.get("start_config")
-    if isinstance(start_cfg, dict):
-        lcg = start_cfg.get("logic_compute_group_id")
-        if isinstance(lcg, str) and lcg.strip():
-            return lcg.strip()
-    grp = detail.get("logic_compute_group")
-    if isinstance(grp, dict):
-        for key in ("logic_compute_group_id", "compute_group_id"):
-            value = grp.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return None
-
-
 def _resolve_notebook_lcg(task_id: str, session: WebSession) -> Optional[str]:
     detail = browser_api_module.get_notebook_detail(notebook_id=task_id, session=session)
-    return _notebook_lcg_from_detail(detail)
+    return notebook_lcg_from_detail(detail)
 
 
 def _resolve_notebook_detail(
@@ -100,7 +84,7 @@ def _notebook_name_to_id(
     detail, nb_id, _session = _resolve_notebook_detail(ctx, name, pick)
     return ResolvedMetricsTarget(
         task_id=nb_id,
-        logic_compute_group_id=_notebook_lcg_from_detail(detail),
+        logic_compute_group_id=notebook_lcg_from_detail(detail),
     )
 
 

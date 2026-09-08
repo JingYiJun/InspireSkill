@@ -318,8 +318,8 @@ _IMAGE_FAILED_STATES = {
 def wait_for_image_ready(
     image_id: str,
     session: Optional[WebSession] = None,
-    timeout: int = 600,
-    poll_interval: int = 5,
+    timeout: float = 600,
+    poll_interval: float = 5,
 ) -> CustomImageInfo:
     """Wait for a custom image to reach a terminal success state.
 

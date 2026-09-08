@@ -22,7 +22,7 @@ with InspireClient(account="my-account") as client:
         print(job.name, job.status)
 ```
 
-默认 `allow_browser=False`，不自动登录或启动 Chromium。缓存失效返回 `AuthenticationError`，应用可以提示用户通过 CLI 恢复认证。需要由控制节点自动登录/浏览器传输时显式指定 `allow_browser=True`；仍需按现有 CLI 安装说明准备 Chromium。SDK 导入与 Job 模块导入不会加载 Playwright 或 Click。
+默认 `allow_browser=False`，不自动登录或启动 Chromium。缓存失效返回 `AuthenticationError`，应用可以提示用户通过 CLI 恢复认证。需要由控制节点自动登录/浏览器传输时显式指定 `allow_browser=True`；仍需按现有 CLI 安装说明准备 Chromium。SDK 各模块和 Notebook 共享服务的导入不会加载 Playwright 或 Click。
 
 一个同步 Client 只允许在创建它的进程和线程中使用。线程 worker 或 fork 子进程必须各自创建 Client，并用 `with` 或 `close()` 释放资源。不同 Client 的 HTTP session、浏览器和关闭动作相互独立；账号磁盘缓存、刷新锁和登录冷却仍与 CLI 共用。同账号多个进程需在本地文件锁有效的文件系统上运行；未验证任意网络共享盘锁语义。
 
@@ -176,6 +176,77 @@ with InspireClient(account="my-account") as client:
 
 需要解析名称的单任务方法均支持 `workspace=...`；传 JobRef 时可省略。`status` 中任何一项失败会抛出相应 SDK 错误，不打印 CLI 的逐项错误行。
 
+## Notebooks 方法与 CLI 对应（Phase C）
+
+`client.notebooks` 覆盖 notebook 的平台查询、创建、启停、删除、事件、运行周期、指标、配额和镜像保存。名称操作必须提供 workspace；拿到 `NotebookRef` 后可省略 workspace。`NotebookRef` 与其他引用一样支持 `to_dict()` / `from_dict()`，账号、来源和工作区校验沿用 Client 的公共合同。
+
+| CLI | `client.notebooks` | 返回值 / 行为 |
+|---|---|---|
+| notebook list | `list(workspace, status=None, keyword=None, limit=20, cursor=None)` | Page[Notebook]；仅查询当前账号的 notebook；status 大小写不敏感并传入平台过滤器 |
+| notebook list 分页 | `iter(workspace, status=None, keyword=None, max_items=None)` | Notebook 迭代器，按 Ref 去重 |
+| notebook status | `get(name_or_ref, workspace=None)` / `status(names, workspace=None)` | Notebook / 按输入顺序返回 tuple[Notebook, ...]；名称完整匹配，同名抛 AmbiguousResourceError |
+| notebook create 的只读解析 | `plan(spec)` | NotebookPlan：已解析的作用域、项目、计算组、镜像、quota、优先级、共享内存、自动停止和数据集；`create_kwargs` 是传给 create_notebook 的参数，不包含 session；不创建或预留资源 |
+| notebook create | `create(spec, operation_id=None)` | NotebookHandle(name, ref, operation_id)；复用 CLI 的参数构造，单次发送，不隐式等待 |
+| notebook create/start --wait | `wait(ref, timeout=600, poll_interval=5, target="RUNNING", raise_on_failure=False)` | Notebook；target 也可为 STOPPED；达到目标或 FAILED / ERROR / STOPPED / DELETED 终态后返回 |
+| notebook start / stop / delete | `start(ref)` / `stop(ref)` / `delete(ref)` | 每个操作单次写入；与 CLI 相同，不增加详情或终态预检 |
+| notebook events | `events(ref, keyword=None, limit=100)` | EventResult；使用 CLI 共享关键词过滤，返回过滤后最近 limit 条，附 truncated |
+| notebook events --follow | `follow_events(ref, interval=5, **filters)` | 持续生成新增 EventResult；与 notebook CLI 一样，终态后继续轮询，由调用方中断或关闭生成器 |
+| notebook lifecycle | `lifecycle(ref, limit=None)` | tuple[dict, ...]；调用 ListRunIndex，按运行周期 index 排序；指定 limit 时取最近周期；None 返回全部，时间字符串保持平台格式 |
+| notebook metrics | `metrics(ref, metric="core", window="1h", start=None, end=None, interval=None, group=None)` | 返回 tuple[MetricGroup, ...]；共享 metrics 解析，默认间隔 1m，group 可覆盖详情中的计算组 |
+| notebook metrics --now | `realtime_metrics(ref, *, workspace=None)` | tuple[NotebookResourceSnapshot, ...]：resource、used、total、available、usage_rate、unit；调用 GetRealtimeNotebookMetric |
+| notebook quota | `quotas(workspace, group=None, include_empty=False, limit=20, cursor=None)` | Page[QuotaOption]；组名子串过滤或 ComputeGroupRef 精确选择，仅保留 notebook 计算组；`to_dict()` 含 CLI quota 的优先级限制和 points_per_hour；空组的 quota 为 None |
+| notebook save-image --dry-run | `estimate_image_size(ref)` | NotebookImageSizeEstimate：size_bytes、notebook_running；仅估算，不提交保存 |
+| notebook save-image | `save_image(ref, name, version=None, description=None, visibility=None, flatten=False)` | ImageSaveHandle；version 默认 v1，description 默认空；包含镜像 Ref（可能为 None）、notebook Ref、估算大小、flatten 和 warning |
+| notebook cancel-save-image | `cancel_save_image(ref)` | bool；False 表示没有进行中的保存，单次发送 |
+| notebook save-image --wait | `wait_image_ready(image_handle_or_ref, timeout=600, poll_interval=5)` | 复用 CLI 的镜像等待核心，返回平台 CustomImageInfo；接受 READY / SUCCESS / SUCCEEDED 等已有成功词表 |
+
+`Notebook` 暴露 `name/ref/status/raw_status/workspace/project/image/compute_group/created_by`，以及 CLI status JSON 的 resource、node、priority、priority_level、shared_memory_gib、uptime_seconds、auto_stop_in_seconds、datasets、created_at、updated_at。`quota` 是 resource 的字典副本；`to_dict()` 不包含 Ref。状态保留 notebook 自身词表，例如 STOPPED 不映射成 Job 的 CANCELLED。批量 status 中任何一项失败会抛出错误。
+
+`NotebookCreateSpec` 的平台选项如下；项目和计算组完整名称解析，镜像字符串沿用 notebook CLI 的目录顺序和名称 / URL 匹配，类型化镜像引用与 ImageSelector 可明确指定身份或来源。
+
+| 字段 | 类型 / 默认值 | 平台语义 |
+|---|---|---|
+| name | str，必填 | notebook 名称；空字符串沿用 CLI 自动命名 |
+| workspace / project / group | str 或对应 Ref，必填 | 工作区、项目、计算组 |
+| quota | Quota / QuotaRef / `"gpu,cpu,mem"`，必填 | 精确资源规格，内存为 GiB |
+| image | str / ImageRef / ImageSelector，必填 | notebook 镜像目录选择 |
+| shm_gib | int / None | None 使用配置 shm_size，未配置时 32 GiB；至少 1 GiB |
+| auto_stop | bool，False | 请求平台空闲自动停止 |
+| auto_stop_after | int / None | 运行分钟数，至少 2；隐含 auto_stop=True，并拆成 stop_hour / stop_minute |
+| datasets | list[str 或 DatasetMount]，空列表 | `"name:version"` 或 DatasetMount；通过共享数据集核心校验与解析挂载路径 |
+| enable_notification | bool / None | 状态变化通知；None 保留平台默认 |
+| public_path_readonly / project_path_readonly | bool / None | public / 项目成员路径只读开关；None 保留平台默认 |
+| priority | int / None | 与 CLI 相同的工作区策略、项目优先级上限及 quota 限制 |
+| node | str / None | 传入 CLI --node 对应的平台节点字段 |
+
+```python
+from inspire import NotebookCreateSpec, Quota
+
+spec = NotebookCreateSpec(
+    name="sdk-notebook",
+    workspace="工作区名称",
+    project="项目名称",
+    group="完整计算组名称",
+    quota=Quota(gpu=0, cpu=8, memory_gib=32),
+    image="镜像名称",
+    shm_gib=16,
+    auto_stop_after=60,
+)
+print(client.notebooks.plan(spec).summary)
+handle = client.notebooks.create(spec, operation_id="my-notebook-operation")
+notebook = client.notebooks.wait(handle.ref, raise_on_failure=True)
+print(notebook.name, notebook.status)
+# 生命周期变更由应用显式调用；create 和 wait 不执行 post-start 命令。
+client.notebooks.stop(handle.ref)
+client.notebooks.wait(handle.ref, target="STOPPED", raise_on_failure=True)
+```
+
+创建保留 CLI 的同名预检；预检读取失败不会阻止提交。若创建响应未带 ID，则复用 CLI 的创建后名称查询；仍无法确认时抛 SubmissionUncertainError，保留 operation_id，不重发创建。wait 的目标已达到时直接返回；遇到其他终态且 `raise_on_failure=True` 时抛 SDK 的 `NotebookFailedError(InspireError)`，其 `.notebook` 为完整 `Notebook` 快照，可读取状态、引用与详情字段；CLI/browser_api 保留服务层异常类型。等待超时抛 WaitTimeoutError。
+
+保存镜像先尽力估算大小：估算失败不阻止保存，明确返回 notebook 未运行时按 CLI 报错。保存请求不接受 visibility；SDK 在确认镜像 ID 后另用一个 single_send 更新可见性。镜像 ID 尚不可查时返回 `ref=None`；可见性更新失败按 CLI 行为保留已保存结果，并通过 warning 返回原错误，应用可稍后查询镜像并处理。`wait_image_ready` 需要已确认的镜像引用；镜像构建失败保留平台错误文本并抛 ValidationError。它不会重复保存。
+
+Notebook CLI-only：`ssh`、`shell`、`exec`、`scp`、`ssh-config`、`ssh-proxy`、`connection *`、`install-deps`、`proxy-url`、`batch`、`--post-start/--post-start-script`，以及 `metrics --plot/--open/--sparkline`。SDK 不承担本地连接配置、命令执行、文件同步、依赖安装或绘图；批处理由调用方循环或编排。
+
 ## 日志、事件与指标
 
 ```python
@@ -191,7 +262,7 @@ for update in client.jobs.follow_logs(handle.ref, interval=2):
 
 `instances="all"` 发现实例；显式列表直接用于平台调用，不先校验它是否在发现结果中。tail/head 互斥，与 CLI 共用日志拉取与排序选择逻辑：请求条数为 `max(limit, tail, head)`，按时间排序后取头部或尾部；省略 tail/head 时取 limit 条尾部记录。平台返回有限样本，这不额外保证全局最后 N 条或无损续读。`max_chars=None` 默认不做字符截断；指定时裁剪格式化文本并设置 truncated。items 保留按条数选择的结构化记录。
 
-事件默认合并任务级与实例级事件；type 精确匹配 Normal/Warning（大小写不敏感），reason 做子串匹配。instance 接受单个标签或标签列表，支持 `rank=0`、`0` 和角色名称；workload_level 与 instance 互斥。limit 选择过滤后的最近事件。follow 按事件内容或日志标识去重，是轮询观察接口，不是平台持久订阅或无损游标。SDK 的事件 follow 到终态停止；CLI 的事件 follow 保留原有持续轮询行为。
+事件默认合并任务级与实例级事件；type 精确匹配 Normal/Warning（大小写不敏感），reason 做子串匹配。instance 接受单个标签或标签列表，支持 `rank=0`、`0` 和角色名称；workload_level 与 instance 互斥。limit 选择过滤后的最近事件。follow 按事件内容或日志标识去重，是轮询观察接口，不是平台持久订阅或无损游标。Jobs 的事件 follow 到终态停止；Notebooks 和 CLI 的事件 follow 保留持续轮询行为。
 
 指标与 CLI 共用参数解析和平台样本提取：metric 支持 core/all、逗号分隔别名和原始指标名；start/end 支持 CLI 时间字符串，SDK 也接受 datetime。start 优先于 window。group 可覆盖从详情推断的计算组。
 
@@ -199,7 +270,7 @@ CLI-only：job batch 的 YAML 驱动、job shell，以及日志 `--path/--remote
 
 ## 错误与时间预算
 
-公共错误均从 `InspireError` 派生：配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
+SDK 错误（包括 `NotebookFailedError`）均从 `InspireError` 派生。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
 
 `timeout` 控制单次请求预算，`operation_timeout` 控制普通操作的协作式总预算，`wait(timeout=...)` 设置整个等待预算；嵌套调用使用更早截止时间。请求、退避和刷新锁等待共享剩余预算。同步网络库的底层调用和已有浏览器登录流程不能被强制抢占，显式允许浏览器时登录可能超出总预算；这些参数不是硬实时取消保证。需要硬隔离的编排器应使用独立进程，并在超时后核查任何可能已发送的写请求。
 

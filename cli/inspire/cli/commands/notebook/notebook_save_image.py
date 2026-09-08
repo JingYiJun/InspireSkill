@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from inspire.services.notebooks import resolve_saved_image_id
+
 import click
 
 # Shared with `inspire image set-visibility`, which applies the same mapping.
@@ -327,32 +329,10 @@ def save_image_cmd(
         )
         return
 
-    image_id = result.get("image", {}).get("image_id", "") or result.get("image_id", "")
-
-    if not image_id:
-        try:
-            want_suffix_1 = f"/{name}:{version}"
-            want_name_1 = f"{name}:{version}"
-            matches = []
-            for img in browser_api_module.list_images_by_source(
-                source="private", session=session, workspace_id=workspace_id
-            ):
-                img_name = (img.name or "").strip()
-                img_url = (img.url or "").strip()
-                img_version = (img.version or "").strip()
-                # The API sometimes puts name as "foo" + version "v1", other
-                # times name as "foo:v1"; URL always ends in "/<ns>/foo:v1".
-                if (
-                    (img_name == name and img_version == version)
-                    or img_name == want_name_1
-                    or img_url.endswith(want_suffix_1)
-                ):
-                    matches.append(img)
-            if matches:
-                matches.sort(key=lambda img: img.created_at or "", reverse=True)
-                image_id = matches[0].image_id
-        except Exception:
-            pass
+    image_id = resolve_saved_image_id(
+        result, name=name, version=version, workspace_id=workspace_id,
+        session=session, api=browser_api_module,
+    )
 
     remember_resource_identity(
         session=session,
