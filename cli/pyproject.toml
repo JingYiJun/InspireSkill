@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.28.0",
+    "httpx[socks]>=0.28.1",
     "urllib3>=2.7.0",
     "idna>=3.15",
     "click>=8.3.3",

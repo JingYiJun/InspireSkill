@@ -24,100 +24,13 @@ if TYPE_CHECKING:
     from inspire.platform.web.plaza.core import PlazaClient
     from inspire.platform.web.session.models import WebSession
 
-class _NonJSONResponse(ValueError):
-    """Only a decoded HTTP body failure is eligible for CLI browser fallback."""
-
-
-class _SDKResponsePolicy:
-    def response(self, response: Any) -> Any:
-        from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
-
-        if response.status_code == 401 or 300 <= response.status_code < 400:
-            raise SessionExpiredError("Authentication expired.")
-        if response.status_code == 429 or response.status_code >= 500:
-            raise TransientAPIError("Temporary platform failure.", status=response.status_code)
-        if response.status_code == 403:
-            raise AuthenticationError("Platform access denied.")
-        if response.status_code >= 400:
-            raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")
-        return response.json()
-
-    def browser_error(self, error: Exception) -> NoReturn:
-        from inspire.platform.web.session.browser_client import _BrowserHTTPError
-        from inspire.platform.web.session.models import TransientAPIError
-
-        if isinstance(error, _BrowserHTTPError):
-            if error.status == 403:
-                raise AuthenticationError(str(error)) from error
-            if error.status == 429 or error.status >= 500:
-                raise TransientAPIError(str(error), status=error.status) from error
-            raise ValidationError(f"HTTP {error.status}: {error.body[:500]}") from error
-        raise error
-
-
-class _CLIResponsePolicy(_SDKResponsePolicy):
-    def response(self, response: Any) -> Any:
-        from inspire.platform.web import session as web_session
-
-        if response.status_code == 401 or 300 <= response.status_code < 400:
-            raise web_session.SessionExpiredError("Session expired or invalid")
-        if response.status_code >= 400:
-            message = f"API returned {response.status_code}: {response.text}"
-            if response.status_code in web_session.TRANSIENT_HTTP_STATUSES:
-                raise web_session.TransientAPIError(
-                    message, status=response.status_code,
-                    retry_after=web_session.retry_after_seconds(response.headers),
-                )
-            raise ValueError(message)
-        try:
-            return response.json()
-        except ValueError as error:
-            raise _NonJSONResponse(str(error)) from error
-
-    def browser_error(self, error: Exception) -> NoReturn:
-        from inspire.platform.web import session as web_session
-
-        if web_session.is_playwright_browser_runtime_error(error):
-            web_session.close_browser_client()
-            web_session.raise_browser_runtime_error(error)
-        raise error
-
-
-_SDK_POLICY = _SDKResponsePolicy()
-_CLI_POLICY = _CLIResponsePolicy()
-
-
-class _SingleSendViolation(RuntimeError):
-    pass
-
-
-def _classify_after_dispatch(error: Exception) -> Exception | None:
-    """Return a definite rejection, or None when the write outcome is unknown."""
-    from inspire.platform.web.session.models import TransientAPIError
-
-    from inspire.platform.web.plaza.core import PlazaRejected
-
-    # Plaza business rejections carry raw envelope messages, without the
-    # platform envelope's "API error:" prefix; HTTP status alone is insufficient.
-    if isinstance(error, PlazaRejected):
-        if error.status == 403:
-            return AuthenticationError(str(error))
-        if error.status is not None and error.status >= 500:
-            return None
-        return ValidationError(str(error))
-    if isinstance(error, (AuthenticationError, TransportError)):
-        return error
-    # TransientAPIError is also a ValueError; classify it before business errors.
-    if isinstance(error, TransientAPIError):
-        if error.status in (None, 429) or str(error).startswith("API error:"):
-            return TransportError(str(error))
-        return None
-    if isinstance(error, ValidationError) or (
-        isinstance(error, ValueError) and str(error).startswith("API error:")
-    ):
-        return ValidationError(str(error))
-    return None
-
+from inspire.platform.web.transport_policy import (  # noqa: F401 - compatibility imports
+    _NonJSONResponse, _SDK_POLICY, _CLI_POLICY, http_options,
+)
+from inspire.platform.web.transport_core import (
+    RequestCore, SharedState, Observe, Observation, Send, Refresh, Sleep, Return, Raise, Action,
+    _SingleSendViolation, _classify_after_dispatch, claim_write, remaining, uncertain,
+)
 
 class Transport:
     """Own dispatch and authentication state for a caller.
@@ -141,8 +54,7 @@ class Transport:
         self.username, self.allow_browser, self.timeout = username, allow_browser, timeout
         self._pid, self._thread = os.getpid(), threading.get_ident()
         self.cli_compat = cli_compat
-        self._force_browser = False
-        self._unproven_rebuild: float | None = None
+        self._decisions = SharedState()
         self._generation_lock = threading.RLock()
         self._plaza_lock = threading.Condition()
         self._plaza_busy = False
@@ -153,8 +65,38 @@ class Transport:
         self._plaza: PlazaClient | None = None
         self._plaza_key: tuple[str | None, float] | None = None
         self.deadline: float | None = None
-        self._write: dict[str, Any] | None = None
-        self._last_success: float | None = None
+
+    @property
+    def _force_browser(self) -> bool:
+        return self._decisions.force_browser
+
+    @_force_browser.setter
+    def _force_browser(self, value: bool) -> None:
+        self._decisions.force_browser = value
+
+    @property
+    def _unproven_rebuild(self) -> float | None:
+        return self._decisions.unproven_rebuild
+
+    @_unproven_rebuild.setter
+    def _unproven_rebuild(self, value: float | None) -> None:
+        self._decisions.unproven_rebuild = value
+
+    @property
+    def _last_success(self) -> float | None:
+        return self._decisions.last_success
+
+    @_last_success.setter
+    def _last_success(self, value: float | None) -> None:
+        self._decisions.last_success = value
+
+    @property
+    def _write(self) -> dict[str, Any] | None:
+        return self._decisions.write
+
+    @_write.setter
+    def _write(self, value: dict[str, Any] | None) -> None:
+        self._decisions.write = value
 
     def check(self) -> None:
         if self._pid != os.getpid() or (
@@ -166,10 +108,7 @@ class Transport:
 
     def remaining(self) -> float:
         self.check()
-        remaining = self.timeout if self.deadline is None else self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise WaitTimeoutError("Operation deadline exceeded; remote resources are unchanged.")
-        return remaining
+        return remaining(self.timeout, self.deadline, time.monotonic())
 
     def check_deadline(self) -> None:
         """Raise WaitTimeoutError when the operation budget is exhausted."""
@@ -229,9 +168,7 @@ class Transport:
             self._write = None
 
     def _uncertain(self, state: dict[str, Any], error: Exception) -> NoReturn:
-        if state["create"]:
-            raise SubmissionUncertainError(state["operation_id"]) from error
-        raise MutationUncertainError("Mutation may have succeeded; inspect state.") from error
+        uncertain(state, error)
 
     def _validate_session(self, session):
         if (
@@ -308,23 +245,11 @@ class Transport:
         # Capture the sent generation, not the current fields of a shared object.
         web_session.close_browser_client()
         with self._generation_lock:
-            if (
-                self._unproven_rebuild is not None
-                and observed_created_at >= self._unproven_rebuild
-            ):
-                raise web_session.SessionExpiredError(
-                    "The session the last rebuild produced was refused as well. Not logging "
-                    "in again to replace a login nothing has been able to use."
-                )
-            if not can_refresh:
-                raise web_session.SessionExpiredError(
-                    "Session expired again after a single authentication refresh"
-                )
+            self._decisions.refresh_guard(observed_created_at, can_refresh)
             web_session.logger.debug("Web session expired; rebuilding it once for this call.")
             refreshed = self._refresh_expired_session(observed_created_at)
             web_session.refresh_session_in_place(self.session, refreshed)
-            self._unproven_rebuild = self.session.created_at
-            self._force_browser = False
+            self._decisions.rebuilt(self.session.created_at)
 
     def _refresh(self):
         from inspire.platform.web.session.models import WebSession
@@ -386,24 +311,19 @@ class Transport:
                 self._browser.close()
                 self._browser = None
 
-    def _once(self, method, path, body, timeout, browser=False, referer=None, *, policy=None):
+    def _once(
+        self, method, path, body, timeout, browser=False, referer=None, *, policy=None,
+        _disposable=False,
+    ):
         from inspire.platform.web import session as web_session
 
         policy = policy or (_CLI_POLICY if self.cli_compat else _SDK_POLICY)
         url = self.base_url + path
         headers = {"Referer": referer} if referer else {}
         if not browser:
-            kwargs = {"headers": headers, "timeout": timeout, "allow_redirects": False}
             args: tuple[Any, ...]
             if self.cli_compat:
                 http = web_session.pooled_requests_session(self.session, url)
-                method_upper = method.upper()
-                if method_upper not in {"GET", "POST", "DELETE"}:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
-                if method_upper == "POST":
-                    headers["Content-Type"] = "application/json"
-                    kwargs["json"] = body or {}
-                http_send, args = getattr(http, method_upper.lower()), (url,)
             else:
                 from inspire.platform.web.session.requests import build_requests_session, _configure
 
@@ -411,14 +331,23 @@ class Transport:
                     self._http = build_requests_session(self.session, self.base_url)
                 else:
                     _configure(self._http, self.session, self.base_url)
-                headers["Referer"] = referer or self.base_url + "/jobs/distributedTraining"
-                kwargs.update(json=body, timeout=(min(10, timeout), timeout))
-                http_send, args = self._http.request, (method, url)
+                http = self._http
+            options = http_options(method, body, referer, self.base_url, timeout, self.cli_compat)
+            kwargs: dict[str, Any] = {
+                "headers": options.headers, "timeout": timeout, "allow_redirects": False,
+            }
+            if options.include_json:
+                kwargs["json"] = options.body
+            if self.cli_compat:
+                http_send, args = getattr(http, options.method.lower()), (url,)
+            else:
+                kwargs["timeout"] = (options.connect_timeout, timeout)
+                http_send, args = http.request, (options.method, url)
             return policy.response(self._dispatch(http_send, *args, **kwargs))
 
         from inspire.platform.web.browser_api.core import _in_asyncio_loop, _run_in_thread
 
-        disposable = self.cli_compat and _in_asyncio_loop()
+        disposable = _disposable or (self.cli_compat and _in_asyncio_loop())
 
         def send():
             if self.cli_compat:
@@ -426,6 +355,8 @@ class Transport:
                     web_session.create_browser_client(self.session) if disposable
                     else web_session.get_browser_client(self.session)
                 )
+            elif disposable:
+                client = web_session.create_browser_client(self.session)
             else:
                 if self._browser is None:
                     self._browser = web_session.create_browser_client(self.session)
@@ -441,100 +372,96 @@ class Transport:
                     client.close()
 
         try:
-            return _run_in_thread(send) if disposable else send()
+            return _run_in_thread(send) if disposable and not _disposable else send()
         except Exception as error:
             policy.browser_error(error)
 
     def _dispatch(self, send: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        if self._write is not None:
-            self._write["sent"] = True
+        self._decisions.dispatched()
         return send(*args, **kwargs)
+
+    def _core(self) -> RequestCore:
+        return RequestCore(
+            self._decisions, cli_compat=self.cli_compat, allow_browser=self.allow_browser,
+            timeout=self.timeout, deadline=self.deadline,
+        )
+
+    def _observe(self) -> Observation:
+        import random
+
+        self.check()
+        generation = self.session.created_at
+        return Observation(time.monotonic(), generation, random.random())
+
+    def _finish(self, action: Return) -> Any:
+        with self._generation_lock:
+            self._decisions.success(action.observed_generation, time.monotonic(), self.cli_compat)
+        return action.payload
+
+    def _perform(self, action: Action) -> Any:
+        if isinstance(action, Observe):
+            return self._observe()
+        if isinstance(action, Send):
+            return self._once(
+                action.method, action.path, action.body, action.timeout, action.browser, action.referer
+            )
+        if isinstance(action, Refresh):
+            if self.cli_compat:
+                return self._refresh_cli(
+                    action.observed_generation, can_refresh=action.can_refresh
+                )
+            return self._refresh()
+        if isinstance(action, Sleep):
+            time.sleep(action.delay)
+            return None
+        raise AssertionError(action)
 
     def request(
         self, method: str, path: str, *, body=None, timeout: float = 30, referer=None
     ) -> dict:
-        from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
-        from inspire.platform.web.session.envelope import _is_transient_v2_error_code
-        from requests.exceptions import RequestException
+        program = self._core().run(method, path, body, timeout, referer)
+        try:
+            action = next(program)
+            while True:
+                if isinstance(action, Return):
+                    return self._finish(action)
+                if isinstance(action, Raise):
+                    raise action.error
+                try:
+                    result = self._perform(action)
+                except Exception as error:
+                    action = program.throw(error)
+                else:
+                    action = program.send(result)
+        finally:
+            program.close()
 
-        state = self._write
-        if state is not None:
-            if state["used"]:
-                raise _SingleSendViolation("single_send allows exactly one request.")
-            state["used"] = True
-        self.session
-        browser, refreshed = self._force_browser if self.cli_compat else False, False
-        attempt = 0
-        while attempt < (3 if state is None else 1):
-            request_timeout = (
-                timeout if self.cli_compat and self.deadline is None
-                else min(timeout, self.timeout, self.remaining())
-            )
-            observed_created_at = self.session.created_at
+    async def request_async(
+        self, method: str, path: str, *, body=None, timeout: float = 30, referer=None
+    ) -> dict:
+        """Internal native JSON path; not yet wired to InspireAsyncClient."""
+        from inspire.platform.web.transport_async import AsyncDriver
+
+        self.check()
+        if not (path == "/api/v2" or path.startswith(("/api/v2/", "/api/v2?"))):
+            raise ValueError("Async transport supports only /api/v2 JSON requests.")
+        program = self._core().run(method, path, body, timeout, referer)
+        async with AsyncDriver(self) as driver:
             try:
-                payload = self._once(method, path, body, request_timeout, browser, referer)
-                if not self.cli_compat and state is None and isinstance(payload, dict):
-                    metadata = payload.get("ResponseMetadata")
-                    error = metadata.get("Error") if isinstance(metadata, dict) else None
-                    if isinstance(error, dict) and _is_transient_v2_error_code(
-                        str(error.get("Code") or "")
-                    ):
-                        raise TransientAPIError(str(error.get("Message") or error.get("Code")))
-                if self.cli_compat:
-                    with self._generation_lock:
-                        if (
-                            self._unproven_rebuild is not None
-                            and observed_created_at >= self._unproven_rebuild
-                        ):
-                            self._unproven_rebuild = None
-                self._last_success = time.monotonic()
-                return payload
-            except Exception as error:
-                if state is not None:
-                    if state["sent"]:
-                        classified = _classify_after_dispatch(error)
-                        if classified is error:
-                            raise
-                        if classified is not None:
-                            raise classified from error
-                        self._uncertain(state, error)
-                    raise
-                if self.cli_compat:
-                    if isinstance(error, SessionExpiredError):
-                        self._refresh_cli(observed_created_at, can_refresh=not refreshed)
-                        refreshed = True
-                        browser = False
-                        continue
-                    if not browser and isinstance(error, (RequestException, _NonJSONResponse)):
-                        if self.allow_browser:
-                            self._force_browser = browser = True
-                            continue
-                    if not isinstance(error, TransientAPIError) or attempt == 2:
-                        raise
-                    from inspire.platform.web.session.retry import backoff_delay
-
-                    time.sleep(backoff_delay(attempt, error))
-                    attempt += 1
-                    continue
-                if isinstance(error, SessionExpiredError):
-                    if refreshed:
-                        raise AuthenticationError(str(error)) from error
-                    self._refresh()
-                    refreshed = True
-                elif isinstance(error, (ValidationError, AuthenticationError)):
-                    raise
-                elif isinstance(error, (RequestException, ValueError)) and not isinstance(
-                    error, TransientAPIError
-                ):
-                    if self.allow_browser:
-                        browser = True
-                elif not isinstance(error, TransientAPIError):
-                    raise TransportError(str(error)) from error
-                if attempt == 2:
-                    raise TransportError(str(error)) from error
-                time.sleep(min(0.1 * (2**attempt), self.remaining()))
-                attempt += 1
-        raise AssertionError("unreachable")
+                action = next(program)
+                while True:
+                    if isinstance(action, Return):
+                        return self._finish(action)
+                    if isinstance(action, Raise):
+                        raise action.error
+                    try:
+                        result = await driver.perform(action)
+                    except Exception as error:
+                        action = program.throw(error)
+                    else:
+                        action = program.send(result)
+            finally:
+                program.close()
 
     def reset_plaza_client(self) -> None:
         """Discard only this transport's signed-in data plaza connection."""
@@ -585,10 +512,7 @@ class Transport:
 
         self.check()
         state = self._write
-        if state is not None:
-            if state["used"]:
-                raise _SingleSendViolation("single_send allows exactly one request.")
-            state["used"] = True
+        claim_write(state)
         auth_attempt, transient_attempt = 0, 0
         while True:
             self.check_deadline()
