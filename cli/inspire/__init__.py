@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         Accounts as Accounts,
         InitResult as InitResult,
         ExecResult as ExecResult,
+        iter_output_file as iter_output_file,
         ServingInstanceView as ServingInstanceView,
         Serving as Serving,
         ServingRef as ServingRef,

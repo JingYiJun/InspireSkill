@@ -1414,3 +1414,21 @@ def test_single_send_preserves_definite_body_errors(client, monkeypatch, error_n
             raise error
     assert caught.value is error
     assert len(calls) == 1
+
+
+def test_root_sdk_exports_match_static_type_checking_imports():
+    import inspire
+    import inspire.sdk as sdk
+
+    tree = ast.parse(Path(inspire.__file__).read_text())
+    exported = {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+        for statement in node.body
+        if isinstance(statement, ast.ImportFrom) and statement.module == "sdk"
+        for alias in statement.names
+    }
+    assert exported == set(sdk.__all__)
+    assert all(getattr(inspire, name) is getattr(sdk, name) for name in exported)

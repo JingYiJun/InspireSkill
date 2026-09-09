@@ -1,4 +1,4 @@
-"""Experimental synchronous SDK. CLI installation requirements are unchanged."""
+"""Experimental synchronous and asynchronous SDK. CLI installation requirements are unchanged."""
 
 from inspire.services.remote_exec import ExecResult
 from inspire.exec_output import iter_output_file
