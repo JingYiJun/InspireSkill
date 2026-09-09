@@ -25,6 +25,10 @@ from inspire.platform.web import pty_socket
 from inspire.platform.web.browser_api import jupyter_terminal as jt
 
 
+# Thread watchdog also stops deadlocked event loops and cancellation cleanup.
+pytestmark = pytest.mark.timeout(30, method="thread")
+
+
 class FakeSocket:
     def __init__(self, url, headers, *, timeout):
         self.url, self.headers, self.timeout = url, headers, timeout
@@ -849,3 +853,40 @@ def test_minimum_capture_budget():
     buffer = OutputBuffer(len(ELISION.encode()))
     buffer.feed("x" * 1000)
     assert buffer.text() == ELISION
+
+
+@pytest.mark.parametrize("through_facade", [False, True], ids=["core", "jobs-exec"])
+def test_pty_connect_timeout_is_incomplete(client, sockets, monkeypatch, through_facade):
+    def timeout(self):
+        raise TimeoutError("handshake timed out")
+
+    monkeypatch.setattr(FakeSocket, "connect", timeout)
+    monkeypatch.setattr(
+        "inspire.services.job_events.list_all_job_instances", lambda *a, **kw: job_rows(),
+    )
+    if through_facade:
+        result = client.jobs.exec(job_ref(client), command="echo hi", timeout=5)
+    else:
+        result = core.exec_over_pty_websocket(
+            session=client._transport.session, url="wss://example.invalid/exec",
+            command="echo hi", timeout=5,
+        )
+    assert result.returncode == 124
+    assert result.completed is False
+    assert result.output == ""
+    assert len(sockets) == 1 and sockets[0].closed
+    assert sockets[0].sent == []
+
+
+@pytest.mark.parametrize("limit", [128, None])
+def test_capture_off_retains_no_buffer_bytes(limit):
+    from inspire.exec_output import OutputBuffer
+
+    buffer = OutputBuffer(limit, capture=False)
+    for _ in range(10):
+        buffer.feed("hello 世界" * 100)
+        assert buffer.head == bytearray()
+        assert list(buffer.tail) == []
+        assert buffer.tail_size == 0
+    assert buffer.total == len(("hello 世界" * 1000).encode())
+    assert buffer.text() == ""

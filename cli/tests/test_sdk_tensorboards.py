@@ -202,3 +202,20 @@ def test_name_resolution_sends_keyword(client, catalog, monkeypatch):
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board())
     assert client.tensorboards.get("board", workspace="Workspace").ref.key == "tb-test"
     assert len(calls) == 1 and calls[0]["keyword"] == "board"
+
+
+def test_create_passes_complete_payload(client, catalog, monkeypatch):
+    from dataclasses import replace
+    from inspire import JobRef
+
+    # TensorBoard create has no CLI --dry-run; pin every API kwarg literally.
+    calls = []
+    monkeypatch.setattr(api, "create_tensorboard", lambda **kw: calls.append(kw) or {})
+    monkeypatch.setattr(core, "find_created_board", lambda *a, **kw: board())
+    job = JobRef("train", client.account, client.base_url, "job-test", "ws-test")
+    client.tensorboards.create(replace(catalog, job=job))
+    assert calls == [{
+        "name": "board", "workspace_id": "ws-test", "project_id": "project-test",
+        "logic_compute_group_id": "group-test", "summary_path": "/inspire/runs",
+        "auto_stop_ms": 7200000, "job_id": "job-test", "session": client._transport.session,
+    }]

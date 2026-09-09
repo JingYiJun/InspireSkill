@@ -241,3 +241,24 @@ def test_init_force_and_missing_credentials(client, monkeypatch):
     assert "custom" not in data and data["tunnel"]["retries"] == 3
     assert data["auth"]["password"] == "unused"
     assert Accounts.current() == "alpha"
+
+
+def test_add_persists_nondefault_base_url_in_loader_sections(client):
+    Accounts.add(
+        "custom", username="login", password="fake", base_url="https://custom.example.invalid",
+        proxy="http://127.0.0.1:7897", use=False,
+    )
+    data = Config._load_toml(Accounts.config_path("custom"))
+    assert data == {
+        "auth": {"username": "login", "password": "fake"},
+        "api": {"base_url": "https://custom.example.invalid"},
+        "proxy": {
+            "requests_http": "http://127.0.0.1:7897",
+            "requests_https": "http://127.0.0.1:7897",
+            "playwright": "http://127.0.0.1:7897",
+            "rtunnel": "http://127.0.0.1:7897",
+        },
+    }
+    with account_scope("custom"):
+        config, _ = Config.from_files_and_env()
+    assert config.base_url == "https://custom.example.invalid"

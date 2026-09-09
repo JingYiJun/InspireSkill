@@ -403,3 +403,19 @@ def test_shared_dispatch_cli_policy_preserves_non_json_error(monkeypatch, cli_se
         assert caught.value.__cause__ is failure
     finally:
         transport.close()
+
+
+def test_explicit_adoption_replaces_stale_session_identity(cli_session):
+    import click
+    from dataclasses import replace
+
+    acquired = replace(cli_session, created_at=2)
+    with click.Context(click.Command("test")):
+        web_transport.install_web_transport()
+        adopt = session_transport.get()
+        transport = adopt(cli_session)
+        # Seed stale state explicitly: lazy loading must not rescue missing adoption.
+        transport._session = cli_session
+        assert adopt(acquired) is transport
+        assert transport._session is acquired
+        assert transport.session is acquired

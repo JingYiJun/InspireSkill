@@ -72,6 +72,7 @@ dev = [
     "ruff>=0.0.280",
     "pre-commit>=3.6.0",
     "mypy>=1.10.0",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.setuptools.package-data]

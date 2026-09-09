@@ -27,6 +27,10 @@ from test_sdk import client as client
 from test_sdk_signatures import facade_methods
 
 
+# Thread watchdog also stops deadlocked event loops and cancellation cleanup.
+pytestmark = pytest.mark.timeout(30, method="thread")
+
+
 def specialize(value, bindings):
     if isinstance(value, TypeVar):
         return bindings[value]
@@ -530,5 +534,30 @@ def test_cancelled_initialization_cleans_up(tracked, monkeypatch):
         assert all(not w.thread.is_alive() for w in c._workers)
         assert tracked[0].closed
         await c.close()
+
+    asyncio.run(run())
+
+
+def test_exec_stream_close_interrupts_blocked_producer(tracked, monkeypatch):
+    from inspire.sdk.jobs import Jobs
+
+    exited = threading.Event()
+
+    def execute(self, *args, on_output, **kwargs):
+        try:
+            while True:
+                on_output("chunk")
+        finally:
+            exited.set()
+
+    monkeypatch.setattr(Jobs, "exec", execute)
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            async with aclosing(c.jobs.exec_stream("fake", command="fake")) as stream:
+                assert await anext(stream) == "chunk"
+            assert exited.is_set()
+            assert (await c.cache.stats())["entries"] == 0
+        assert all(not worker.thread.is_alive() for worker in c._workers)
 
     asyncio.run(run())
