@@ -103,6 +103,7 @@ if TYPE_CHECKING:
         ResourceUsage as ResourceUsage,
         WorkloadSchedulePolicy as WorkloadSchedulePolicy,
         InspireClient as InspireClient,
+        InspireAsyncClient as InspireAsyncClient,
         ResourceRef as ResourceRef,
         WorkspaceRef as WorkspaceRef,
         ProjectRef as ProjectRef,

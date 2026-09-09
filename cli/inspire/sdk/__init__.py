@@ -31,6 +31,7 @@ from .models_notebooks import (
     ImageSaveHandle,
 )
 from .client import InspireClient
+from .async_client import InspireAsyncClient
 from .accounts import Accounts, InitResult
 from .models_resources import (
     AccountInfo,
@@ -230,6 +231,7 @@ __all__ = [
     "ResourceUsage",
     "WorkloadSchedulePolicy",
     "InspireClient",
+    "InspireAsyncClient",
     "ResourceRef",
     "WorkspaceRef",
     "ProjectRef",

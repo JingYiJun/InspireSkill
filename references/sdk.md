@@ -645,6 +645,73 @@ SDK 错误（包括 `NotebookFailedError`）均从 `InspireError` 派生。配�
 
 工作负载 wait 的 raise_on_failure=True 抛对应 SDK 失败异常，携带最终资源快照：Job/HPC/Ray 使用 `.job`，Notebook 使用 `.notebook`，Serving 使用 `.serving`，TensorBoard 使用 `.tensorboard`。Job/HPC/Ray 等待终态；Notebook、Serving、TensorBoard 等待目标状态，具体默认目标见方法表。超时统一抛 WaitTimeoutError。
 
+## 异步客户端：InspireAsyncClient
+
+asyncio 应用、Agent runtime 和异步 Web 服务可使用 `InspireAsyncClient`，避免 SDK 的同步请求阻塞事件循环。它从 `inspire` 和 `inspire.sdk` 导出，与同步客户端共用 `Accounts`、模型、引用和异常类型；普通 facade 方法使用 `await`，参数名、默认值及「主要对象可位置传入，其余仅关键字」的契约保持一致。`from_credentials(...)` 仍是同步工厂，返回尚未启动的异步客户端；`login()`、`init()` 和 `close()` 则需要 await。
+
+```python
+# 保存为 async_example.py，运行：
+# uv run python async_example.py alpha "工作区名称"
+import asyncio
+import sys
+from inspire import InspireAsyncClient
+
+
+async def main(account: str, workspace: str) -> None:
+    async with InspireAsyncClient(account, concurrency=2) as client:
+        jobs, notebooks = await asyncio.gather(
+            client.jobs.list(workspace, limit=5),
+            client.notebooks.list(workspace, limit=5),
+        )
+        print("Jobs:", [job.name for job in jobs.items])
+        print("Notebooks:", [notebook.name for notebook in notebooks.items])
+        async for job in client.jobs.iter(workspace, max_items=10):
+            print(job.name, job.status)
+
+
+if __name__ == "__main__":
+    asyncio.run(main(sys.argv[1], sys.argv[2]))
+```
+
+**并发模型。** `concurrency` 必须是正整数，默认为 1。每个池成员都是普通 `InspireClient`，在自己的专用线程创建，所有调用、生成器推进和关闭也回到该线程，遵守 Transport 的进程／线程亲和性规则。底层继续使用同步传输，单次发送、续期、错误分类和时间预算沿用原实现。每个成员各自持有会话、连接和目录缓存；`concurrency=1` 时同一异步客户端的调用串行，增大后 `asyncio.gather` 可占用不同成员并行执行。它不是单会话内的并发请求，也不会绕过账号级认证锁、平台配额或限流。异步客户端只能在同一进程和同一事件循环中使用。
+
+构造函数不做 I/O，也不启动线程；进入 `async with` 或首次调用时才在工作线程初始化池，并固定解析后的账号。配置错误在此时抛出；`account` 和 `base_url` 属性在初始化完成后可读。提供用户名／密码时只由首个成员保存凭据，其余成员使用该账号配置。`Accounts` 仍是共享的同步账号管理 API。`await client.cache.clear()` 清空全部成员的缓存，`await client.cache.stats()` 返回各成员计数的合计。
+
+**异步迭代。** 同步返回 `Iterator[T]` 的 `iter`、`follow_events`、`follow_logs` 在这里返回 `AsyncIterator[T]`，直接使用 `async for`，不用先 await。每条流在其存活期间独占一个池成员，包括调用方处理已收到项目的时间；因此 `concurrency=1` 时，不要在仍打开的流的循环体里 await 同一客户端的另一个请求。需要这样编排时使用额外池成员或另一个客户端。流使用有界队列施加背压，不会提前把所有分页结果或输出装入内存。
+
+提前退出流时使用 `contextlib.aclosing`，确保立刻释放池成员；仅 `break` 不保证 Python 立刻关闭异步生成器。下面的函数可在已进入上下文的客户端上调用：
+
+```python
+from contextlib import aclosing
+
+
+async def observe(client: InspireAsyncClient, job_ref) -> None:
+    async with aclosing(client.jobs.follow_events(job_ref, interval=2)) as updates:
+        async for batch in updates:
+            print(batch.items)
+            break
+
+
+async def execute(client: InspireAsyncClient, job_ref) -> None:
+    async with aclosing(client.jobs.exec_stream(
+        job_ref,
+        command="python -u train.py",
+        capture=False,
+    )) as chunks:
+        async for chunk in chunks:
+            print(chunk, end="", flush=True)
+```
+
+Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。块保持同步 `on_output` 的原始合并终端流语义。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。`exec` 和 `exec_stream` 的 `on_output` 回调均在工作线程按顺序运行，必须是同步回调；异步应用可直接使用 `exec_stream` 消费块，无须自己桥接线程。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
+
+**取消与关闭。** 取消等待下一项的任务会通知工作线程停止 follow；其轮询等待可立即唤醒，不必等完 `interval`。适配器只为本次 follow 绑定私有的可中断等待，不修改同步客户端或全局 `time.sleep`，原有去重、终态判断和日志收尾逻辑仍执行同步函数代码。生成器关闭也在所属工作线程进行。
+
+已经进入的同步网络调用不能被强制抢占。取消普通调用会等待当前调用完成；取消流或关闭客户端也可能等待正在执行的请求，受既有 timeout／operation_timeout 及同步底层限制约束。exec 的流取消可在下一输出回调中停止本地读取；静默命令可能要等传输返回或超时。取消不证明远端命令已停止，也不撤销已发送写入，更不会重放请求。SDK 异常的类型、消息和异常实例原样送到等待方。
+
+`async with` 退出及 `await client.close()` 会停止活跃流、关闭所有同步客户端并 join 全部专用线程；即使关闭任务被取消，清理仍会完成。遗漏关闭的客户端使用 daemon 线程，不会阻止解释器退出，但应用仍应显式管理上下文以回收连接。关闭后再次调用会抛 `ClientClosedError`。
+
+维护接口时，在 `cli/` 运行 `uv run python scripts/generate_sdk_async.py` 更新已签入的显式包装方法。`tests/test_sdk_async.py` 比较所有实例 facade、方法签名和返回类型，并检查生成文件完全一致；新增同步方法未生成异步版本会导致测试失败，mypy 可直接检查真实签名。
+
 ## CLI-only 范围
 
 
