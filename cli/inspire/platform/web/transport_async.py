@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.offload import offload
+
 import asyncio
 import inspect
 import time
@@ -102,7 +104,7 @@ class AsyncDriver:
                     options.method, url, headers=options.headers, json=options.body,
                 ))
 
-        prepared, settings = await asyncio.to_thread(prepare)
+        prepared, settings = await offload(prepare)
         client = await self._client(prepared.url, settings)
         timeout = httpx.Timeout(action.timeout, connect=options.connect_timeout)
         request = httpx.Request(
@@ -150,7 +152,7 @@ class AsyncDriver:
             jupyter_terminal.run_command_capture_in_notebook: jupyter_terminal.run_command_capture_in_notebook_async,
         }
         if action.function in {remote_exec.cached_notebook_bridge}:
-            return await asyncio.to_thread(action.function, *action.args, **action.kwargs)
+            return await offload(action.function, *action.args, **action.kwargs)
         if inspect.iscoroutinefunction(action.function):
             return await action.function(*action.args, **action.kwargs)
         adapter = adapters.get(action.function)
@@ -209,7 +211,7 @@ class AsyncDriver:
         else:
             connect = budget
         budget = min(budget, owner.remaining())
-        prepared, settings = await asyncio.to_thread(
+        prepared, settings = await offload(
             self._prepare, http, requests.Request(method.upper(), url, **kwargs),
         )
         client = await self._client(prepared.url, settings)
@@ -276,7 +278,7 @@ class AsyncDriver:
                         proxy_config = httpx.Proxy(proxy, ssl_context=contexts[(True, None)])
                 return httpx.AsyncClient(proxy=proxy_config, verify=context,
                                          trust_env=False, follow_redirects=False)
-            client = await asyncio.to_thread(build)
+            client = await offload(build)
             await self.stack.enter_async_context(client)
             self.clients[key] = client
         return client

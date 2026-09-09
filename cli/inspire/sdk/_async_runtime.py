@@ -17,6 +17,8 @@ from .client import InspireClient
 from .models import ResourceRef
 from .exceptions import ClientClosedError, ClientThreadError, ValidationError
 
+from inspire.platform.web.offload import OffloadPool, current_pool
+
 STATUS_CONCURRENCY = 8
 
 
@@ -45,6 +47,7 @@ class AsyncRuntime:
                 "concurrency is deprecated and has no effect; async requests run natively.",
                 DeprecationWarning, stacklevel=3,
             )
+        self._offload_pool = OffloadPool()
         self._options = options
         self._pid = os.getpid()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -106,6 +109,7 @@ class AsyncRuntime:
                 return value
             kwargs = dict(kwargs, on_output=output)
         client = self._operation_client()
+        token = current_pool.set(self._offload_pool)
         client._transport.deadline = deadline
         try:
             async with AsyncDriver(client._transport) as driver:
@@ -121,7 +125,10 @@ class AsyncRuntime:
                 owner._session is None or current._session.created_at >= owner._session.created_at
             ):
                 owner._session = current._session
-            client.close()
+            try:
+                client.close()
+            finally:
+                current_pool.reset(token)
 
     async def _tracked(self, coroutine: Any) -> Any:
         task = asyncio.create_task(coroutine)
@@ -256,8 +263,11 @@ class AsyncRuntime:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if self._client is not None:
-            self._client.close()
+        try:
+            if self._client is not None:
+                self._client.close()
+        finally:
+            await self._offload_pool.close()
 
     async def close(self) -> None:
         self._check()

@@ -1,6 +1,8 @@
 """Offload caller-owned synchronous output sinks without changing capture policy."""
 from __future__ import annotations
 
+from inspire.platform.web.offload import offload
+
 import asyncio
 import inspect
 from contextlib import asynccontextmanager
@@ -29,7 +31,7 @@ async def async_output_writer(target: OutputTarget) -> AsyncIterator[AsyncOutput
 
 
 async def _finish_io(function: Callable[..., Any], *args: Any) -> Any:
-    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    task = asyncio.create_task(offload(function, *args))
     cancelled = False
     while not task.done():
         try:

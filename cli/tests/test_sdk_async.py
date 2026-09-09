@@ -204,15 +204,16 @@ def test_native_concurrency_without_workers(tracked, monkeypatch, concurrency):
 
     monkeypatch.setattr(Workspaces, "_all", rows)
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
-    original_to_thread = asyncio.to_thread
+    from inspire.platform.web.offload import OffloadPool
+    original_offload = OffloadPool.run
     offloaded = []
 
-    async def local_io_only(function, *args, **kwargs):
+    async def local_io_only(self, function, *args, **kwargs):
         assert function.__name__ in {"prepare", "build"}, "business/network offload"
         offloaded.append(function.__name__)
-        return await original_to_thread(function, *args, **kwargs)
+        return await original_offload(self, function, *args, **kwargs)
 
-    monkeypatch.setattr(asyncio, "to_thread", local_io_only)
+    monkeypatch.setattr(OffloadPool, "run", local_io_only)
 
     async def run():
         options = {} if concurrency is None else {"concurrency": concurrency}
@@ -849,7 +850,7 @@ def test_notebook_exec_uses_native_io_and_loop_callbacks(tracked, monkeypatch, t
     monkeypatch.setattr(core, "exec_in_notebook_ssh", execute)
     monkeypatch.setattr(core, "exec_in_notebook_jupyter_async", native)
     if transport == "jupyter":
-        monkeypatch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("native exec offloaded"))
+        monkeypatch.setattr(_async_runtime.OffloadPool, "run", lambda *a, **k: pytest.fail("native exec offloaded"))
 
     async def run():
         async with InspireAsyncClient("alpha") as c:
@@ -891,13 +892,14 @@ def test_first_call_acquires_session_through_native_driver(client, tracked, monk
     monkeypatch.setattr(WebSession, "load", cached)
     monkeypatch.setattr(Workspaces, "_all", rows)
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
-    original_to_thread = asyncio.to_thread
+    from inspire.platform.web.offload import OffloadPool
+    original_offload = OffloadPool.run
 
-    async def preparation_only(function, *args, **kwargs):
+    async def preparation_only(self, function, *args, **kwargs):
         assert function.__name__ in {"prepare", "build"}, "authentication workflow offloaded"
-        return await original_to_thread(function, *args, **kwargs)
+        return await original_offload(self, function, *args, **kwargs)
 
-    monkeypatch.setattr(asyncio, "to_thread", preparation_only)
+    monkeypatch.setattr(OffloadPool, "run", preparation_only)
 
     async def run():
         async with InspireAsyncClient("alpha") as c:
