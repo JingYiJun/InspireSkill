@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import re
 import select
@@ -13,6 +14,7 @@ from typing import Callable, Any, Sequence
 
 from inspire.platform.web.pty_socket import (
     WebSocketClient,
+    AsyncWebSocketClient,
     JobShellAuthError,
     build_remote_cmd_headers,
     normalize_job_instances,
@@ -25,9 +27,11 @@ from inspire.platform.web.browser_api.jupyter_terminal import (
     new_completion_marker,
     TerminalOutput,
     run_command_capture_in_notebook,
+    run_command_capture_in_notebook_async,
 )
 from inspire.bridge.tunnel.config import load_tunnel_config
 from inspire.bridge.tunnel.ssh_exec import run_ssh_command_streaming
+from inspire.services.async_output import async_output_writer
 from inspire.exec_output import (
     DEFAULT_MAX_OUTPUT_BYTES,
     OutputTarget,
@@ -377,3 +381,164 @@ def select_exec_instance(
             f"Multiple running instances match; pass instance. Candidates: {candidates}"
         )
     return chosen[0].handle
+
+async def exec_over_pty_websocket_async(
+    *,
+    session: WebSession,
+    url: str,
+    command: str,
+    timeout: float,
+    marker: str | None = None,
+    on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
+) -> ExecResult:
+    marker = marker or new_completion_marker()
+    deadline = time.monotonic() + timeout
+    prompt_deadline = time.monotonic() + min(3.0, timeout / 4)
+    validate_capture(max_output_bytes, capture, output_to)
+    output = TerminalOutput(marker, max_output_bytes, capture)
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    pending: asyncio.Task[tuple[int, bytes]] | None = None
+    sent = False
+    ws = AsyncWebSocketClient(
+        url, build_remote_cmd_headers(session, base_url=session.base_url), timeout=timeout
+    )
+    async with async_output_writer(output_to) as writer:
+        try:
+            try:
+                await ws.connect()
+            except TimeoutError:
+                return ExecResult(124, "", "", "", False, "pty")
+            except JobShellAuthError as error:
+                raise SessionExpiredError(str(error)) from error
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                if not sent and now >= prompt_deadline:
+                    await ws.send_text(
+                        build_jupyter_exec_command(command, marker=marker).rstrip("\r") + "\r"
+                    )
+                    sent = True
+                if pending is None:
+                    pending = asyncio.create_task(ws.recv_frame())
+                ready, _ = await asyncio.wait({pending}, timeout=min(0.25, deadline - now))
+                if not ready:
+                    continue
+                try:
+                    opcode, payload = pending.result()
+                except (EOFError, TimeoutError):
+                    break
+                finally:
+                    pending = None
+                if opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    await ws.send_pong(payload)
+                    continue
+                if opcode not in (0x1, 0x2):
+                    continue
+                chunk = decoder.decode(payload)
+                output.feed(chunk)
+                if writer is not None:
+                    await writer.write(chunk)
+                if on_output is not None and chunk:
+                    on_output(chunk)
+                if not sent and output.scanner.prompt:
+                    await ws.send_text(
+                        build_jupyter_exec_command(command, marker=marker).rstrip("\r") + "\r"
+                    )
+                    sent = True
+                if output.scanner.returncode is not None:
+                    break
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await ws.close()
+        final = decoder.decode(b"", final=True)
+        output.feed(final)
+        if final:
+            if writer is not None:
+                await writer.write(final)
+            if on_output is not None:
+                on_output(final)
+        result = output.result()
+        return ExecResult(
+            result.returncode,
+            result.output,
+            result.output,
+            "",
+            result.completed,
+            "pty",
+            truncated=result.truncated,
+            total_output_bytes=result.total_output_bytes,
+        )
+
+
+async def exec_in_notebook_jupyter_async(
+    *,
+    session: WebSession,
+    notebook_id: str,
+    command: str,
+    timeout: float,
+    marker: str | None = None,
+    on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
+) -> ExecResult:
+    from requests.exceptions import Timeout
+
+    validate_capture(max_output_bytes, capture, output_to)
+    partial = OutputBuffer(max_output_bytes, capture=capture)
+    callback_failed = False
+
+    def observe(chunk: str) -> None:
+        nonlocal callback_failed
+        partial.feed(chunk)
+        if on_output is not None:
+            try:
+                on_output(chunk)
+            except BaseException:
+                callback_failed = True
+                raise
+
+    try:
+        result = await run_command_capture_in_notebook_async(
+            session=session,
+            notebook_id=notebook_id,
+            command=command,
+            timeout=timeout,
+            marker=marker,
+            on_output=observe,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
+        )
+    except (Timeout, TimeoutError):
+        if callback_failed:
+            raise
+        text = partial.text()
+        return ExecResult(
+            124,
+            text,
+            text,
+            "",
+            False,
+            "jupyter",
+            truncated=partial.truncated,
+            total_output_bytes=partial.total,
+        )
+    return ExecResult(
+        result.returncode,
+        result.output,
+        result.output,
+        "",
+        result.completed,
+        "jupyter",
+        truncated=result.truncated,
+        total_output_bytes=result.total_output_bytes,
+    )

@@ -9,6 +9,8 @@ from inspire.exec_output import (
     validate_capture,
 )
 
+import asyncio
+from inspire.services.async_output import async_output_writer
 import base64
 import contextlib
 import json
@@ -474,3 +476,178 @@ def _run_command_capture_in_notebook_sync(
             **options,
         )
         return result if result is not None else _unfinished()
+
+async def _capture_terminal_output_async(
+    *,
+    ws_url: str,
+    session: WebSession,
+    stdin_data: str,
+    timeout_ms: int,
+    marker: str,
+    on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
+) -> Optional[JupyterCommandResult]:
+    """Run one command on the terminal and read back everything it printed.
+
+    A Python port of what used to run as JavaScript inside a Playwright page.
+    The protocol is unchanged: wait for a prompt (or give up waiting and send
+    anyway), feed stdin in chunks, and stop as soon as the marker line carries
+    an exit code.
+    """
+    from inspire.platform.web.pty_socket import AsyncWebSocketClient
+
+    deadline = time.monotonic() + max(int(timeout_ms), 1) / 1000.0
+    # Bounded wait for the prompt: a terminal that never prints one still has
+    # to receive the command, or the call would return empty on a timeout.
+    prompt_deadline = time.monotonic() + max(0, min(timeout_ms - 500, 3000)) / 1000.0
+    validate_capture(max_output_bytes, capture, output_to)
+    output = TerminalOutput(marker, max_output_bytes, capture)
+    pending: asyncio.Task[tuple[int, bytes]] | None = None
+    sent = False
+    callback_failed = False
+
+    async def _send(ws: AsyncWebSocketClient) -> None:
+        for start in range(0, len(stdin_data), _STDIN_CHUNK):
+            await ws.send_text(json.dumps(["stdin", stdin_data[start : start + _STDIN_CHUNK]]))
+            if start + _STDIN_CHUNK < len(stdin_data):
+                await asyncio.sleep(_STDIN_CHUNK_DELAY_S)
+
+    async with async_output_writer(output_to) as writer:
+        try:
+            async with AsyncWebSocketClient(
+                ws_url, _jupyter_ws_headers(session, ws_url), timeout=max(timeout_ms / 1000, 0.001)
+            ) as ws:
+                while True:
+                    now = time.monotonic()
+                    if now >= deadline:
+                        break
+                    if not sent and now >= prompt_deadline:
+                        sent = True
+                        await _send(ws)
+                    if pending is None:
+                        pending = asyncio.create_task(ws.recv_frame())
+                    ready, _ = await asyncio.wait({pending}, timeout=min(0.25, deadline - now))
+                    if not ready:
+                        continue
+                    try:
+                        opcode, payload = pending.result()
+                    except EOFError:
+                        break
+                    finally:
+                        pending = None
+                    if opcode == 0x8:
+                        break
+                    if opcode == 0x9:
+                        await ws.send_pong(payload)
+                        continue
+                    if opcode not in {0x1, 0x2}:
+                        continue
+                    try:
+                        message = json.loads(payload.decode("utf-8", errors="ignore"))
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(message, list) or len(message) < 2:
+                        continue
+                    if message[0] != "stdout":
+                        continue
+                    text = str(message[1] or "")
+                    output.feed(text)
+                    try:
+                        if writer is not None:
+                            await writer.write(text)
+                        if on_output is not None:
+                            on_output(text)
+                    except BaseException:
+                        callback_failed = True
+                        raise
+                    if not sent and output.scanner.prompt:
+                        sent = True
+                        await _send(ws)
+                    if sent and output.scanner.returncode is not None:
+                        break
+        except JobShellAuthError as error:
+            if callback_failed or sent or output.buffer.total:
+                raise
+            raise SessionExpiredError(str(error)) from error
+        except (EOFError, OSError):
+            if callback_failed:
+                raise
+            logger.debug("JupyterTerminal WebSocket failed", exc_info=True)
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+    result = output.result()
+    if not result.completed:
+        logger.debug(
+            "JupyterTerminal command ended without a completion marker; sent=%s output_chars=%s",
+            sent,
+            output.buffer.total,
+        )
+    return result
+
+
+
+async def run_command_capture_in_notebook_async(
+    *, notebook_id: str, command: str, session: WebSession,
+    timeout: float = 60, marker: str | None = None,
+    on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None, capture: bool = True,
+) -> JupyterCommandResult:
+    from inspire.platform.web.transport_core import ApplicationRequest
+    from inspire.platform.web.browser_api.notebooks import _v2_result, _notebooks_referer
+
+    owner = get_transport(session)
+    effective_marker = marker or new_completion_marker()
+    deadline = time.monotonic() + timeout
+    unfinished = JupyterCommandResult(124, "", False, effective_marker)
+    payload = _v2_result(await owner.request_async(
+        "POST", "/api/v2/notebook?Action=GetNotebookAccessUrl",
+        body={"notebook_id": notebook_id}, referer=_notebooks_referer(), timeout=timeout,
+    ))
+    lab_url = str(payload.get("jupyter_url") or "").strip()
+    if not lab_url:
+        return unfinished
+    base = rtunnel_module.jupyter_server_base(lab_url)
+    term_name = ""
+    with owner.application_connection(lab_url) as http:
+        async def send(method: str, url: str, **options: Any) -> Any:
+            options.setdefault("allow_redirects", False)
+            return await owner.request_async(
+                method, url, body=ApplicationRequest(http, options), timeout=timeout,
+            )
+
+        try:
+            entrance = await send("GET", lab_url, allow_redirects=True)
+            if entrance.status_code == 401:
+                raise SessionExpiredError("Jupyter terminal session expired (401).")
+            xsrf = str(http.cookies.get("_xsrf") or "")
+            response = await send(
+                "POST", f"{base}api/terminals",
+                headers={"X-XSRFToken": xsrf} if xsrf else {},
+            )
+            if response.status_code == 401:
+                raise SessionExpiredError("Jupyter terminal session expired (401).")
+            if response.status_code not in (200, 201):
+                return unfinished
+            term_name = str(response.json().get("name") or "")
+            if not term_name or time.monotonic() >= deadline:
+                return unfinished
+            result = await _capture_terminal_output_async(
+                ws_url=rtunnel_module.build_terminal_websocket_url(lab_url, term_name),
+                session=session, stdin_data=build_jupyter_exec_command(command, marker=effective_marker),
+                timeout_ms=max(1, int((deadline - time.monotonic()) * 1000)),
+                marker=effective_marker, on_output=on_output, max_output_bytes=max_output_bytes,
+                output_to=output_to, capture=capture,
+            )
+            return result if result is not None else unfinished
+        finally:
+            if term_name:
+                with contextlib.suppress(Exception):
+                    await send(
+                        "DELETE", f"{base}api/terminals/{term_name}",
+                        headers={"X-XSRFToken": str(http.cookies.get("_xsrf") or "")},
+                    )

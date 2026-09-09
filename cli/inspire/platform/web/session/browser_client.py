@@ -55,55 +55,15 @@ class _BrowserRequestClient:
         if self._closed:
             raise RuntimeError("Browser request client is closed")
 
-        req_headers = headers or {}
-        method_upper = method.upper()
-        timeout_ms = timeout * 1000
-
-        # Same redirect discipline as the requests transport: a 302 towards CAS
-        # is the expiry signal, and following it hides that behind a login page.
-        if method_upper == "GET":
-            resp = self._context.request.get(
-                url,
-                headers=req_headers,
-                timeout=timeout_ms,
-                max_redirects=0,
-            )
-        elif method_upper == "POST":
-            post_headers = dict(req_headers)
-            if not any(key.lower() == "content-type" for key in post_headers):
-                post_headers["Content-Type"] = "application/json"
-            resp = self._context.request.post(
-                url,
-                headers=post_headers,
-                data=json.dumps(body or {}),
-                timeout=timeout_ms,
-                max_redirects=0,
-            )
-        elif method_upper == "DELETE":
-            resp = self._context.request.delete(
-                url,
-                headers=req_headers,
-                timeout=timeout_ms,
-                max_redirects=0,
-            )
-        else:
-            raise ValueError(f"Unsupported HTTP method: {method}")
-
-        if resp.status == 401 or 300 <= resp.status < 400:
-            raise SessionExpiredError("Session expired or invalid")
-        if resp.status >= 400:
-            try:
-                body_text = resp.text()
-            except Exception:
-                body_text = ""
-            message = f"API returned {resp.status}: {body_text}"
-            if resp.status in TRANSIENT_HTTP_STATUSES:
-                raise TransientAPIError(
-                    message,
-                    status=resp.status,
-                    retry_after=retry_after_seconds(resp.headers),
-                )
-            raise _BrowserHTTPError(resp.status, body_text)
+        method_upper, options = _request_options(method, headers, body, timeout)
+        resp = getattr(self._context.request, method_upper.lower())(url, **options)
+        try:
+            body_text = resp.text() if resp.status >= 400 else ""
+        except Exception:
+            body_text = ""
+        _classify_response(
+            resp.status, resp.headers if resp.status in TRANSIENT_HTTP_STATUSES else {}, body_text
+        )
 
         return resp.json()
 
@@ -232,3 +192,91 @@ def _close_browser_client() -> None:
         _close_client_best_effort(client)
 
     _clear_thread_client()
+
+
+def _request_options(method: str, headers: dict[str, str] | None,
+                     body: dict | None, timeout: float) -> tuple[str, dict[str, Any]]:
+    method_upper = method.upper()
+    if method_upper not in {"GET", "POST", "DELETE"}:
+        raise ValueError(f"Unsupported HTTP method: {method}")
+    req_headers = dict(headers or {})
+    options: dict[str, Any] = dict(headers=req_headers, timeout=timeout * 1000, max_redirects=0)
+    if method_upper == "POST":
+        if not any(key.lower() == "content-type" for key in req_headers):
+            req_headers["Content-Type"] = "application/json"
+        options["data"] = json.dumps(body or {})
+    return method_upper, options
+
+
+def _classify_response(status: int, headers: dict[str, str], body_text: str) -> None:
+    if status == 401 or 300 <= status < 400:
+        raise SessionExpiredError("Session expired or invalid")
+    if status >= 400:
+        message = f"API returned {status}: {body_text}"
+        if status in TRANSIENT_HTTP_STATUSES:
+            raise TransientAPIError(
+                message,
+                status=status,
+                retry_after=retry_after_seconds(headers),
+            )
+        raise _BrowserHTTPError(status, body_text)
+
+
+class AsyncBrowserRequestClient:
+    """Disposable Playwright client owned by its creating event loop."""
+
+    def __init__(self, session: WebSession):
+        self.session = session
+        self._closed = False
+        self._playwright: Any = None
+        self._browser: Any = None
+        self._context: Any = None
+
+    async def __aenter__(self) -> AsyncBrowserRequestClient:
+        from playwright.async_api import async_playwright
+
+        proxy = cast(Any, get_playwright_proxy(account=self.session.account))
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                **chromium_launch_kwargs(headless=True, proxy=proxy)
+            )
+            self._context = await self._browser.new_context(
+                storage_state=cast(Any, self.session.storage_state), proxy=proxy,
+                ignore_https_errors=True,
+            )
+            return self
+        except BaseException:
+            await self.close()
+            raise
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+    async def request_json(self, method: str, url: str, *,
+                           headers: dict[str, str] | None = None,
+                           body: dict | None = None, timeout: float = 30) -> dict:
+        if self._closed:
+            raise RuntimeError("Browser request client is closed")
+        method_upper, options = _request_options(method, headers, body, timeout)
+        resp = await getattr(self._context.request, method_upper.lower())(url, **options)
+        try:
+            body_text = await resp.text() if resp.status >= 400 else ""
+        except Exception:
+            body_text = ""
+        _classify_response(
+            resp.status, resp.headers if resp.status in TRANSIENT_HTTP_STATUSES else {}, body_text
+        )
+        return await resp.json()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for resource, method in [(self._context, "close"), (self._browser, "close"),
+                                 (self._playwright, "stop")]:
+            if resource is not None:
+                try:
+                    await getattr(resource, method)()
+                except Exception:
+                    pass

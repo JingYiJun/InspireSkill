@@ -1,6 +1,8 @@
 """Browser-free PTY websocket transport and instance selection."""
 
 from __future__ import annotations
+import asyncio
+from typing import Generator, Any, cast
 import base64
 import hashlib
 import os
@@ -284,6 +286,7 @@ class WebSocketClient:
         self.timeout = timeout
         self.sock: socket.socket | ssl.SSLSocket | None = None
         self._recv_buffer = b""
+        self._protocol = _WebSocketProtocol()
 
     def __enter__(self) -> "WebSocketClient":
         self.connect()
@@ -322,45 +325,10 @@ class WebSocketClient:
             self.sock = sock
             sock.settimeout(self.timeout)
 
-            key = base64.b64encode(os.urandom(16)).decode("ascii")
-            target = parsed.path or "/"
-            if parsed.query:
-                target = f"{target}?{parsed.query}"
-            host_header = host if parsed.port is None else f"{host}:{port}"
-            lines = [
-                f"GET {target} HTTP/1.1",
-                f"Host: {host_header}",
-                "Upgrade: websocket",
-                "Connection: Upgrade",
-                f"Sec-WebSocket-Key: {key}",
-                "Sec-WebSocket-Version: 13",
-            ]
-            lines.extend(f"{name}: {value}" for name, value in self.headers.items())
-            request = "\r\n".join(lines) + "\r\n\r\n"
-            sock.sendall(request.encode("ascii"))
-
+            request, key = _handshake_request(parsed, self.headers)
+            sock.sendall(request)
             response, extra = self._read_http_response(sock)
-            status_line = response.split("\r\n", 1)[0]
-            parts = status_line.split()
-            status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
-            if status == 401:
-                sock.close()
-                raise JobShellAuthError("Remote shell websocket rejected the session (401).")
-            if status != 101:
-                sock.close()
-                raise JobShellError(f"Remote shell websocket handshake failed: {status_line}")
-            accept = self._header_value(response, "Sec-WebSocket-Accept")
-            expected = base64.b64encode(
-                hashlib.sha1(
-                    (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode(),
-                    usedforsecurity=False,
-                ).digest()
-            ).decode("ascii")
-            if accept and accept != expected:
-                sock.close()
-                raise JobShellError(
-                    "Remote shell websocket handshake returned an invalid accept key."
-                )
+            _validate_handshake(response, key)
             self._recv_buffer = extra
             sock.settimeout(None)
             self.sock = sock
@@ -454,35 +422,12 @@ class WebSocketClient:
     def _send_frame(self, opcode: int, payload: bytes = b"") -> None:
         if self.sock is None:
             raise JobShellError("websocket is not connected")
-        first = 0x80 | opcode
-        length = len(payload)
-        mask = os.urandom(4)
-        if length < 126:
-            header = struct.pack("!BB", first, 0x80 | length)
-        elif length <= 0xFFFF:
-            header = struct.pack("!BBH", first, 0x80 | 126, length)
-        else:
-            header = struct.pack("!BBQ", first, 0x80 | 127, length)
-        masked = bytes(byte ^ mask[idx % 4] for idx, byte in enumerate(payload))
-        self.sock.sendall(header + mask + masked)
+        self.sock.sendall(self._protocol.encode(opcode, payload))
 
     def recv_frame(self) -> tuple[int, bytes]:
         if self.sock is None:
             raise JobShellError("websocket is not connected")
-        header = self._recv_exact(2)
-        first, second = header[0], header[1]
-        opcode = first & 0x0F
-        masked = bool(second & 0x80)
-        length = second & 0x7F
-        if length == 126:
-            length = struct.unpack("!H", self._recv_exact(2))[0]
-        elif length == 127:
-            length = struct.unpack("!Q", self._recv_exact(8))[0]
-        mask = self._recv_exact(4) if masked else b""
-        payload = self._recv_exact(length) if length else b""
-        if masked:
-            payload = bytes(byte ^ mask[idx % 4] for idx, byte in enumerate(payload))
-        return opcode, payload
+        return _drive_protocol(self._protocol.frame(), self._recv_exact)
 
     def _recv_exact(self, size: int) -> bytes:
         if self.sock is None:
@@ -515,3 +460,248 @@ class WebSocketClient:
         except Exception:
             pass
         self.sock = None
+
+def _handshake_request(parsed: Any, headers: dict[str, str]) -> tuple[bytes, str]:
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    target = parsed.path or "/"
+    if parsed.query:
+        target = f"{target}?{parsed.query}"
+    host_header = host if parsed.port is None else f"{host}:{port}"
+    lines = [
+        f"GET {target} HTTP/1.1",
+        f"Host: {host_header}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        f"Sec-WebSocket-Key: {key}",
+        "Sec-WebSocket-Version: 13",
+    ]
+    lines.extend(f"{name}: {value}" for name, value in headers.items())
+    request = "\r\n".join(lines) + "\r\n\r\n"
+    return request.encode("ascii"), key
+
+def _validate_handshake(response: str, key: str) -> None:
+    status_line = response.split("\r\n", 1)[0]
+    parts = status_line.split()
+    status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    if status == 401:
+        raise JobShellAuthError("Remote shell websocket rejected the session (401).")
+    if status != 101:
+        raise JobShellError(f"Remote shell websocket handshake failed: {status_line}")
+    accept = WebSocketClient._header_value(response, "Sec-WebSocket-Accept")
+    expected = base64.b64encode(
+        hashlib.sha1(
+            (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode(),
+            usedforsecurity=False,
+        ).digest()
+    ).decode("ascii")
+    if accept and accept != expected:
+        raise JobShellError(
+            "Remote shell websocket handshake returned an invalid accept key."
+        )
+
+def _encode_frame(opcode: int, payload: bytes) -> bytes:
+    first = 0x80 | opcode
+    length = len(payload)
+    mask = os.urandom(4)
+    if length < 126:
+        header = struct.pack("!BB", first, 0x80 | length)
+    elif length <= 0xFFFF:
+        header = struct.pack("!BBH", first, 0x80 | 126, length)
+    else:
+        header = struct.pack("!BBQ", first, 0x80 | 127, length)
+    masked = bytes(byte ^ mask[idx % 4] for idx, byte in enumerate(payload))
+    return header + mask + masked
+
+
+def _drive_protocol(program: Generator[int, bytes, tuple[int, bytes]], read: Any) -> tuple[int, bytes]:
+    try:
+        size = next(program)
+        while True:
+            size = program.send(read(size))
+    except StopIteration as done:
+        return done.value
+    finally:
+        program.close()
+
+
+class _WebSocketProtocol:
+    """Single framing/fragmentation state machine; yields exact read sizes."""
+
+    def __init__(self) -> None:
+        self.close_payload = b""
+        self.close_sent = False
+        self.fragment_opcode: int | None = None
+        self.fragments = bytearray()
+
+    def encode(self, opcode: int, payload: bytes) -> bytes:
+        if opcode == 8:
+            if self.close_sent:
+                return b""
+            self.close_sent = True
+            payload = payload or self.close_payload
+        return _encode_frame(opcode, payload)
+
+    def frame(self) -> Generator[int, bytes, tuple[int, bytes]]:
+        while True:
+            header = yield 2
+            first, second = header
+            opcode, final = first & 15, bool(first & 128)
+            if first & 112 or opcode not in (0, 1, 2, 8, 9, 10):
+                raise JobShellError("Invalid websocket frame flags or opcode")
+            length = second & 127
+            if opcode >= 8 and (not final or length > 125):
+                raise JobShellError("Invalid websocket control frame")
+            if length == 126:
+                length = struct.unpack("!H", (yield 2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", (yield 8))[0]
+                if length >> 63:
+                    raise JobShellError("Invalid websocket payload length")
+            mask = (yield 4) if second & 128 else b""
+            payload = (yield length) if length else b""
+            if mask:
+                payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+            if opcode >= 8:
+                if opcode == 8 and len(payload) == 1:
+                    raise JobShellError("Invalid websocket close payload")
+                if opcode == 8:
+                    self.close_payload = payload
+                return opcode, payload
+            if opcode == 0:
+                if self.fragment_opcode is None:
+                    raise JobShellError("Unexpected websocket continuation")
+                self.fragments.extend(payload)
+                if final:
+                    result = self.fragment_opcode, bytes(self.fragments)
+                    self.fragment_opcode = None
+                    self.fragments.clear()
+                    return result
+            else:
+                if self.fragment_opcode is not None:
+                    raise JobShellError("Expected websocket continuation")
+                if final:
+                    return opcode, payload
+                self.fragment_opcode = opcode
+                self.fragments.extend(payload)
+
+
+class AsyncWebSocketClient:
+    """Asyncio streams adapter for the same PTY wire protocol."""
+
+    def __init__(self, url: str, headers: dict[str, str], *, timeout: float = 30.0):
+        self.url, self.headers, self.timeout = url, headers, timeout
+        self.reader: asyncio.StreamReader | None = None
+        self.writer: asyncio.StreamWriter | None = None
+        self._protocol = _WebSocketProtocol()
+
+    async def __aenter__(self) -> AsyncWebSocketClient:
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.close()
+
+    async def connect(self) -> None:
+        try:
+            await asyncio.wait_for(self._connect(), self.timeout)
+        except BaseException:
+            await self.close()
+            raise
+
+    async def _connect(self) -> None:
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in {"ws", "wss"}:
+            raise JobShellError(f"Unsupported websocket scheme: {parsed.scheme}")
+        host = parsed.hostname
+        if not host:
+            raise JobShellError("Websocket URL has no host")
+        port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+        proxy = urlsplit(WebSocketClient._proxy_url(self.url))
+        if proxy.scheme and proxy.scheme not in {"http", "https"}:
+            raise JobShellError("WebSocket proxy only supports HTTP(S) proxies. "
+                                f"Configured proxy scheme: {proxy.scheme}")
+        target_host = proxy.hostname or host
+        target_port = (proxy.port or (443 if proxy.scheme == "https" else 80)) if proxy.hostname else port
+        tls = proxy.scheme == "https" if proxy.hostname else parsed.scheme == "wss"
+        self.reader, self.writer = await asyncio.open_connection(
+            target_host, target_port, ssl=ssl.create_default_context() if tls else None,
+        )
+        if proxy.hostname:
+            lines = [f"CONNECT {host}:{port} HTTP/1.1", f"Host: {host}:{port}"]
+            if proxy.username:
+                token = base64.b64encode(f"{proxy.username}:{proxy.password or ''}".encode()).decode("ascii")
+                lines.append(f"Proxy-Authorization: Basic {token}")
+            await self._write(("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
+            response = await self._response()
+            if response.split()[1:2] != ["200"]:
+                raise JobShellError(f"Proxy CONNECT failed: {response.splitlines()[0]}")
+            if parsed.scheme == "wss":
+                loop = asyncio.get_running_loop()
+                protocol = self.writer.transport.get_protocol()
+                transport = await loop.start_tls(
+                    self.writer.transport, protocol, ssl.create_default_context(),
+                    server_hostname=host,
+                )
+                if transport is None:
+                    raise JobShellError("Websocket TLS upgrade failed")
+                # Python 3.10 has no StreamWriter.start_tls. Keep the same writer
+                # alive so its destructor cannot close the upgraded connection.
+                cast(Any, self.writer)._transport = transport
+                cast(Any, protocol)._replace_writer(self.writer)
+        request, key = _handshake_request(parsed, self.headers)
+        await self._write(request)
+        _validate_handshake(await self._response(), key)
+
+    async def _response(self) -> str:
+        assert self.reader is not None
+        try:
+            data = await self.reader.readuntil(b"\r\n\r\n")
+        except asyncio.LimitOverrunError as error:
+            raise JobShellError("Remote shell websocket handshake response is too large.") from error
+        return data.decode("iso-8859-1", errors="replace")
+
+    async def _write(self, data: bytes) -> None:
+        if self.writer is None:
+            raise JobShellError("websocket is not connected")
+        self.writer.write(data)
+        await self.writer.drain()
+
+    async def _send_frame(self, opcode: int, payload: bytes = b"") -> None:
+        await self._write(self._protocol.encode(opcode, payload))
+
+    async def send_text(self, text: str) -> None:
+        await self._send_frame(1, text.encode("utf-8", errors="ignore"))
+
+    async def send_pong(self, payload: bytes) -> None:
+        await self._send_frame(10, payload)
+
+    async def recv_frame(self) -> tuple[int, bytes]:
+        if self.reader is None:
+            raise JobShellError("websocket is not connected")
+        program = self._protocol.frame()
+        try:
+            size = next(program)
+            while True:
+                size = program.send(await self.reader.readexactly(size))
+        except StopIteration as done:
+            return done.value
+        except asyncio.IncompleteReadError as error:
+            raise EOFError("websocket closed") from error
+        finally:
+            program.close()
+
+    async def close(self) -> None:
+        if self.writer is None:
+            return
+        try:
+            await asyncio.wait_for(self._send_frame(8), min(self.timeout, 1.0))
+        except Exception:
+            pass
+        writer, self.writer = self.writer, None
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), 1.0)
+        except Exception:
+            pass

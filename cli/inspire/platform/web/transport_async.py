@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-import threading
 import time
 from contextlib import AsyncExitStack
 from typing import Any, TYPE_CHECKING
@@ -35,33 +33,29 @@ class AsyncDriver:
     async def __aexit__(self, *args: Any) -> None:
         await self.stack.__aexit__(*args)
 
-    async def _blocking(self, action: Send) -> Any:
-        # Chromium remains synchronous (as does the separate PTY websocket).
-        # Authentication and plaza HTTP are native async workflows. A disposable worker owns every browser it creates, so
-        # Playwright objects never cross threads. The caller keeps its guard.
+    async def _browser_send(self, action: Send) -> Any:
+        from inspire.platform.web.session.browser_client import AsyncBrowserRequestClient
+
         owner = self.transport
         owner.check()
-
-        def work() -> tuple[Any, Any]:
-            worker = copy.copy(owner)
-            worker._thread = threading.get_ident()
-            worker._http = worker._browser = None
-            try:
-                result = worker._once(
-                    action.method, action.path, action.body, action.timeout,
-                    action.browser, action.referer, _disposable=True,
+        if isinstance(action.body, ApplicationRequest):
+            return await self._send(action)
+        policy = _CLI_POLICY if owner.cli_compat else _SDK_POLICY
+        url = action.path if action.path.startswith(("https://", "http://")) else owner.base_url + action.path
+        kwargs = {"headers": {"Referer": action.referer} if action.referer else {}} if owner.cli_compat else {}
+        try:
+            async with AsyncBrowserRequestClient(owner.session) as client:
+                return await owner._dispatch(
+                    client.request_json, action.method, url, body=action.body,
+                    timeout=action.timeout, **kwargs,
                 )
-                return result, worker._session
-            finally:
-                if worker._browser is not None:
-                    worker._browser.close()
-                if worker._http is not None:
-                    worker._http.close()
+        except Exception as error:
+            from inspire.platform.web import session as web_session
 
-        result, session = await asyncio.to_thread(work)
-        if session is not owner._session:
-            owner.adopt_session(session)
-        return result
+            if owner.cli_compat and web_session.is_playwright_browser_runtime_error(error):
+                # The async disposable context already closed its own resources.
+                web_session.raise_browser_runtime_error(error)
+            policy.browser_error(error)
 
     async def perform(self, action: Action) -> Any:
         owner = self.transport
@@ -79,7 +73,7 @@ class AsyncDriver:
             return None
         if isinstance(action, Send):
             if action.browser:
-                return await self._blocking(action)
+                return await self._browser_send(action)
             return await self._send(action)
         raise AssertionError(action)
 
@@ -138,6 +132,17 @@ class AsyncDriver:
 
     async def execute(self, action: Call) -> Any:
         """Interpret nested workflows without moving authentication into a worker."""
+        from inspire.services import remote_exec
+        from inspire.platform.web.browser_api import jupyter_terminal
+
+        adapters: dict[Any, Any] = {
+            remote_exec.exec_over_pty_websocket: remote_exec.exec_over_pty_websocket_async,
+            remote_exec.exec_in_notebook_jupyter: remote_exec.exec_in_notebook_jupyter_async,
+            jupyter_terminal.run_command_capture_in_notebook: jupyter_terminal.run_command_capture_in_notebook_async,
+        }
+        adapter = adapters.get(action.function)
+        if adapter is not None:
+            return await adapter(*action.args, **action.kwargs)
         if action.http:
             return await self._http(action)
         if action.function is enter_context:

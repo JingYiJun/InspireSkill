@@ -160,6 +160,19 @@ def test_drivers_have_identical_actions_and_outcome(monkeypatch, cli_compat, sce
             def close(self):
                 pass
 
+        class AsyncBrowser(Browser):
+            def __init__(self, session):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                self.close()
+
+            async def request_json(self, *args, **kwargs):
+                return super().request_json(*args, **kwargs)
+
         original_run = RequestCore.run
 
         def traced(core, *args):
@@ -189,6 +202,7 @@ def test_drivers_have_identical_actions_and_outcome(monkeypatch, cli_compat, sce
             patch.setattr(httpx.AsyncClient, "send", async_send)
             patch.setattr(ws, "get_browser_client", lambda _: Browser())
             patch.setattr(ws, "create_browser_client", lambda _: Browser())
+            patch.setattr("inspire.platform.web.session.browser_client.AsyncBrowserRequestClient", AsyncBrowser)
             patch.setattr(Transport, "_refresh", lambda self: self._adopt_session(refresh()))
             patch.setattr(Transport, "_refresh_expired_session", lambda self, _: refresh())
             try:
@@ -409,18 +423,21 @@ def test_async_native_refresh_preserves_owner_and_browser_affinity(monkeypatch, 
     class Browser:
         def __init__(self, current):
             self.thread = threading.get_ident()
-            assert self.thread != thread and current.created_at == 2
+            assert self.thread == thread and current.created_at == 2
 
-        def request_json(self, *args, **kwargs):
+        async def request_json(self, *args, **kwargs):
             assert threading.get_ident() == self.thread
             events.append("send")
             return OK
 
-        def close(self):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
             assert threading.get_ident() == self.thread
             events.append("close")
 
-    monkeypatch.setattr(ws, "create_browser_client", Browser)
+    monkeypatch.setattr("inspire.platform.web.session.browser_client.AsyncBrowserRequestClient", Browser)
 
     async def run():
         async with AsyncDriver(transport) as driver:
