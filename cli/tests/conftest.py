@@ -59,18 +59,13 @@ def _no_orphan_state_sweep(monkeypatch):  # noqa: ANN001
 
 @pytest.fixture(autouse=True)
 def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
-    """Keep web-session fallback state from leaking between tests."""
-    from inspire.platform.web import session as web_session_module
+    """Keep caller/default transports and their connection pools isolated."""
+    from inspire.platform.web import runtime
     from inspire.platform.web.session.browser_client import _close_browser_client
 
-    monkeypatch.setattr(web_session_module, "_BROWSER_API_FORCE_BROWSER", False)
-    # Process-global like the transport flag, and for the same reason: it
-    # remembers a session generation nothing could use, so a test that leaves
-    # one set makes the next test's legitimate rebuild look futile.
-    monkeypatch.setattr(web_session_module, "_unproven_rebuild", None)
+    monkeypatch.setattr(runtime, "_default_transports", {})
     yield
-    web_session_module._BROWSER_API_FORCE_BROWSER = False
-    web_session_module._unproven_rebuild = None
+    runtime.close_default_transports()
     _close_browser_client()
 
 
@@ -236,3 +231,16 @@ def set_fake_home(monkeypatch, home) -> None:  # noqa: ANN001
     drive, tail = os.path.splitdrive(home)
     monkeypatch.setenv("HOMEDRIVE", drive)
     monkeypatch.setenv("HOMEPATH", tail or home)
+
+
+@pytest.fixture(autouse=True)
+def _block_real_web_requests(monkeypatch):
+    """All transport tests must supply their own HTTP/browser boundary."""
+    import requests
+    import playwright.sync_api
+
+    def blocked(*args, **kwargs):
+        pytest.fail("Real HTTP/Playwright is forbidden in the offline test suite")
+
+    monkeypatch.setattr(requests.Session, "send", blocked)
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", blocked)

@@ -147,6 +147,9 @@ def main(
         inspire notebook list --workspace 分布式训练空间
         inspire resources availability --workspace 分布式训练空间
     """
+    from inspire.cli.utils.web_transport import install_web_transport
+
+    install_web_transport()
     ctx.json_output = json_output
     ctx.debug = debug
 

@@ -926,6 +926,7 @@ def test_sso_renewal_propagates_unexpected_responses_without_credentials(
 
 
 def test_session_refresh_uses_sso_renewal_before_credential_login(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -939,6 +940,7 @@ def test_session_refresh_uses_sso_renewal_before_credential_login(
         account="alice",
         created_at=1.0,
     )
+    transport.adopt_session(expired)
     expired.save(account="alice")
     with pytest.raises(ws.AuthenticationError):
         with login_guard.guarded_credential_submission(
@@ -963,10 +965,11 @@ def test_session_refresh_uses_sso_renewal_before_credential_login(
         lambda **_kwargs: pytest.fail("SSO renewal must precede credential login"),
     )
 
-    assert ws._refresh_expired_session(expired, observed_created_at=1.0) is renewed
+    assert transport._refresh_expired_session(observed_created_at=1.0) is renewed
 
 
 def test_session_refresh_submits_credentials_only_after_sso_is_gone(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expired = WebSession(
@@ -974,6 +977,7 @@ def test_session_refresh_submits_credentials_only_after_sso_is_gone(
         account=None,
         created_at=1.0,
     )
+    transport.adopt_session(expired)
     refreshed = WebSession(
         storage_state={"cookies": [{"name": "new", "value": "cookie"}]},
         account=None,
@@ -992,11 +996,12 @@ def test_session_refresh_submits_credentials_only_after_sso_is_gone(
     monkeypatch.setattr(ws, "_renew_web_session_without_credentials", no_sso)
     monkeypatch.setattr(ws, "_get_web_session", credential_login)
 
-    assert ws._refresh_expired_session(expired, observed_created_at=1.0) is refreshed
+    assert transport._refresh_expired_session(observed_created_at=1.0) is refreshed
     assert events == ["sso", "credentials"]
 
 
 def test_sso_renewal_failure_does_not_fall_through_to_a_password(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expired = WebSession(
@@ -1004,6 +1009,7 @@ def test_sso_renewal_failure_does_not_fall_through_to_a_password(
         account=None,
         created_at=1.0,
     )
+    transport.adopt_session(expired)
     monkeypatch.setattr(
         ws,
         "_renew_web_session_without_credentials",
@@ -1016,7 +1022,7 @@ def test_sso_renewal_failure_does_not_fall_through_to_a_password(
     )
 
     with pytest.raises(ValueError, match="renewal gateway failed"):
-        ws._refresh_expired_session(expired, observed_created_at=1.0)
+        transport._refresh_expired_session(observed_created_at=1.0)
 
 
 def test_cas_server_failure_after_submission_does_not_submit_again_in_a_browser(
@@ -1773,6 +1779,7 @@ def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
 
 @pytest.mark.parametrize("status_code", [401, 302])
 def test_request_json_auth_response_rebuilds_once_without_a_browser(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
     status_code: int,
 ) -> None:
@@ -1788,6 +1795,7 @@ def test_request_json_auth_response_rebuilds_once_without_a_browser(
         workspace_id="ws-test",
         created_at=1,
     )
+    transport.adopt_session(session)
     refreshed = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
         cookies={"session": "fresh"},
@@ -1815,47 +1823,49 @@ def test_request_json_auth_response_rebuilds_once_without_a_browser(
     )
     monkeypatch.setattr(ws, "_get_web_session", fake_login)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
-    result = ws.request_json(session, "GET", "https://example.test")
+    result = transport.request("GET", "")
 
     assert result == {"ok": True}
     assert logins["count"] == 1
     assert len(expired_http.calls) == 1
     assert len(fresh_http.calls) == 1
-    assert ws._BROWSER_API_FORCE_BROWSER is False
+    assert transport._force_browser is False
 
 
-def test_request_json_non_json_triggers_fallback(monkeypatch: pytest.MonkeyPatch):
+def test_request_json_non_json_triggers_fallback(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
         cookies={"session": "abc"},
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
 
     http = DummyHTTP(DummyResponse(200, payload=ValueError("bad json")))
     browser = DummyBrowserClient({"ok": True})
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
-    result = ws.request_json(session, "GET", "https://example.test")
+    result = transport.request("GET", "")
 
     assert result == {"ok": True}
-    assert ws._BROWSER_API_FORCE_BROWSER is True
+    assert transport._force_browser is True
     assert http.calls
     assert browser.calls
 
 
-def test_request_json_transport_error_triggers_fallback(monkeypatch: pytest.MonkeyPatch):
+def test_request_json_transport_error_triggers_fallback(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
         cookies={"session": "abc"},
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
 
     class FailingHTTP:
         def __init__(self) -> None:
@@ -1876,36 +1886,38 @@ def test_request_json_transport_error_triggers_fallback(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
-    result = ws.request_json(session, "GET", "https://example.test")
+    result = transport.request("GET", "")
 
     assert result == {"ok": True}
-    assert ws._BROWSER_API_FORCE_BROWSER is True
+    assert transport._force_browser is True
     assert http.calls
     assert browser.calls
 
 
-def test_request_json_supports_delete(monkeypatch: pytest.MonkeyPatch):
+def test_request_json_supports_delete(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
         cookies={"session": "abc"},
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
 
     http = DummyHTTP(DummyResponse(200, payload={"ok": True}))
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
-    result = ws.request_json(session, "DELETE", "https://example.test/api/v2/image?Action=DeleteImage")
+    result = transport.request("DELETE", "/api/v2/image?Action=DeleteImage")
 
     assert result == {"ok": True}
     assert http.calls == [("DELETE", "https://example.test/api/v2/image?Action=DeleteImage", {}, 30)]
 
 
 def test_request_json_browser_runtime_error_uses_standard_hint(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = WebSession(
@@ -1914,6 +1926,7 @@ def test_request_json_browser_runtime_error_uses_standard_hint(
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
 
     def raise_browser_runtime_error(_session):  # noqa: ANN001
         raise RuntimeError(
@@ -1923,23 +1936,24 @@ def test_request_json_browser_runtime_error_uses_standard_hint(
         )
 
     monkeypatch.setattr(ws, "_get_browser_client", raise_browser_runtime_error)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
+    monkeypatch.setattr(transport, "_force_browser", True)
 
     with pytest.raises(RuntimeError) as excinfo:
-        ws.request_json(session, "GET", "https://example.test")
+        transport.request("GET", "")
 
     message = str(excinfo.value)
     assert "inspire update --cli-only" in message
     assert "playwright install" not in message
 
 
-def test_browser_client_reset_on_expired(monkeypatch: pytest.MonkeyPatch):
+def test_browser_client_reset_on_expired(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
         cookies={"session": "abc"},
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
 
     class ExpiringBrowserClient:
         def request_json(self, *_args, **_kwargs):
@@ -1956,16 +1970,17 @@ def test_browser_client_reset_on_expired(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", fake_close)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
+    monkeypatch.setattr(transport, "_force_browser", True)
     monkeypatch.setattr(ws, "_get_web_session", fake_get_web_session)
 
     with pytest.raises(ws.SessionExpiredError):
-        ws.request_json(session, "GET", "https://example.test")
+        transport.request("GET", "")
 
     assert closed["called"] is True
 
 
 def test_request_json_reauth_is_silent(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1975,6 +1990,7 @@ def test_request_json_reauth_is_silent(
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
     refreshed = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "new"}]},
         cookies={"session": "new"},
@@ -1988,7 +2004,7 @@ def test_request_json_reauth_is_silent(
 
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
+    monkeypatch.setattr(transport, "_force_browser", True)
     monkeypatch.setattr(ws, "_get_web_session", lambda **_kwargs: refreshed)
     monkeypatch.setattr(
         ws,
@@ -1997,13 +2013,13 @@ def test_request_json_reauth_is_silent(
     )
 
     with pytest.raises(ws.SessionExpiredError):
-        ws.request_json(session, "GET", "https://example.test")
+        transport.request("GET", "")
 
     captured = capsys.readouterr()
     assert "Session expired, re-authenticating..." not in captured.err
 
 
-def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.MonkeyPatch):
+def test_request_json_reauth_refreshes_session_in_place(transport, monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "old"}]},
         cookies={"session": "old"},
@@ -2011,6 +2027,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
         login_username="old-user",
         created_at=1.0,
     )
+    transport.adopt_session(session)
     refreshed = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "new"}]},
         cookies={"session": "new"},
@@ -2036,9 +2053,9 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "_get_web_session", fake_get_web_session)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
+    monkeypatch.setattr(transport, "_force_browser", True)
 
-    result = ws.request_json(session, "GET", "https://example.test")
+    result = transport.request("GET", "")
     assert result == {"ok": True}
     assert refresh_calls["count"] == 1
     assert session.storage_state == refreshed.storage_state
@@ -2049,13 +2066,14 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     assert session.created_at == refreshed.created_at
     assert len(http.calls) == 1
 
-    second_result = ws.request_json(session, "GET", "https://example.test")
+    second_result = transport.request("GET", "")
     assert second_result == {"ok": True}
     assert refresh_calls["count"] == 1
     assert len(http.calls) == 2
 
 
 def test_a_rate_limited_call_still_gets_only_one_session_rebuild(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The transient retry runs the call again; it must not re-arm the login.
@@ -2074,6 +2092,7 @@ def test_a_rate_limited_call_still_gets_only_one_session_rebuild(
         workspace_id="ws-test",
         created_at=1.0,
     )
+    transport.adopt_session(session)
     class _RateLimited(DummyResponse):
         headers = {"Retry-After": "0"}
 
@@ -2108,15 +2127,16 @@ def test_a_rate_limited_call_still_gets_only_one_session_rebuild(
         "_get_browser_client",
         lambda _session: pytest.fail("an expiry must not be retried through a browser"),
     )
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
     with pytest.raises(ws.SessionExpiredError):
-        ws.request_json(session, "GET", "https://example.test")
+        transport.request("GET", "")
 
     assert logins["count"] == 1
 
 
 def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two callers share one session object; the second one's 401 is stale news.
@@ -2132,6 +2152,7 @@ def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
         workspace_id="ws-test",
         created_at=1.0,
     )
+    transport.adopt_session(session)
 
     class _RefreshedUnderneathHTTP:
         def __init__(self) -> None:
@@ -2157,13 +2178,14 @@ def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
         lambda **_kwargs: pytest.fail("a session someone else just rebuilt must not log in"),
     )
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
-    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+    assert transport.request("GET", "") == {"ok": True}
     assert http.calls == 2
 
 
 def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2181,6 +2203,7 @@ def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
         cookies={"session": "stale"},
         created_at=1.0,
     )
+    transport.adopt_session(session)
     logins = {"count": 0}
 
     def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
@@ -2199,16 +2222,17 @@ def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
     monkeypatch.setattr(
         ws, "_get_browser_client", lambda _session: pytest.fail("no browser expected")
     )
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
     for _ in range(5):
         with pytest.raises(ws.SessionExpiredError):
-            ws.request_json(session, "GET", "https://example.test")
+            transport.request("GET", "")
 
     assert logins["count"] == 1
 
 
 def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2226,6 +2250,7 @@ def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
         cookies={"session": "old"},
         created_at=1.0,
     )
+    transport.adopt_session(session)
 
     class _RebuildLandsMidFlight:
         def get(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001
@@ -2235,13 +2260,13 @@ def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
                 session.storage_state = {"cookies": [{"name": "session", "value": "minted"}]}
                 session.cookies = {"session": "minted"}
                 session.created_at = 2.0
-                ws._note_rebuilt_generation(2.0)
+                transport._unproven_rebuild = 2.0
                 return DummyResponse(200, payload={"ok": True})
             return DummyResponse(401)
 
     monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _RebuildLandsMidFlight())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
     monkeypatch.setattr(
         ws,
         "_get_web_session",
@@ -2251,14 +2276,15 @@ def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
     )
 
     # The straggler's answer belongs to generation 1.0 and must say so.
-    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+    assert transport.request("GET", "") == {"ok": True}
 
     # Generation 2.0 is refused by the platform: no further login, by design.
     with pytest.raises(ws.SessionExpiredError, match="refused as well"):
-        ws.request_json(session, "GET", "https://example.test")
+        transport.request("GET", "")
 
 
 def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
+    transport,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -2269,6 +2295,7 @@ def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
         cookies={"session": "stale"},
         created_at=1.0,
     )
+    transport.adopt_session(session)
     logins = {"count": 0}
     answers: list[DummyResponse] = [DummyResponse(401), DummyResponse(200, payload={"ok": True})]
 
@@ -2287,13 +2314,13 @@ def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
     monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _Sequenced())
     monkeypatch.setattr(ws, "_get_web_session", fake_login)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(transport, "_force_browser", False)
 
-    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+    assert transport.request("GET", "") == {"ok": True}
 
     # A later expiry on a session that has been answering is a real expiry.
     answers.extend([DummyResponse(401), DummyResponse(200, payload={"ok": True})])
-    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+    assert transport.request("GET", "") == {"ok": True}
     assert logins["count"] == 2
 
 
@@ -2688,7 +2715,7 @@ def test_get_web_session_force_refresh_bypasses_cache(monkeypatch: pytest.Monkey
     assert login_calls["base_url"] == "https://example.invalid"
 
 
-def test_asyncio_browser_fallback_uses_disposable_clients(monkeypatch: pytest.MonkeyPatch):
+def test_asyncio_browser_fallback_uses_disposable_clients(transport, monkeypatch: pytest.MonkeyPatch):
     """Two consecutive browser-backed requests from an asyncio context must each
     get their own disposable _BrowserRequestClient — not the global cached one —
     to avoid cross-thread greenlet / thread-affinity errors.
@@ -2702,6 +2729,7 @@ def test_asyncio_browser_fallback_uses_disposable_clients(monkeypatch: pytest.Mo
         workspace_id="ws-test",
         created_at=0,
     )
+    transport.adopt_session(session)
 
     created: list = []
 
@@ -2723,12 +2751,12 @@ def test_asyncio_browser_fallback_uses_disposable_clients(monkeypatch: pytest.Mo
         raise AssertionError("global cache must not be used in asyncio path")
 
     monkeypatch.setattr(ws, "_BrowserRequestClient", TrackedClient)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
+    monkeypatch.setattr(transport, "_force_browser", True)
     monkeypatch.setattr(ws, "_get_browser_client", _fail_global_cache)
 
     async def two_requests():
-        r1 = ws.request_json(session, "GET", "https://example.test/1")
-        r2 = ws.request_json(session, "GET", "https://example.test/2")
+        r1 = transport.request("GET", "/1")
+        r2 = transport.request("GET", "/2")
         return r1, r2
 
     r1, r2 = asyncio.run(two_requests())
@@ -2937,3 +2965,13 @@ def test_credentials_do_not_influence_account_resolution(
     path = get_session_cache_file()
     # Must NOT resolve to anything under accounts/ghost/...
     assert "accounts/ghost" not in str(path)
+
+
+@pytest.fixture
+def transport():
+    from inspire.sdk.transport import Transport
+
+    transport = Transport(None, "https://example.test", username="", allow_browser=True,
+                          cli_compat=True)
+    yield transport
+    transport.close()

@@ -1,11 +1,11 @@
-"""Client-owned transport. Writes are sent once, with no implicit replay."""
+"""Shared web dispatcher. SDK writes are sent once, with no implicit replay."""
 
 from __future__ import annotations
 import os
 import threading
 import time
-from contextlib import contextmanager
-from typing import Any, Callable, Iterator, NoReturn
+from contextlib import contextmanager, nullcontext
+from typing import TYPE_CHECKING, Any, Callable, Iterator, NoReturn
 
 from .exceptions import (
     AuthenticationError,
@@ -18,6 +18,13 @@ from .exceptions import (
     MutationUncertainError,
     WaitTimeoutError,
 )
+
+
+if TYPE_CHECKING:
+    from inspire.platform.web.session.models import WebSession
+
+class _NonJSONResponse(ValueError):
+    """Only a decoded HTTP body failure is eligible for CLI browser fallback."""
 
 
 class _SingleSendViolation(RuntimeError):
@@ -43,18 +50,30 @@ def _classify_after_dispatch(error: Exception) -> Exception | None:
 
 
 class Transport:
+    """Own dispatch and authentication state for a caller.
+
+    ``cli_compat`` preserves the CLI's HTTP messages, Retry-After waits, shared
+    thread-local pools and renewal policy. The SDK defaults and single-send
+    contract remain independent of that presentation/compatibility policy.
+    """
+
     def __init__(
         self,
-        account: str,
+        account: str | None,
         base_url: str,
         *,
         username: str,
         allow_browser: bool = False,
         timeout: float = 30,
+        cli_compat: bool = False,
     ):
         self.account, self.base_url = account, base_url.rstrip("/")
         self.username, self.allow_browser, self.timeout = username, allow_browser, timeout
         self._pid, self._thread = os.getpid(), threading.get_ident()
+        self.cli_compat = cli_compat
+        self._force_browser = False
+        self._unproven_rebuild: float | None = None
+        self._generation_lock = threading.RLock()
         self._closed = False
         self._session: Any = None
         self._http: Any = None
@@ -64,7 +83,9 @@ class Transport:
         self._last_success: float | None = None
 
     def check(self) -> None:
-        if (self._pid, self._thread) != (os.getpid(), threading.get_ident()):
+        if self._pid != os.getpid() or (
+            not self.cli_compat and self._thread != threading.get_ident()
+        ):
             raise ClientThreadError("Create and use each Client in the same process and thread.")
         if self._closed:
             raise ClientClosedError("Client is closed.")
@@ -77,16 +98,18 @@ class Transport:
         return remaining
 
     @contextmanager
-    def scope(self, *, timeout: float = 120) -> Iterator[None]:
+    def scope(self, *, timeout: float | None = 120) -> Iterator[None]:
+        """Bind this transport; None adds no deadline and preserves any outer one."""
         from inspire.accounts import account_scope
         from inspire.platform.web.runtime import active_transport
 
         self.check()
         old = self.deadline
-        self.deadline = min(old, time.monotonic() + timeout) if old else time.monotonic() + timeout
+        if timeout is not None:
+            self.deadline = min(old, time.monotonic() + timeout) if old else time.monotonic() + timeout
         token = active_transport.set(self)
         try:
-            with account_scope(self.account):
+            with nullcontext() if self.cli_compat else account_scope(self.account):
                 yield
         finally:
             active_transport.reset(token)
@@ -146,6 +169,11 @@ class Transport:
     def session(self):
         self.check()
         if self._session is None:
+            if self.cli_compat:
+                from inspire.platform.web.session import get_web_session
+
+                self._session = get_web_session(account=self.account)
+                return self._session
             from inspire.platform.web.session.models import WebSession
 
             cached = WebSession.load(allow_expired=True, account=self.account)
@@ -157,12 +185,68 @@ class Transport:
                 self._refresh()
         return self._session
 
+    def adopt_session(self, session: WebSession) -> None:
+        """Use an already acquired session without consulting disk or logging in."""
+        self.check()
+        if self.cli_compat:
+            self._session = session
+        else:
+            self._adopt_session(session)
+
     def _adopt_session(self, session):
         from inspire.platform.web.session.requests import _configure
 
         self._session = self._validate_session(session)
         if self._http is not None:
             _configure(self._http, self._session, self.base_url)
+
+    def _refresh_expired_session(self, observed_created_at: float) -> WebSession:
+        from inspire.platform.web import session as web_session
+
+        session = self.session
+        if session.created_at > observed_created_at:
+            return session
+        with web_session.exclusive_session_refresh(session.account):
+            if session.created_at > observed_created_at:
+                return session
+            cached = web_session.WebSession.load(allow_expired=True, account=session.account)
+            if (
+                cached is not None
+                and cached.storage_state.get("cookies")
+                and cached.created_at > observed_created_at
+            ):
+                return cached
+            renewed = web_session._renew_web_session_without_credentials(session)
+            if renewed is not None:
+                web_session.logger.debug(
+                    "Web session renewed through cached SSO state without credentials."
+                )
+                return renewed
+            return web_session._get_web_session(force_refresh=True, account=session.account)
+
+    def _refresh_cli(self, observed_created_at: float, *, can_refresh: bool) -> None:
+        from inspire.platform.web import session as web_session
+
+        # Capture the sent generation, not the current fields of a shared object.
+        web_session._close_browser_client()
+        with self._generation_lock:
+            if (
+                self._unproven_rebuild is not None
+                and observed_created_at >= self._unproven_rebuild
+            ):
+                raise web_session.SessionExpiredError(
+                    "The session the last rebuild produced was refused as well. Not logging "
+                    "in again to replace a login nothing has been able to use."
+                )
+            if not can_refresh:
+                raise web_session.SessionExpiredError(
+                    "Session expired again after a single authentication refresh"
+                )
+            web_session.logger.debug("Web session expired; rebuilding it once for this call.")
+            refreshed = self._refresh_expired_session(observed_created_at)
+            web_session._refresh_session_in_place(self.session, refreshed)
+            self._unproven_rebuild = self.session.created_at
+            self._force_browser = False
 
     def _refresh(self):
         from inspire.platform.web.session.models import WebSession
@@ -223,6 +307,9 @@ class Transport:
     def _once(self, method, path, body, timeout, browser=False, referer=None):
         from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
 
+        if self.cli_compat:
+            return self._once_cli(method, path, body, timeout, browser, referer)
+
         if browser:
             from inspire.platform.web.session.browser_client import (
                 _BrowserRequestClient,
@@ -270,6 +357,60 @@ class Transport:
             raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")
         return response.json()
 
+    def _once_cli(self, method, path, body, timeout, browser, referer):
+        from inspire.platform.web import session as web_session
+
+        url = self.base_url + path
+        headers = {"Referer": referer} if referer else {}
+        if not browser:
+            http = web_session.pooled_requests_session(self.session, url)
+            method_upper = method.upper()
+            if method_upper not in {"GET", "POST", "DELETE"}:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+            kwargs = {"headers": headers, "timeout": timeout, "allow_redirects": False}
+            if method_upper == "POST":
+                headers["Content-Type"] = "application/json"
+                kwargs["json"] = body or {}
+            response = self._dispatch(getattr(http, method_upper.lower()), url, **kwargs)
+            if response.status_code == 401 or 300 <= response.status_code < 400:
+                raise web_session.SessionExpiredError("Session expired or invalid")
+            if response.status_code >= 400:
+                message = f"API returned {response.status_code}: {response.text}"
+                if response.status_code in web_session.TRANSIENT_HTTP_STATUSES:
+                    raise web_session.TransientAPIError(
+                        message, status=response.status_code,
+                        retry_after=web_session.retry_after_seconds(response.headers),
+                    )
+                raise ValueError(message)
+            try:
+                return response.json()
+            except ValueError as error:
+                raise _NonJSONResponse(str(error)) from error
+
+        from inspire.platform.web.browser_api.core import _in_asyncio_loop, _run_in_thread
+
+        def send():
+            client = web_session._BrowserRequestClient(self.session)
+            try:
+                return self._dispatch(
+                    client.request_json, method, url, headers=headers, body=body, timeout=timeout
+                )
+            finally:
+                client.close()
+
+        try:
+            if _in_asyncio_loop():
+                return _run_in_thread(send)
+            return self._dispatch(
+                web_session._get_browser_client(self.session).request_json,
+                method, url, headers=headers, body=body, timeout=timeout,
+            )
+        except Exception as error:
+            if web_session.is_playwright_browser_runtime_error(error):
+                web_session._close_browser_client()
+                web_session._raise_browser_runtime_error(error)
+            raise
+
     def _dispatch(self, send: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         if self._write is not None:
             self._write["sent"] = True
@@ -288,18 +429,30 @@ class Transport:
                 raise _SingleSendViolation("single_send allows exactly one request.")
             state["used"] = True
         self.session
-        browser, refreshed = False, False
-        for attempt in range(3 if state is None else 1):
-            request_timeout = min(timeout, self.timeout, self.remaining())
+        browser, refreshed = self._force_browser if self.cli_compat else False, False
+        attempt = 0
+        while attempt < (3 if state is None else 1):
+            request_timeout = (
+                timeout if self.cli_compat and self.deadline is None
+                else min(timeout, self.timeout, self.remaining())
+            )
+            observed_created_at = self.session.created_at
             try:
                 payload = self._once(method, path, body, request_timeout, browser, referer)
-                if state is None and isinstance(payload, dict):
+                if not self.cli_compat and state is None and isinstance(payload, dict):
                     metadata = payload.get("ResponseMetadata")
                     error = metadata.get("Error") if isinstance(metadata, dict) else None
                     if isinstance(error, dict) and _is_transient_v2_error_code(
                         str(error.get("Code") or "")
                     ):
                         raise TransientAPIError(str(error.get("Message") or error.get("Code")))
+                if self.cli_compat:
+                    with self._generation_lock:
+                        if (
+                            self._unproven_rebuild is not None
+                            and observed_created_at >= self._unproven_rebuild
+                        ):
+                            self._unproven_rebuild = None
                 self._last_success = time.monotonic()
                 return payload
             except Exception as error:
@@ -312,6 +465,23 @@ class Transport:
                             raise classified from error
                         self._uncertain(state, error)
                     raise
+                if self.cli_compat:
+                    if isinstance(error, SessionExpiredError):
+                        self._refresh_cli(observed_created_at, can_refresh=not refreshed)
+                        refreshed = True
+                        browser = False
+                        continue
+                    if not browser and isinstance(error, (RequestException, _NonJSONResponse)):
+                        if self.allow_browser:
+                            self._force_browser = browser = True
+                            continue
+                    if not isinstance(error, TransientAPIError) or attempt == 2:
+                        raise
+                    from inspire.platform.web.session.retry import backoff_delay
+
+                    time.sleep(backoff_delay(attempt, error))
+                    attempt += 1
+                    continue
                 if isinstance(error, SessionExpiredError):
                     if refreshed:
                         raise AuthenticationError(str(error)) from error
@@ -329,6 +499,7 @@ class Transport:
                 if attempt == 2:
                     raise TransportError(str(error)) from error
                 time.sleep(min(0.1 * (2**attempt), self.remaining()))
+                attempt += 1
         raise AssertionError("unreachable")
 
     def close(self) -> None:
@@ -336,6 +507,11 @@ class Transport:
             return
         self.check()
         try:
+            if self.cli_compat:
+                from inspire.platform.web import session as web_session
+
+                web_session._close_browser_client()
+                web_session.close_pooled_requests_session()
             if self._browser is not None:
                 self._browser.close()
         finally:

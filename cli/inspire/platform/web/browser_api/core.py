@@ -16,7 +16,6 @@ from typing import Any, Optional
 from inspire.platform.web.session import (
     WebSession,
     get_playwright_proxy,
-    request_json,
 )
 from inspire.platform.web.session.envelope import (  # noqa: F401 - re-exported
     _is_transient_v2_error_code,
@@ -59,14 +58,14 @@ def clear_browser_api_runtime_cache() -> None:
 
 
 def _get_base_url() -> str:
-    """Get base URL from layered config with sane fallback."""
+    from inspire.platform.web.runtime import get_transport
+
+    return get_transport().base_url
+
+
+def _configured_base_url() -> str:
+    """Resolve CLI configuration independently of an active SDK operation."""
     global _cached_base_url, _cached_base_url_key
-
-    from inspire.platform.web.runtime import active_transport
-
-    transport = active_transport.get()
-    if transport is not None:
-        return transport.base_url
 
     cache_key = _base_url_cache_key()
     if _cached_base_url is not None and _cached_base_url_key == cache_key:
@@ -99,6 +98,12 @@ def _set_base_url(url: str) -> None:
 
     _cached_base_url = url.rstrip("/")
     _cached_base_url_key = _base_url_cache_key()
+
+    from inspire.platform.web.runtime import active_transport
+
+    transport = active_transport.get()
+    if transport is not None and transport.cli_compat:
+        transport.base_url = _cached_base_url
 
 
 # The gateway rejects `page_size` above this with
@@ -153,23 +158,10 @@ def _request_json(
     body: Optional[dict] = None,
     timeout: int = 30,
 ) -> dict:
-    from inspire.platform.web.runtime import active_transport
+    from inspire.platform.web.runtime import get_transport
 
-    transport = active_transport.get()
-    if transport is not None:
-        return transport.request(
-            method, path, body=_clamped_page_size(body), timeout=timeout, referer=referer
-        )
-
-    url = f"{_get_base_url()}{path}"
-    headers = {"Referer": referer}
-    return request_json(
-        session,
-        method,
-        url,
-        headers=headers,
-        body=_clamped_page_size(body),
-        timeout=timeout,
+    return get_transport(session).request(
+        method, path, body=_clamped_page_size(body), timeout=timeout, referer=referer
     )
 
 

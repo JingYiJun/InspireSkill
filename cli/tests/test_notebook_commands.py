@@ -1405,7 +1405,7 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
             return {"Result": {"list": []}}
         return {"Result": {"list": []}}
 
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr("inspire.sdk.transport.Transport.request", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
     monkeypatch.setattr(
         browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
@@ -1497,7 +1497,7 @@ def test_notebook_start_wait_prints_progress(
         assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
         return {"Result": {"list": [item]}}
 
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr("inspire.sdk.transport.Transport.request", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
     monkeypatch.setattr(
         browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
@@ -1607,7 +1607,7 @@ def test_notebook_start_name_conflict_prompts_selection(
             return {"Result": {"list": [gpu_item]}}
         return {"Result": {"list": []}}
 
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr("inspire.sdk.transport.Transport.request", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
     monkeypatch.setattr(
         browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
@@ -1707,7 +1707,7 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
             return {"Result": {"list": []}}
         return {"Result": {"list": []}}
 
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr("inspire.sdk.transport.Transport.request", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
     monkeypatch.setattr(
         browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
