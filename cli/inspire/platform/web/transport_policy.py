@@ -107,3 +107,21 @@ def http_options(
         )
     headers["Referer"] = referer or base_url + "/jobs/distributedTraining"
     return HTTPOptions(method, headers, body, True, min(10, timeout))
+
+
+def classify_application_response(response: Any) -> None:
+    """Share authentication and retry classification without decoding HTML/204."""
+    from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
+    from inspire.platform.web.session.retry import retry_after_seconds
+
+    if response.status_code == 401 or 300 <= response.status_code < 400:
+        raise SessionExpiredError("Authentication expired.")
+    if response.status_code == 429 or response.status_code >= 500:
+        raise TransientAPIError(
+            "Temporary application failure.", status=response.status_code,
+            retry_after=retry_after_seconds(response.headers),
+        )
+    if response.status_code == 403:
+        raise AuthenticationError("Application access denied.")
+    if response.status_code >= 400:
+        raise ValidationError(f"HTTP {response.status_code}: {response.text[:500]}")

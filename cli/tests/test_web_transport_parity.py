@@ -376,7 +376,7 @@ def test_httpx_preserves_prepared_request_and_proxy_settings(
 
 
 @pytest.mark.parametrize("cli_compat", [False, True])
-def test_async_worker_refresh_preserves_owner_and_browser_affinity(monkeypatch, cli_compat):
+def test_async_native_refresh_preserves_owner_and_browser_affinity(monkeypatch, cli_compat):
     import threading
     from inspire.platform.web.transport_async import AsyncDriver
     from inspire.platform.web.transport_core import Observe, Refresh, Send
@@ -394,7 +394,7 @@ def test_async_worker_refresh_preserves_owner_and_browser_affinity(monkeypatch, 
     monkeypatch.setattr(ws, "get_web_session", lambda **kwargs: session)
 
     def refresh(worker):
-        assert threading.get_ident() != thread
+        assert threading.get_ident() == thread
         worker.check()
         refreshed = ws.WebSession(
             storage_state={"cookies": [{"name": "session", "value": "new"}]},

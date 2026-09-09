@@ -221,7 +221,7 @@ def test_a_dead_cas_cookie_forces_one_platform_refresh(monkeypatch) -> None:  # 
     monkeypatch.setattr(
         get_transport(),
         "_refresh",
-        lambda: refreshes.append(True),
+        lambda *, require_cas_ticket: refreshes.append(require_cas_ticket),
     )
 
     assert plaza_core.plaza_request("GET", "/api/datasets/getDatasetsList") == {"ok": True}
@@ -376,7 +376,7 @@ def test_expired_sdk_session_uses_browser_free_refresh(sdk_client, monkeypatch, 
     else:
         assert sdk_client.datasets.tags() == ()
         assert script.sign_ins == 3
-    assert steps == ["renew", "http-login"]
+    assert steps == ["http-login"]
 
 
 def test_second_plaza_401_escalates_once(monkeypatch):

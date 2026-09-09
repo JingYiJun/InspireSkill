@@ -1,6 +1,10 @@
 """Web session management for web UI APIs."""
 
+
 from __future__ import annotations
+
+import sys
+from inspire.platform.web.flow import Program, workflow, call, enter_context, exit_context
 
 import atexit
 import logging
@@ -117,23 +121,25 @@ def close_browser_client() -> None:
     _close_browser_client()
 
 
-def renew_web_session_without_credentials(session: WebSession) -> WebSession | None:
-    return _renew_web_session_without_credentials(session)
+@workflow
+def renew_web_session_without_credentials(session: WebSession) -> Program[WebSession | None]:
+    return (yield call(_renew_web_session_without_credentials, session))
 
 
+@workflow
 def acquire_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     """Acquire without the outer refresh lock or front-end adoption callback.
 
     A transport rebuilding its existing session already owns the refresh lock
     and must update that object in place before exposing it to the caller.
     """
-    return _get_web_session(
+    return (yield call(_get_web_session,
         force_refresh=force_refresh, require_workspace=require_workspace, account=account
-    )
+    ))
 
 
 def get_credentials() -> tuple[str, str]:
@@ -154,20 +160,25 @@ def login_with_playwright(
     )
 
 
+@workflow
 def get_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     # The lock covers *force_refresh* too. That is the call that logs in, so
     # skipping it was letting every concurrent process past the one gate meant
     # to make them share a single refresh.
-    with exclusive_session_refresh(account):
-        session = _get_web_session(
+    context = exclusive_session_refresh(account)
+    yield call(enter_context, context)
+    try:
+        session = yield call(_get_web_session,
             force_refresh=force_refresh,
             require_workspace=require_workspace,
             account=account,
         )
+    finally:
+        yield call(exit_context, context, *sys.exc_info())
     from inspire.platform.web.runtime import session_transport
 
     adopt = session_transport.get()

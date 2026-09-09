@@ -1196,6 +1196,7 @@ def test_read_credential_login_uses_guard(client, monkeypatch, renewal):
 def test_refresh_failure_browser_gate(client, monkeypatch, renewal, allow_browser, sso_raises):
     auth, _, new = renewal
     browser_calls = []
+    credential_calls = []
     client._transport.allow_browser = allow_browser
 
     def renew(_):
@@ -1204,13 +1205,18 @@ def test_refresh_failure_browser_gate(client, monkeypatch, renewal, allow_browse
         return None
 
     def fail(*args, **kwargs):
+        credential_calls.append(True)
         raise RuntimeError("CAS unavailable")
 
     monkeypatch.setattr(auth, "renew_web_session_without_credentials", renew)
     monkeypatch.setattr(auth, "login_without_browser", fail)
     monkeypatch.setattr(auth, "get_web_session", lambda **kw: browser_calls.append(kw) or new)
     calls = fake_platform(client, monkeypatch, [401, 200])
-    if allow_browser:
+    if sso_raises:
+        with pytest.raises(AuthenticationError, match="SSO unavailable"):
+            client._transport.request("POST", "/read")
+        assert credential_calls == [] and browser_calls == [] and len(calls) == 1
+    elif allow_browser:
         client._transport.request("POST", "/read")
         assert browser_calls == [{"force_refresh": True, "account": "alpha"}]
         assert len(calls) == 2

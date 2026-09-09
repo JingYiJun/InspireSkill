@@ -110,7 +110,10 @@ class _FakeHttp:
     """Stands in for a `requests.Session` primed with the notebook cookies."""
 
     def __init__(self, *, post_status: int = 200, term_name: str = "1") -> None:
-        self.cookies = {"_xsrf": "xsrf-token"}
+        from requests.cookies import RequestsCookieJar
+
+        self.cookies = RequestsCookieJar()
+        self.cookies.set("_xsrf", "xsrf-token", domain="nb.example.com", path="/")
         self._post_status = post_status
         self._term_name = term_name
         self.calls: list[tuple[str, str, dict]] = []
@@ -139,7 +142,17 @@ class _FakeHttp:
 
 
 def _patch_terminal_http(monkeypatch, http, *, jupyter_url):  # noqa: ANN001, ANN202
-    monkeypatch.setattr(jt, "build_requests_session", lambda *_a, **_k: http)
+    from inspire.platform.web.transport import Transport
+    from inspire.platform.web.session import WebSession
+    from inspire.platform.web.session import requests as preparation
+
+    transport = Transport(None, "https://console.test", username="")
+    transport.adopt_session(WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "test"}]},
+        base_url="https://console.test", created_at=1,
+    ))
+    monkeypatch.setattr(preparation, "build_requests_session", lambda *_a, **_k: http)
+    monkeypatch.setattr(jt, "get_transport", lambda *_a: transport)
     monkeypatch.setattr(jt, "_notebook_jupyter_url", lambda *_a, **_k: jupyter_url)
     monkeypatch.setattr(
         jt.rtunnel_module,
@@ -194,8 +207,11 @@ def test_jupyter_terminal_yields_none_when_creation_is_refused(monkeypatch) -> N
     http = _FakeHttp(post_status=403)
     _patch_terminal_http(monkeypatch, http, jupyter_url="https://nb.example.com/jupyter/nb-1/tok/lab")
 
-    with jt._jupyter_terminal(object(), "nb-1") as term:
-        assert term is None
+    from inspire.platform.errors import AuthenticationError
+
+    with pytest.raises(AuthenticationError, match="Application access denied"):
+        with jt._jupyter_terminal(object(), "nb-1"):
+            pytest.fail("Forbidden creation must be classified before opening a websocket")
     # Nothing was created, so nothing is deleted.
     assert "DELETE" not in [verb for verb, _u, _h in http.calls]
 

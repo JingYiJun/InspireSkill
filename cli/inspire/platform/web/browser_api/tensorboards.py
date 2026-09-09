@@ -25,7 +25,7 @@ from inspire.platform.web.browser_api.core import (
     _v2_result,
 )
 from inspire.platform.web.session import WebSession, get_web_session
-from inspire.platform.web.session.requests import build_requests_session
+from inspire.platform.web.runtime import get_transport
 
 __all__ = [
     "MAX_AUTO_STOP_MS",
@@ -305,14 +305,10 @@ def _tensorboard_get(
     if session is None:
         session = get_web_session()
     base = tensorboard_app_url(url)
-    http = build_requests_session(session, base)
-    response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
-    if response.status_code >= 400:
-        raise ValueError(
-            f"TensorBoard returned {response.status_code} for {path}: "
-            f"{response.text[:200]}"
-        )
-    return response.json()
+    with get_transport(session).application_connection(base) as http:
+        response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
+        return response.json()
+
 
 
 def read_tensorboard_runs(url: str, session: Optional[WebSession] = None) -> list[str]:

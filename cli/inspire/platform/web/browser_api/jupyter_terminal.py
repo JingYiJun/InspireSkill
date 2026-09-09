@@ -30,7 +30,8 @@ from inspire.platform.web.browser_api.core import (
 from inspire.platform.web.pty_socket import JobShellAuthError
 from inspire.platform.web.session.models import SessionExpiredError
 from inspire.platform.web.session import WebSession
-from inspire.platform.web.session import build_requests_session, get_web_session
+from inspire.platform.web.session import get_web_session
+from inspire.platform.web.runtime import get_transport
 
 JUPYTER_DONE_PREFIX = "__INSPIRE_JUPYTER_DONE_"
 MISSING_MARKER_RETURN_CODE = 124
@@ -248,7 +249,8 @@ def _jupyter_terminal(
         yield None
         return
 
-    http = build_requests_session(session, lab_url)
+    connection = get_transport(session).application_connection(lab_url)
+    http = connection.__enter__()
     term_name = ""
     base = rtunnel_module.jupyter_server_base(lab_url)
     try:
@@ -286,7 +288,7 @@ def _jupyter_terminal(
                     timeout=(5, timeout_s),
                 )
         with contextlib.suppress(Exception):
-            http.close()
+            connection.__exit__(None, None, None)
 
 
 def _capture_terminal_output(

@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import sys
+import time
+from inspire.platform.web.flow import enter_context, exit_context
+
+from inspire.platform.web.flow import Program as FlowProgram, workflow, call, http_call
+
 from dataclasses import dataclass
 from typing import Any, Generator, NoReturn
 
 from inspire.platform.errors import (
     AuthenticationError,
+    AuthenticationCooldownError,
     TransportError,
     ValidationError,
     SubmissionUncertainError,
@@ -76,7 +83,7 @@ class SharedState:
         self.force_browser = False
 
     def success(self, observed: float, now: float, cli_compat: bool) -> None:
-        if cli_compat and self.unproven_rebuild is not None and observed >= self.unproven_rebuild:
+        if self.unproven_rebuild is not None and observed >= self.unproven_rebuild:
             self.unproven_rebuild = None
         self.last_success = now
 
@@ -121,6 +128,14 @@ class Send:
     timeout: float
     browser: bool
     referer: str | None
+
+
+@dataclass(frozen=True)
+class ApplicationRequest:
+    """An absolute-host request using a borrowed application cookie jar."""
+
+    connection: Any
+    options: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -272,3 +287,215 @@ class RequestCore:
                 )
                 attempt += 1
         raise AssertionError("unreachable")
+
+
+
+
+@workflow
+def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
+    with self.scope(timeout=None):
+        from inspire.platform.web.session.models import WebSession
+        from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
+        from inspire.platform.web.session import auth
+
+        previous = self._session.created_at if self._session else None
+        if previous is not None:
+            self._decisions.refresh_guard(previous, True)
+        try:
+            _context = exclusive_session_refresh(self.account, timeout=self.remaining())
+            yield call(enter_context, _context)
+            try:
+                try:
+                    cached = WebSession.load(allow_expired=True, account=self.account)
+                    if not require_cas_ticket and cached and (previous is None or cached.created_at > previous):
+                        self._adopt_session(cached)
+                        return
+                except Exception as error:
+                    self.check_deadline()
+                    if getattr(error, "retry_at", None) is not None:
+                        raise
+                if self._session is not None and not require_cas_ticket:
+                    renewed = (yield call(auth.renew_web_session_without_credentials, self._session))
+                    if renewed is not None:
+                        self._validate_session(renewed)
+                        auth._persist(renewed, account=self.account)
+                        self._adopt_session(renewed)
+                        return
+                try:
+                    username, password = auth.get_credentials(self.account)
+                    self._adopt_session(
+                        (yield call(auth.login_without_browser,
+                            username, password, base_url=self.base_url, account=self.account
+                        ))
+                    )
+                    self._decisions.rebuilt(self.session.created_at)
+                except Exception as error:
+                    self.check_deadline()
+                    if (
+                        not self.allow_browser
+                        or getattr(error, "retry_at", None) is not None
+                        or isinstance(error, auth.AuthenticationError)
+                        or isinstance(error.__cause__, auth._CasVerificationRequired)
+                    ):
+                        raise
+                    self._adopt_session(
+                        (yield call(auth.get_web_session, force_refresh=True, account=self.account))
+                    )
+                    self._decisions.rebuilt(self.session.created_at)
+            finally:
+                yield call(exit_context, _context, *sys.exc_info())
+        except (AuthenticationError, WaitTimeoutError):
+            raise
+        except Exception as error:
+            self.check_deadline()
+            retry_at = getattr(error, "retry_at", None)
+            if isinstance(retry_at, (int, float)):
+                raise AuthenticationCooldownError(retry_at) from None
+            raise AuthenticationError(str(error)) from error
+        finally:
+            if self._browser is not None:
+                self._browser.close()
+                self._browser = None
+
+
+@workflow
+def refresh_cli(self: Any, observed_created_at: float, *, can_refresh: bool) -> FlowProgram[None]:
+    from inspire.platform.web import session as web_session
+
+    # Capture the sent generation, not the current fields of a shared object.
+    web_session.close_browser_client()
+    with self._generation_lock:
+        self._decisions.refresh_guard(observed_created_at, can_refresh)
+        web_session.logger.debug("Web session expired; rebuilding it once for this call.")
+        refreshed = (yield call(self._refresh_expired_session, observed_created_at))
+        web_session.refresh_session_in_place(self.session, refreshed)
+        self._decisions.rebuilt(self.session.created_at)
+
+
+@workflow
+def refresh_expired_session(self: Any, observed_created_at: float) -> FlowProgram[Any]:
+    with self.scope(timeout=None):
+        from inspire.platform.web import session as web_session
+
+        session = self.session
+        if session.created_at > observed_created_at:
+            return session
+        _context = web_session.exclusive_session_refresh(session.account)
+        yield call(enter_context, _context)
+        try:
+            if session.created_at > observed_created_at:
+                return session
+            cached = web_session.WebSession.load(allow_expired=True, account=session.account)
+            if (
+                cached is not None
+                and cached.storage_state.get("cookies")
+                and cached.created_at > observed_created_at
+            ):
+                return cached
+            renewed = (yield call(web_session.renew_web_session_without_credentials, session))
+            if renewed is not None:
+                web_session.logger.debug(
+                    "Web session renewed through cached SSO state without credentials."
+                )
+                return renewed
+            if not self.allow_browser:
+                from inspire.platform.web.session import auth
+
+                username, password = auth.get_credentials(session.account)
+                return (yield call(auth.login_without_browser, username, password,
+                                   base_url=self.base_url, account=session.account))
+            return (yield call(web_session.acquire_web_session, force_refresh=True, account=session.account))
+        finally:
+            yield call(exit_context, _context, *sys.exc_info())
+
+
+@workflow
+def plaza_request(
+    self: Any, method: str, path: str, *, params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None, timeout: float = 30
+) -> FlowProgram[Any]:
+    """Dispatch plaza calls with caller-owned authentication and retry budgets."""
+    import requests
+    from inspire.platform.web.plaza.core import (
+        PLAZA_BASE_URL, PlazaError, PlazaNotSignedIn, CasTicketExpired, unwrap,
+    )
+    from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
+    from inspire.platform.web.session.retry import backoff_delay
+
+    self.check()
+    state = self._write
+    claim_write(state)
+    auth_attempt, transient_attempt = 0, 0
+    while True:
+        self.check_deadline()
+        session = self.session
+        try:
+            client = yield call(self._acquire_plaza_client, session, timeout)
+            try:
+                self._decisions.dispatched()
+                response = yield http_call(
+                    client.http.request, method.upper(), PLAZA_BASE_URL + path,
+                    params=params, json=body, timeout=min(timeout, self.remaining()),
+                    allow_redirects=False,
+                )
+                self.check_deadline()
+                result = unwrap(response)
+                return (yield call(self._finish, Return(result, session.created_at)))
+            finally:
+                self._release_plaza_slot()
+        except Exception as error:
+            if state is not None and state["sent"]:
+                classified = _classify_after_dispatch(error)
+                if classified is error:
+                    raise
+                if classified is not None:
+                    raise classified from error
+                self._uncertain(state, error)
+            self.check_deadline()
+            if isinstance(error, (SessionExpiredError, PlazaNotSignedIn)):
+                yield call(self.reset_plaza_client)
+                if auth_attempt == 2:
+                    raise SessionExpiredError(
+                        "The platform single-sign-on ticket could not be renewed; CAS still "
+                        "cannot authenticate the data plaza." if isinstance(error, CasTicketExpired)
+                        else "The data plaza rejected the refreshed platform session."
+                    ) from error
+                auth_attempt += 1
+                if auth_attempt == 2:
+                    try:
+                        if isinstance(error, CasTicketExpired):
+                            yield call(self._refresh, require_cas_ticket=True)
+                        else:
+                            yield call(self._refresh)
+                    except AuthenticationError as refresh_error:
+                        if self.cli_compat:
+                            raise SessionExpiredError(str(refresh_error)) from refresh_error
+                        raise
+                continue
+            if isinstance(error, TransientAPIError):
+                if transient_attempt == 2 or state is not None:
+                    raise
+                yield call(time.sleep, min(backoff_delay(transient_attempt, error), self.remaining()))
+                transient_attempt += 1
+                continue
+            if isinstance(error, requests.RequestException):
+                raise PlazaError("The data plaza did not answer.") from error
+            raise
+
+
+
+@workflow
+def acquire_session(self: Any) -> FlowProgram[None]:
+    from inspire.platform.web import session as web_session
+
+    with self.scope(timeout=None):
+        if self.cli_compat:
+            self._session = yield call(web_session.get_web_session, account=self.account)
+            return
+        cached = yield call(web_session.WebSession.load, allow_expired=True, account=self.account)
+        try:
+            self._session = self._validate_session(cached)
+        except AuthenticationError:
+            if not self.allow_browser:
+                raise
+            yield call(self._refresh)

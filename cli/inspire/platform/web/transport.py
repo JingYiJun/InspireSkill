@@ -1,6 +1,8 @@
 """Shared web dispatcher. SDK writes are sent once, with no implicit replay."""
 
 from __future__ import annotations
+
+from inspire.platform.web.flow import Program as FlowProgram, workflow, call, http_call
 import os
 import threading
 import time
@@ -9,14 +11,14 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, NoReturn
 
 from inspire.platform.errors import (
     AuthenticationError,
-    AuthenticationCooldownError,
+    AuthenticationCooldownError,  # noqa: F401 - SDK compatibility export
+    WaitTimeoutError,  # noqa: F401 - SDK compatibility export
     ClientClosedError,
     ClientThreadError,
     TransportError,
     ValidationError,
     SubmissionUncertainError,
     MutationUncertainError,
-    WaitTimeoutError,
 )
 
 
@@ -28,8 +30,8 @@ from inspire.platform.web.transport_policy import (  # noqa: F401 - compatibilit
     _NonJSONResponse, _SDK_POLICY, _CLI_POLICY, http_options,
 )
 from inspire.platform.web.transport_core import (
-    RequestCore, SharedState, Observe, Observation, Send, Refresh, Sleep, Return, Raise, Action,
-    _SingleSendViolation, _classify_after_dispatch, claim_write, remaining, uncertain,
+    ApplicationRequest, RequestCore, SharedState, Observe, Observation, Send, Refresh, Sleep, Return, Raise, Action,
+    _SingleSendViolation, _classify_after_dispatch, remaining, uncertain,
 )
 
 class Transport:
@@ -154,6 +156,8 @@ class Transport:
             _SingleSendViolation,
             ValidationError,
             AuthenticationError,
+    AuthenticationCooldownError,  # noqa: F401 - SDK compatibility export
+    WaitTimeoutError,  # noqa: F401 - SDK compatibility export
             TransportError,
         ):
             raise
@@ -184,21 +188,14 @@ class Transport:
     def session(self):
         self.check()
         if self._session is None:
-            if self.cli_compat:
-                from inspire.platform.web.session import get_web_session
-
-                self._session = get_web_session(account=self.account)
-                return self._session
-            from inspire.platform.web.session.models import WebSession
-
-            cached = WebSession.load(allow_expired=True, account=self.account)
-            try:
-                self._session = self._validate_session(cached)
-            except AuthenticationError:
-                if not self.allow_browser:
-                    raise
-                self._refresh()
+            self._acquire_session()
         return self._session
+
+    @workflow
+    def _acquire_session(self) -> FlowProgram[None]:
+        from inspire.platform.web.transport_core import acquire_session
+
+        yield call(acquire_session, self)
 
     def adopt_session(self, session: WebSession) -> None:
         """Use an already acquired session without consulting disk or logging in."""
@@ -215,101 +212,23 @@ class Transport:
         if self._http is not None:
             _configure(self._http, self._session, self.base_url)
 
-    def _refresh_expired_session(self, observed_created_at: float) -> WebSession:
-        from inspire.platform.web import session as web_session
+    @workflow
+    def _refresh_expired_session(self, observed_created_at: float) -> FlowProgram[Any]:
+        from inspire.platform.web.transport_core import refresh_expired_session
 
-        session = self.session
-        if session.created_at > observed_created_at:
-            return session
-        with web_session.exclusive_session_refresh(session.account):
-            if session.created_at > observed_created_at:
-                return session
-            cached = web_session.WebSession.load(allow_expired=True, account=session.account)
-            if (
-                cached is not None
-                and cached.storage_state.get("cookies")
-                and cached.created_at > observed_created_at
-            ):
-                return cached
-            renewed = web_session.renew_web_session_without_credentials(session)
-            if renewed is not None:
-                web_session.logger.debug(
-                    "Web session renewed through cached SSO state without credentials."
-                )
-                return renewed
-            return web_session.acquire_web_session(force_refresh=True, account=session.account)
+        return (yield call(refresh_expired_session, self, observed_created_at))
 
-    def _refresh_cli(self, observed_created_at: float, *, can_refresh: bool) -> None:
-        from inspire.platform.web import session as web_session
+    @workflow
+    def _refresh_cli(self, observed_created_at: float, *, can_refresh: bool) -> FlowProgram[None]:
+        from inspire.platform.web.transport_core import refresh_cli
 
-        # Capture the sent generation, not the current fields of a shared object.
-        web_session.close_browser_client()
-        with self._generation_lock:
-            self._decisions.refresh_guard(observed_created_at, can_refresh)
-            web_session.logger.debug("Web session expired; rebuilding it once for this call.")
-            refreshed = self._refresh_expired_session(observed_created_at)
-            web_session.refresh_session_in_place(self.session, refreshed)
-            self._decisions.rebuilt(self.session.created_at)
+        return (yield call(refresh_cli, self, observed_created_at, can_refresh=can_refresh))
 
-    def _refresh(self):
-        from inspire.platform.web.session.models import WebSession
-        from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
-        from inspire.platform.web.session import auth
+    @workflow
+    def _refresh(self, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
+        from inspire.platform.web.transport_core import refresh
 
-        previous = self._session.created_at if self._session else None
-        try:
-            with exclusive_session_refresh(self.account, timeout=self.remaining()):
-                try:
-                    cached = WebSession.load(allow_expired=True, account=self.account)
-                    if cached and (previous is None or cached.created_at > previous):
-                        self._adopt_session(cached)
-                        return
-                except Exception as error:
-                    self.check_deadline()
-                    if getattr(error, "retry_at", None) is not None:
-                        raise
-                try:
-                    if self._session is not None:
-                        renewed = auth.renew_web_session_without_credentials(self._session)
-                        if renewed is not None:
-                            self._validate_session(renewed)
-                            auth._persist(renewed, account=self.account)
-                            self._adopt_session(renewed)
-                            return
-                except Exception as error:
-                    self.check_deadline()
-                    if getattr(error, "retry_at", None) is not None:
-                        raise
-                try:
-                    username, password = auth.get_credentials(self.account)
-                    self._adopt_session(
-                        auth.login_without_browser(
-                            username, password, base_url=self.base_url, account=self.account
-                        )
-                    )
-                except Exception as error:
-                    self.check_deadline()
-                    if (
-                        not self.allow_browser
-                        or getattr(error, "retry_at", None) is not None
-                        or isinstance(error.__cause__, auth._CasVerificationRequired)
-                    ):
-                        raise
-                    self._adopt_session(
-                        auth.get_web_session(force_refresh=True, account=self.account)
-                    )
-        except (AuthenticationError, WaitTimeoutError):
-            raise
-        except Exception as error:
-            self.check_deadline()
-            retry_at = getattr(error, "retry_at", None)
-            if isinstance(retry_at, (int, float)):
-                raise AuthenticationCooldownError(retry_at) from None
-            raise AuthenticationError(str(error)) from error
-        finally:
-            if self._browser is not None:
-                self._browser.close()
-                self._browser = None
+        return (yield call(refresh, self, require_cas_ticket=require_cas_ticket))
 
     def _once(
         self, method, path, body, timeout, browser=False, referer=None, *, policy=None,
@@ -317,8 +236,10 @@ class Transport:
     ):
         from inspire.platform.web import session as web_session
 
+        if isinstance(body, ApplicationRequest):
+            return self._application_send(method, path, body, timeout)
         policy = policy or (_CLI_POLICY if self.cli_compat else _SDK_POLICY)
-        url = self.base_url + path
+        url = path if path.startswith(("https://", "http://")) else self.base_url + path
         headers = {"Referer": referer} if referer else {}
         if not browser:
             args: tuple[Any, ...]
@@ -328,9 +249,9 @@ class Transport:
                 from inspire.platform.web.session.requests import build_requests_session, _configure
 
                 if self._http is None:
-                    self._http = build_requests_session(self.session, self.base_url)
+                    self._http = build_requests_session(self.session, url)
                 else:
-                    _configure(self._http, self.session, self.base_url)
+                    _configure(self._http, self.session, url)
                 http = self._http
             options = http_options(method, body, referer, self.base_url, timeout, self.cli_compat)
             kwargs: dict[str, Any] = {
@@ -375,6 +296,37 @@ class Transport:
             return _run_in_thread(send) if disposable and not _disposable else send()
         except Exception as error:
             policy.browser_error(error)
+
+    @contextmanager
+    def application_connection(self, url: str) -> Iterator[Any]:
+        """Borrow a private application jar; every send still uses this dispatcher."""
+        from inspire.platform.web.application import ApplicationConnection
+        from inspire.platform.web.session.requests import build_requests_session
+
+        self.check()
+        http = build_requests_session(self.session, url)
+        connection = ApplicationConnection(self, http, self.session.created_at)
+        try:
+            yield connection
+        finally:
+            http.close()
+
+    @workflow
+    def _application_send(
+        self, method: str, url: str, body: ApplicationRequest, timeout: float,
+    ) -> FlowProgram[Any]:
+        from inspire.platform.web.transport_policy import classify_application_response
+
+        connection = body.connection
+        if connection.generation != self.session.created_at:
+            connection.reconfigure(self.session, url)
+        options = dict(body.options)
+        options["timeout"] = (min(5, timeout), timeout)
+        self._decisions.dispatched()
+        response = yield http_call(getattr(connection.http, method.lower()), url, **options)
+        self.check_deadline()
+        classify_application_response(response)
+        return response
 
     def _dispatch(self, send: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         self._decisions.dispatched()
@@ -443,8 +395,6 @@ class Transport:
         from inspire.platform.web.transport_async import AsyncDriver
 
         self.check()
-        if not (path == "/api/v2" or path.startswith(("/api/v2/", "/api/v2?"))):
-            raise ValueError("Async transport supports only /api/v2 JSON requests.")
         program = self._core().run(method, path, body, timeout, referer)
         async with AsyncDriver(self) as driver:
             try:
@@ -472,93 +422,65 @@ class Transport:
             if stale is not None:
                 stale.close()
 
-    @contextmanager
-    def _plaza_client(self, session: WebSession, timeout: float) -> Iterator[PlazaClient]:
-        from inspire.platform.web.plaza.core import sign_in
-
-        key = (session.account, session.created_at)
+    def _borrow_plaza_slot(self, key: tuple[str | None, float]) -> Any:
         with self._plaza_lock:
             self._plaza_lock.wait_for(lambda: not self._plaza_busy)
             if self._plaza_key != key:
                 if self._plaza is not None:
                     self._plaza.close()
                 self._plaza, self._plaza_key = None, None
-            client = self._plaza
-            # Reserve the cookie jar, but release the state lock during I/O.
-            # Reset waits for the borrower before closing or replacing it.
             self._plaza_busy = True
+            return self._plaza
+
+    def _release_plaza_slot(self) -> None:
+        with self._plaza_lock:
+            self._plaza_busy = False
+            self._plaza_lock.notify_all()
+
+    @workflow
+    def _acquire_plaza_client(self, session: WebSession, timeout: float) -> FlowProgram[Any]:
+        from inspire.platform.web.plaza.core import sign_in
+
+        key = (session.account, session.created_at)
+        client = yield call(self._borrow_plaza_slot, key)
         try:
             if client is None:
-                client = sign_in(session, self, timeout)
+                client = yield call(sign_in, session, self, timeout)
                 with self._plaza_lock:
                     self._plaza, self._plaza_key = client, key
+            return client
+        except BaseException:
+            self._release_plaza_slot()
+            raise
+
+    @contextmanager
+    def _plaza_client(self, session: WebSession, timeout: float) -> Iterator[PlazaClient]:
+        client = self._acquire_plaza_client(session, timeout)
+        try:
             yield client
         finally:
-            with self._plaza_lock:
-                self._plaza_busy = False
-                self._plaza_lock.notify_all()
+            self._release_plaza_slot()
 
+    @workflow
     def plaza_request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
-        body: dict[str, Any] | None = None, timeout: float = 30
-    ) -> Any:
-        """Dispatch plaza calls with caller-owned authentication and retry budgets."""
-        import requests
-        from inspire.platform.web.plaza.core import (
-            PLAZA_BASE_URL, PlazaError, PlazaNotSignedIn, unwrap,
-        )
-        from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
-        from inspire.platform.web.session.retry import backoff_delay
+        body: dict[str, Any] | None = None, timeout: float = 30,
+    ) -> FlowProgram[Any]:
+        from inspire.platform.web.transport_core import plaza_request
 
-        self.check()
-        state = self._write
-        claim_write(state)
-        auth_attempt, transient_attempt = 0, 0
-        while True:
-            self.check_deadline()
-            session = self.session
-            try:
-                with self._plaza_client(session, timeout) as client:
-                    response = self._dispatch(
-                        client.http.request, method.upper(), PLAZA_BASE_URL + path,
-                        params=params, json=body, timeout=min(timeout, self.remaining()),
-                        allow_redirects=False,
-                    )
-                    self.check_deadline()
-                    return unwrap(response)
-            except Exception as error:
-                if state is not None and state["sent"]:
-                    classified = _classify_after_dispatch(error)
-                    if classified is error:
-                        raise
-                    if classified is not None:
-                        raise classified from error
-                    self._uncertain(state, error)
-                self.check_deadline()
-                if isinstance(error, (SessionExpiredError, PlazaNotSignedIn)):
-                    self.reset_plaza_client()
-                    if auth_attempt == 2:
-                        raise SessionExpiredError(
-                            "The data plaza rejected the refreshed platform session."
-                        ) from error
-                    auth_attempt += 1
-                    if auth_attempt == 2:
-                        try:
-                            self._refresh()
-                        except AuthenticationError as refresh_error:
-                            if self.cli_compat:
-                                raise SessionExpiredError(str(refresh_error)) from refresh_error
-                            raise
-                    continue
-                if isinstance(error, TransientAPIError):
-                    if transient_attempt == 2 or state is not None:
-                        raise
-                    time.sleep(min(backoff_delay(transient_attempt, error), self.remaining()))
-                    transient_attempt += 1
-                    continue
-                if isinstance(error, requests.RequestException):
-                    raise PlazaError("The data plaza did not answer.") from error
-                raise
+        return (yield call(plaza_request, self, method, path,
+                           params=params, body=body, timeout=timeout))
+
+    async def plaza_request_async(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None, timeout: float = 30,
+    ) -> Any:
+        from inspire.platform.web.transport_async import AsyncDriver
+
+        async with AsyncDriver(self) as driver:
+            return await driver.execute(call(
+                self.plaza_request, method, path, params=params, body=body, timeout=timeout,
+            ))
 
     def close(self) -> None:
         if self._closed:

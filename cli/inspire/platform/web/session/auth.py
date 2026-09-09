@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import sys
+from inspire.platform.web.flow import enter_context, exit_context
+
+from inspire.platform.web.flow import Program, workflow, call, http_call
+
 from html.parser import HTMLParser
 import json
 import logging
@@ -637,7 +642,8 @@ def _extract_cas_rsa_key(text: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> tuple[str, str]:
+@workflow
+def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> Program[tuple[str, str]]:
     from urllib.parse import urlparse
 
     key = _extract_cas_rsa_key(html)
@@ -650,7 +656,7 @@ def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> tuple[str, str]
         if urlparse(script_url).netloc != page_host:
             continue
         try:
-            response = http.get(script_url, timeout=_request_timeout(15))
+            response = (yield http_call(http.get, script_url, timeout=_request_timeout(15)))
             response.raise_for_status()
         except Exception:
             continue
@@ -755,7 +761,8 @@ def _seed_sso_renewal_cookies(http: Any, session: WebSession) -> None:
         http.cookies.set(name, value, **kwargs)
 
 
-def renew_web_session_without_credentials(session: WebSession) -> WebSession | None:
+@workflow
+def renew_web_session_without_credentials(session: WebSession) -> Program[WebSession | None]:
     """Try to renew a refused Qizhi session through existing SSO cookies.
 
     ``None`` means there is no safely reusable SSO state: the auth cookies are
@@ -808,11 +815,11 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
     _seed_sso_renewal_cookies(http, session)
 
     try:
-        login_resp = http.get(f"{base_url}/login", timeout=_request_timeout(30), allow_redirects=True)
+        login_resp = (yield http_call(http.get, f"{base_url}/login", timeout=_request_timeout(30), allow_redirects=True))
         login_resp.raise_for_status()
         cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
         if cas_login_url:
-            login_resp = http.get(cas_login_url, timeout=_request_timeout(30), allow_redirects=True)
+            login_resp = (yield http_call(http.get, cas_login_url, timeout=_request_timeout(30), allow_redirects=True))
             login_resp.raise_for_status()
 
         # Reaching the password form is the decisive "SSO is gone" answer.
@@ -827,13 +834,13 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
             return None
 
         api_headers = {"Accept": "application/json", "Referer": f"{base_url}/login"}
-        user_detail_resp = http.post(
+        user_detail_resp = (yield http_call(http.post,
             f"{base_url}{USER_DETAIL_PATH}",
             headers=api_headers,
             json={},
             timeout=_request_timeout(15),
             allow_redirects=False,
-        )
+        ))
         if user_detail_resp.status_code == 401 or 300 <= user_detail_resp.status_code < 400:
             logger.debug("Cached SSO state is no longer authenticated.")
             return None
@@ -870,13 +877,13 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
         all_workspace_names: dict[str, str] = {}
         all_workspace_fair_scheduling: dict[str, bool] = {}
         try:
-            routes_resp = http.post(
+            routes_resp = (yield http_call(http.post,
                 f"{base_url}{USER_ROUTES_PATH}",
                 headers=api_headers,
                 json=BOOTSTRAP_ROUTES_BODY,
                 timeout=_request_timeout(15),
                 allow_redirects=False,
-            )
+            ))
             if routes_resp.status_code == 200:
                 route_ids, route_names, route_fair_scheduling = (
                     _workspace_routes_from_payload(routes_resp.json())
@@ -892,6 +899,8 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
         except Exception:
             pass
 
+        # Optional route discovery must not hide an exhausted operation budget.
+        _request_timeout(15)
         storage_cookies = [_cookie_to_storage_entry(cookie) for cookie in http.cookies]
         cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
         if not cookie_dict.get("inspire-session"):
@@ -932,13 +941,14 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
             pass
 
 
+@workflow
 def _login_with_cas_requests(
     username: str,
     password: str,
     *,
     base_url: str,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     import requests
     import urllib3
 
@@ -969,13 +979,13 @@ def _login_with_cas_requests(
         }
     )
 
-    login_resp = http.get(
+    login_resp = (yield http_call(http.get,
         f"{base_url.rstrip('/')}/login", timeout=_request_timeout(30), allow_redirects=True
-    )
+    ))
     login_resp.raise_for_status()
     cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
     if cas_login_url:
-        login_resp = http.get(cas_login_url, timeout=_request_timeout(30), allow_redirects=True)
+        login_resp = (yield http_call(http.get, cas_login_url, timeout=_request_timeout(30), allow_redirects=True))
         login_resp.raise_for_status()
 
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
@@ -1004,7 +1014,7 @@ def _login_with_cas_requests(
             f"Sign in once at {base_url.rstrip('/')}/login in a browser, then re-run. "
             "No credentials were submitted on this attempt."
         )
-    exponent_hex, modulus_hex = _resolve_cas_rsa_key(http, login_resp.text, login_resp.url)
+    exponent_hex, modulus_hex = (yield call(_resolve_cas_rsa_key, http, login_resp.text, login_resp.url))
     fields["username"] = username
     fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
     fields.setdefault("encrypted", "true")
@@ -1017,13 +1027,13 @@ def _login_with_cas_requests(
     # that never arrives. CAS may well have counted the submission, and the
     # browser path would answer by making a second one.
     try:
-        auth_resp = http.post(
+        auth_resp = (yield http_call(http.post,
             action,
             data=fields,
             headers={"Referer": login_resp.url},
             timeout=_request_timeout(30),
             allow_redirects=True,
-        )
+        ))
     except Exception as exc:
         raise _CasLoginFailure(_login_not_complete_message(proxy_source=proxy_source)) from exc
     if auth_resp.status_code >= 400:
@@ -1039,12 +1049,12 @@ def _login_with_cas_requests(
     api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
     user_detail: dict | None = None
     try:
-        user_detail_resp = http.post(
+        user_detail_resp = (yield http_call(http.post,
             f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
             headers=api_headers,
             json={},
             timeout=_request_timeout(15),
-        )
+        ))
     except Exception as exc:
         raise _CasLoginFailure(
             _login_not_complete_message(
@@ -1088,12 +1098,12 @@ def _login_with_cas_requests(
     all_workspace_names: dict[str, str] = {}
     all_workspace_fair_scheduling: dict[str, bool] = {}
     try:
-        routes_resp = http.post(
+        routes_resp = (yield http_call(http.post,
             f"{base_url.rstrip('/')}{USER_ROUTES_PATH}",
             headers=api_headers,
             json=BOOTSTRAP_ROUTES_BODY,
             timeout=_request_timeout(15),
-        )
+        ))
         if routes_resp.status_code == 200:
             route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
                 routes_resp.json()
@@ -1109,6 +1119,7 @@ def _login_with_cas_requests(
     except Exception:
         pass
 
+    _request_timeout(15)
     storage_state = {
         "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
         "origins": [],
@@ -1164,19 +1175,24 @@ def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
     return username, password
 
 
+@workflow
 def login_without_browser(
     username: str,
     password: str,
     *,
     base_url: str,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     """Submit credentials through CAS requests only, sharing its persistence and guard."""
     try:
-        with guarded_credential_submission(username, password, account=account):
-            return _login_with_cas_requests(
+        _context = guarded_credential_submission(username, password, account=account)
+        yield call(enter_context, _context)
+        try:
+            return (yield call(_login_with_cas_requests,
                 username, password, base_url=base_url, account=account
-            )
+            ))
+        finally:
+            yield call(exit_context, _context, *sys.exc_info())
     except _CasVerificationRequired as error:
         # No credentials were submitted: convert outside the guard so this
         # human challenge does not record a rejected password.
@@ -1211,16 +1227,31 @@ def login_with_playwright(
             account=account,
         )
 
-    with guarded_credential_submission(username, password, account=account):
-        return _submit_credentials(
-            username,
-            password,
-            base_url=base_url,
-            headless=headless,
-            account=account,
-        )
+    return _login_with_playwright_steps(
+        username, password, base_url=base_url, headless=headless, account=account,
+    )
 
 
+@workflow
+def _login_with_playwright_steps(
+    username: str, password: str, base_url: str = DEFAULT_BASE_URL,
+    headless: bool = True, account: Optional[str] = None,
+) -> Program[WebSession]:
+    _context = guarded_credential_submission(username, password, account=account)
+    yield call(enter_context, _context)
+    try:
+        return (yield call(
+            _submit_credentials, username, password, base_url=base_url,
+            headless=headless, account=account,
+        ))
+    finally:
+        yield call(exit_context, _context, *sys.exc_info())
+
+
+login_with_playwright.__workflow__ = _login_with_playwright_steps.__workflow__  # type: ignore[attr-defined]
+
+
+@workflow
 def _submit_credentials(
     username: str,
     password: str,
@@ -1228,17 +1259,15 @@ def _submit_credentials(
     base_url: str,
     headless: bool,
     account: Optional[str],
-) -> WebSession:
+) -> Program[WebSession]:
     """Authenticate once: CAS over requests, and only then a real browser."""
-    from playwright.sync_api import sync_playwright
-
     try:
-        return _login_with_cas_requests(
+        return (yield call(_login_with_cas_requests,
             username,
             password,
             base_url=base_url,
             account=account,
-        )
+        ))
     except AuthenticationError:
         # The password was submitted. Retrying it in a browser is a second
         # submission, not a fallback.
@@ -1249,6 +1278,17 @@ def _submit_credentials(
         raise
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
+
+    return (yield call(
+        _login_with_browser, username, password, base_url=base_url,
+        headless=headless, account=account,
+    ))
+
+
+def _login_with_browser(
+    username: str, password: str, *, base_url: str, headless: bool, account: Optional[str],
+) -> WebSession:
+    from playwright.sync_api import sync_playwright
 
     resolved_proxy, playwright_proxy_source = resolve_playwright_proxy_config(account=account)
     playwright_proxy = cast(Any, resolved_proxy)
@@ -1502,11 +1542,12 @@ def _submit_credentials(
         return session
 
 
+@workflow
 def get_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     """Get a valid web session, logging in if necessary.
 
     Args:
@@ -1563,4 +1604,9 @@ def get_web_session(
 
     # Session is missing or has no cookies, perform fresh login
     base_url = _load_runtime_config(account).base_url
-    return login_with_playwright(username, password, base_url=base_url, account=account)
+    from inspire.platform.web.runtime import active_transport
+
+    owner = active_transport.get()
+    if owner is not None and not owner.allow_browser:
+        return (yield call(login_without_browser, username, password, base_url=base_url, account=account))
+    return (yield call(login_with_playwright, username, password, base_url=base_url, account=account))

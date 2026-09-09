@@ -34,6 +34,8 @@ second failure escalates to the transport's platform-session refresh ladder.
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import Program, workflow, http_call
+
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
@@ -79,6 +81,10 @@ class PlazaError(ValueError):
     boundaries keep mapping a refused request to the same user-facing API
     error, exactly as the qz browser APIs do.
     """
+
+
+class CasTicketExpired(SessionExpiredError):
+    """CAS refused to mint a service ticket; a fresh CASTGC is required."""
 
 
 class PlazaNotSignedIn(PlazaError):
@@ -137,30 +143,31 @@ def _cas_ticket(location: str) -> str:
     return ""
 
 
-def sign_in(session: WebSession, transport: Transport, timeout: float = 30) -> PlazaClient:
+@workflow
+def sign_in(session: WebSession, transport: Transport, timeout: float = 30) -> Program[PlazaClient]:
     """Trade the web session's CAS cookie for a plaza ``datasets-session``."""
     http = build_requests_session(session, PLAZA_BASE_URL)
     service = _service_url()
     try:
-        ticket_response = http.get(
+        ticket_response = (yield http_call(http.get,
             f"{CAS_BASE_URL}/cas/login?service={quote(service, safe='')}",
             allow_redirects=False,
             timeout=min(timeout, transport.remaining()),
-        )
+        ))
         transport.check_deadline()
         _raise_transient(ticket_response)
         ticket = _cas_ticket(ticket_response.headers.get("Location", ""))
         if not ticket:
             # No ticket means CAS did not recognize the cookie: the platform
             # session behind it is what expired, not the plaza's.
-            raise SessionExpiredError("CAS issued no data plaza ticket for this session.")
+            raise CasTicketExpired("The platform single-sign-on ticket expired; CAS issued no data plaza ticket for this session.")
 
-        login_response = http.post(
+        login_response = (yield http_call(http.post,
             f"{PLAZA_BASE_URL}/api/base/login",
             json={"ticket": ticket, "service": service},
             timeout=min(timeout, transport.remaining()),
             allow_redirects=False,
-        )
+        ))
         transport.check_deadline()
         _raise_transient(login_response)
         if login_response.status_code == 401 or login_response.status_code >= 400:
