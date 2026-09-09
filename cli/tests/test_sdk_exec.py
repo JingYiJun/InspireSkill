@@ -386,13 +386,10 @@ def test_ssh_preserves_streams_and_timeout(client, monkeypatch, streaming):
     def run(command, **kw):
         assert kw["config"] is config and kw["bridge_name"] == "cached"
         assert command == "echo hi" and kw["timeout"] == 5
-        if streaming:
-            kw["output_callback"]("out")
-            kw["stderr_callback"]("err")
-            return 7
-        return subprocess.CompletedProcess([], 7, "out", "err")
+        kw["output_callback"]("out")
+        kw["stderr_callback"]("err")
+        return 7
 
-    monkeypatch.setattr(core, "run_ssh_command", run)
     monkeypatch.setattr(core, "run_ssh_command_streaming", run)
     result = core.exec_in_notebook_ssh(
         bridge_name="cached",
@@ -405,11 +402,9 @@ def test_ssh_preserves_streams_and_timeout(client, monkeypatch, streaming):
     assert seen == (["out", "err"] if streaming else [])
 
     def timed_out(*a, **kw):
-        if streaming:
-            kw["output_callback"]("partial")
+        kw["output_callback"]("partial")
         raise subprocess.TimeoutExpired([], 5, output=b"partial", stderr=b"err")
 
-    monkeypatch.setattr(core, "run_ssh_command", timed_out)
     monkeypatch.setattr(core, "run_ssh_command_streaming", timed_out)
     result = core.exec_in_notebook_ssh(
         bridge_name="cached",
@@ -675,3 +670,182 @@ def test_sdk_does_not_retry_auth_error_after_output(client, sockets, monkeypatch
     with pytest.raises(AuthenticationError):
         client.jobs.exec(job_ref(client), command="echo hi", on_output=fail)
     assert len(sockets) == 1 and sockets[0].closed
+
+
+@pytest.mark.parametrize("transport", ["pty", "jupyter", "ssh"])
+@pytest.mark.parametrize("capture", [True, False])
+def test_large_stream_capture_and_file(client, sockets, monkeypatch, tmp_path, transport, capture):
+    import io
+    from contextlib import contextmanager
+    from test_notebook_jupyter_terminal import _FakeWebSocket
+    from inspire.sdk import iter_output_file
+    from inspire.exec_output import TerminalScanner
+
+    body = ["HEAD\n"] + ["世" * 1024 + "\n"] * 256 + ["TAIL\n"]
+    terminal = ["$ ", "echo 'eA==' | base64 -d | bash\r\n"] + body + ["test-marker:ex", "it:9\r\n"]
+    chunks = body if transport == "ssh" else terminal
+    seen = []
+    scanned = []
+    original_scan = TerminalScanner.scan_window
+
+    def scan(self, window):
+        scanned.append(len(window))
+        assert len(window) <= 2 * self.window_size
+        original_scan(self, window)
+
+    monkeypatch.setattr(TerminalScanner, "scan_window", scan)
+    if transport == "pty":
+        original = core.WebSocketClient
+
+        def make(*a, **kw):
+            ws = original(*a, **kw)
+            ws.frames = [(1, text.encode()) for text in terminal]
+            ws.send_text = lambda text: ws.sent.append(text)
+            return ws
+
+        monkeypatch.setattr(core, "WebSocketClient", make)
+
+        def run(**kw):
+            return core.exec_over_pty_websocket(
+                session=client._transport.session, url="wss://example.invalid", **kw
+            )
+    elif transport == "jupyter":
+
+        @contextmanager
+        def context(*a, **kw):
+            yield jt._JupyterTerminal("https://example.invalid", "1", "wss://example.invalid")
+
+        monkeypatch.setattr(jt, "_jupyter_terminal", context)
+        monkeypatch.setattr(jt, "new_completion_marker", lambda: "test-marker")
+        monkeypatch.setattr(
+            pty_socket, "WebSocketClient", lambda *a, **kw: _FakeWebSocket(terminal)
+        )
+        monkeypatch.setattr(jt.select, "select", lambda r, w, e, t: (r, [], []))
+
+        def run(**kw):
+            return core.exec_in_notebook_jupyter(
+                session=client._transport.session, notebook_id="fake", **kw
+            )
+    else:
+        monkeypatch.setattr(core, "load_tunnel_config", lambda **kw: object())
+
+        def ssh(*a, **kw):
+            for chunk in body:
+                kw["output_callback"](chunk)
+            return 9
+
+        monkeypatch.setattr(core, "run_ssh_command_streaming", ssh)
+
+        def run(**kw):
+            return core.exec_in_notebook_ssh(bridge_name="fake", account="fake", **kw)
+
+    path = tmp_path / "output.txt"
+    result = run(
+        command="fake",
+        timeout=60,
+        max_output_bytes=1024,
+        capture=capture,
+        output_to=path,
+        on_output=seen.append,
+    )
+    assert result.completed and result.returncode == 9
+    assert result.total_output_bytes == len("".join(chunks).encode())
+    assert result.truncated is capture
+    assert len(result.output.encode()) <= 1024
+    if capture:
+        assert "HEAD" in result.output and "TAIL" in result.output
+        assert "output truncated" in result.output
+        assert "base64" not in result.output
+    else:
+        assert result.output == result.stdout == result.stderr == ""
+    assert seen == chunks
+    pages = list(iter_output_file(path, chunk_size=317))
+    assert max(map(len, pages)) <= 317
+    assert "".join(pages) == "".join(chunks)
+    assert len(scanned) <= sum(len(c) // 75 + 1 for c in chunks)
+    # Caller-owned handles stay open.
+    handle = io.StringIO()
+    run(command="fake", timeout=60, capture=False, output_to=handle)
+    assert not handle.closed and handle.getvalue() == "".join(chunks)
+
+
+def test_scanner_work_is_linear_and_marker_inside_large_frame():
+    from inspire.exec_output import TerminalScanner
+
+    for frames in (100, 200):
+        scanner = TerminalScanner("marker")
+        scanned = []
+        original = scanner.scan_window
+
+        def scan(window):
+            scanned.append(len(window))
+            original(window)
+
+        scanner.scan_window = scan
+        for _ in range(frames):
+            scanner.feed("x" * 64)
+        assert len(scanned) == frames
+        assert sum(scanned) <= frames * 2 * scanner.window_size
+        scanner.feed("marker:exit:7\n" + "z" * 10000)
+        assert scanner.returncode == 7
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"max_output_bytes": -1}, {"max_output_bytes": True},
+    {"max_output_bytes": 1.5}, {"capture": "no"}, {"output_to": 7},
+])
+def test_capture_validation_before_resolution(client, monkeypatch, kwargs):
+    monkeypatch.setattr(client.jobs, "_resolve", lambda *a: pytest.fail("lookup"))
+    with pytest.raises(ValidationError):
+        client.jobs.exec(job_ref(client), command="pwd", **kwargs)
+
+
+def test_unlimited_capture_and_split_unicode():
+    from inspire.exec_output import OutputBuffer
+
+    buffer = OutputBuffer(None)
+    for _ in range(100):
+        buffer.feed("世\r\n")
+    assert buffer.text() == "世\r\n" * 100
+    assert buffer.total == 500 and not buffer.truncated
+    buffer = OutputBuffer(65)
+    buffer.feed("世" * 100)
+    assert len(buffer.text().encode()) <= 65 and buffer.truncated
+
+
+@pytest.mark.parametrize("capture", [True, False])
+def test_jupyter_sink_failure_is_not_swallowed(client, monkeypatch, capture):
+    from contextlib import contextmanager
+    from test_notebook_jupyter_terminal import _FakeWebSocket
+
+    @contextmanager
+    def terminal(*a, **kw):
+        yield jt._JupyterTerminal("https://example.invalid", "1", "wss://example.invalid")
+
+    class BrokenWriter:
+        def write(self, text):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(jt, "_jupyter_terminal", terminal)
+    monkeypatch.setattr(pty_socket, "WebSocketClient", lambda *a, **kw: _FakeWebSocket(["$ "]))
+    monkeypatch.setattr(jt.select, "select", lambda r, w, e, t: (r, [], []))
+    with pytest.raises(OSError, match="disk full"):
+        core.exec_in_notebook_jupyter(
+            session=client._transport.session, notebook_id="fake", command="fake",
+            timeout=1, capture=capture, output_to=BrokenWriter(),
+        )
+
+
+def test_no_capture_marker_without_final_newline():
+    output = jt.TerminalOutput("marker", 1024, False)
+    output.feed("text\nmarker:exit:17")
+    result = output.result()
+    assert result.completed and result.returncode == 17 and result.output == ""
+
+
+def test_minimum_capture_budget():
+    from inspire.exec_output import OutputBuffer, ELISION
+
+    buffer = OutputBuffer(len(ELISION.encode()))
+    buffer.feed("x" * 1000)
+    assert buffer.text() == ELISION

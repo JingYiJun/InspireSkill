@@ -1,6 +1,7 @@
 """Experimental synchronous SDK. CLI installation requirements are unchanged."""
 
 from inspire.services.remote_exec import ExecResult
+from inspire.exec_output import iter_output_file
 
 from .models_compute import (
     HPCJob,
@@ -161,6 +162,7 @@ __all__ = [
     "Accounts",
     "InitResult",
     "ExecResult",
+    "iter_output_file",
     "ServingInstanceView",
     "Serving",
     "ServingRef",

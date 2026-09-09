@@ -374,6 +374,47 @@ Job/HPC/Ray/Serving 使用原始 PTY websocket。Job 的 `instance` 接受实例
 
 `ExecResult` 字段为 `returncode`、`output`、`stdout`、`stderr`、`completed`、`transport` 和 `instance`。`transport` 为 `ssh`、`jupyter` 或 `pty`；工作负载 PTY 的 `instance` 是选中的实例名。SSH 保留独立 stdout/stderr，`output = stdout + stderr`，此拼接不表示跨流时间顺序。PTY 的 stdout/stderr 已由远端终端合并，`stdout == output`、`stderr == ""`。结果会去除已识别的输入回显前缀，通过唯一完成 marker 提取退出码；普通非零退出码直接返回结果。
 
+所有 exec 方法新增仅关键字参数：
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `max_output_bytes` | `4 * 1024 * 1024`（4 MiB） | UTF-8 内存捕获预算，包含省略标记；允许 `None` 显式取消限制，整数至少为 56 |
+| `output_to` | `None` | 本地路径（`str` / `os.PathLike`）或可写文本文件对象，逐块写入完整解码流 |
+| `capture` | `True` | `False` 时 `output`、`stdout`、`stderr` 均为空，仍检测完成标记并统计字节数 |
+
+超出捕获预算时保留头尾，中间插入 `\n[... output truncated ...]\n`，并设置 `ExecResult.truncated=True`。`total_output_bytes` 统计实际读到的解码字符串按 UTF-8 编码后的字节数，包括终端提示符、回显和完成标记，与是否捕获无关。新字段在结果末尾提供默认值；字节计数属于观测元数据，不参与结果相等性比较。`capture=False` 的主动关闭捕获不算截断，`truncated=False`。
+
+PTY 和 Jupyter 使用固定扫描窗口及额外有界的终端前缀空间（128 KiB），用于清理输入回显；返回文本仍遵守捕获预算。内存还包括当前传输帧和解码临时对象，预算不是整个进程 RSS 的硬上限。SSH 将预算平分给 stdout/stderr，任一流超过自己的份额就报告截断；返回 `output` 仍按 stdout + stderr 拼接。
+
+| 传输 | `max_output_bytes` / `capture` / `output_to` / `on_output` |
+|---|---|
+| Job、HPC、Ray、Serving PTY | 全部支持；文件和回调保留原始合并终端流 |
+| Notebook Jupyter | 全部支持；文件和回调保留原始合并终端流 |
+| Notebook SSH | 全部支持；分别捕获 stdout/stderr，文件和回调按实际读取顺序合并 |
+
+路径以 UTF-8、覆盖模式打开，保留换行；执行完成或失败时关闭 SDK 打开的文件。调用者传入的文本对象由调用者关闭和 flush。写入错误直接传播，不自动重放命令。`output_to` 保存的是完整原始流，不是清理回显后的 `output`；需原样保留时使用路径或保留换行的文本对象。
+
+```python
+from inspire.sdk import iter_output_file
+
+result = client.jobs.exec(
+    job_ref,
+    command="python produce_large_report.py",
+    output_to="report.txt",
+    max_output_bytes=1024 * 1024,
+)
+print(result.returncode, result.truncated, result.total_output_bytes)
+# 每次最多读取 65536 个字符；超长单行也不会整行装入内存。
+for page in iter_output_file("report.txt", chunk_size=65536):
+    consume_page(page)
+
+# 只保存完整文件，不保留返回文本：
+result = client.notebooks.exec(
+    notebook_ref, command="cat /tmp/large.log",
+    output_to="large.log", capture=False,
+)
+```
+
 `on_output` 在读取时按顺序接收解码后的字符串块。PTY 回调收到原始终端流，可能包含提示符、输入回显、ANSI 控制符及完成 marker；最终 `output` 才是解析后的输出。命令默认没有交互 stdin，需使用命令内的管道或远端文件重定向；人工交互仍用 CLI shell。
 
 执行等待超时或连接在完成 marker 出现前结束时，返回 `returncode=124`、`completed=False`，尽可能保留已捕获输出；它不证明远端进程已停止。命令自己返回 124 且 marker 完整时，`completed=True`。SDK 的总 operation 时间预算也会限制传输等待；名称解析和实例查询沿用现有 SDK 错误约定。websocket 握手 401 可在命令发送前续期一次并重试，不经过 `Transport.request` 或 `single_send`，已发送的命令不会因执行失败自动重放。

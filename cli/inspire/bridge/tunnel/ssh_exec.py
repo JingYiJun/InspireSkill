@@ -303,28 +303,42 @@ __all__ = [
 
 
 def _stream_separate_pipes(
-    process: subprocess.Popen, output_callback: Callable[[str], None],
-    stderr_callback: Callable[[str], None], timeout: float | None, command: list[str],
+    process: subprocess.Popen,
+    output_callback: Callable[[str], None],
+    stderr_callback: Callable[[str], None],
+    timeout: float | None,
+    command: list[str],
 ) -> int:
     """Drain both pipes without blocking the deadline on a partial line."""
     import codecs
     import queue
     import threading
 
-    pending: queue.Queue[tuple[int, bytes | None]] = queue.Queue()
+    pending: queue.Queue[tuple[int, bytes | None]] = queue.Queue(maxsize=16)
+    stopped = threading.Event()
+
+    def enqueue(item):
+        while not stopped.is_set():
+            try:
+                pending.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
     def drain(index, stream):
         try:
-            while True:
+            while not stopped.is_set():
                 chunk = stream.buffer.read1(4096)
                 if not chunk:
                     break
-                pending.put((index, chunk))
+                enqueue((index, chunk))
         finally:
-            pending.put((index, None))
+            enqueue((index, None))
 
-    readers = [threading.Thread(target=drain, args=(i, stream), daemon=True)
-               for i, stream in enumerate((process.stdout, process.stderr))]
+    readers = [
+        threading.Thread(target=drain, args=(i, stream), daemon=True)
+        for i, stream in enumerate((process.stdout, process.stderr))
+    ]
     decoders = [codecs.getincrementaldecoder("utf-8")("replace") for _ in readers]
     callbacks = [output_callback, stderr_callback]
     deadline = time.monotonic() + timeout if timeout is not None else None
@@ -347,6 +361,7 @@ def _stream_separate_pipes(
                 ended += 1
         return process.wait(timeout=max(0.001, deadline - time.monotonic()) if deadline else None)
     finally:
+        stopped.set()
         if process.poll() is None:
             process.kill()
             process.wait()

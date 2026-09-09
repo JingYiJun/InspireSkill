@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import replace
+from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget, validate_capture
 from typing import Callable, Any
 from inspire.config.env import build_env_exports
 from inspire.platform.web.pty_socket import JobShellError, build_remote_cmd_ws_url
@@ -20,7 +21,11 @@ def shaped_command(
     env: dict[str, str] | None,
     timeout: float,
     on_output: Callable[[str], None] | None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
 ) -> str:
+    validate_capture(max_output_bytes, capture, output_to)
     duration(timeout)
     if on_output is not None and not callable(on_output):
         raise ValidationError("on_output must be callable.")
@@ -67,6 +72,9 @@ def workload_exec(
     command: str,
     timeout: float,
     on_output: Callable[[str], None] | None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
 ) -> core.ExecResult:
     try:
         selected = core.select_exec_instance(workload, rows, instance)
@@ -82,5 +90,8 @@ def workload_exec(
         url=url,
         command=command,
         on_output=on_output,
+        max_output_bytes=max_output_bytes,
+        output_to=output_to,
+        capture=capture,
     )
     return replace(result, instance=selected)

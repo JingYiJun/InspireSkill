@@ -1,6 +1,7 @@
 """Notebook discovery, submission, lifecycle and image snapshots."""
 
 from __future__ import annotations
+from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.remote_exec import ExecResult
 import builtins
@@ -85,13 +86,26 @@ class Notebooks(Service):
         timeout: float = 120,
         transport: str = "auto",
         on_output: Callable[[str], None] | None = None,
+        max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+        output_to: OutputTarget = None,
+        capture: bool = True,
     ) -> ExecResult:
         from inspire.services import remote_exec as core
         from .remote_exec import shaped_command, authenticated_exec
 
         if transport not in ("auto", "jupyter", "ssh"):
             raise ValidationError("transport must be auto, jupyter, or ssh.")
-        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        command = shaped_command(
+            self,
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
+        )
         resolved = self._resolve(ref, workspace)
         bridge = None
         if transport != "jupyter":
@@ -107,6 +121,9 @@ class Notebooks(Service):
                 command=command,
                 timeout=min(timeout, self.client._transport.remaining()),
                 on_output=on_output,
+                max_output_bytes=max_output_bytes,
+                output_to=output_to,
+                capture=capture,
             )
         if transport == "ssh":
             raise ValidationError(
@@ -120,6 +137,9 @@ class Notebooks(Service):
             notebook_id=resolved.key,
             command=command,
             on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
         )
 
     def _notebook(self, data, workspace_id, ref=None):

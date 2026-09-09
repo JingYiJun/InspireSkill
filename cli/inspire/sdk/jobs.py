@@ -1,6 +1,7 @@
 """Training-job discovery, submission and observation."""
 
 from __future__ import annotations
+from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.remote_exec import ExecResult
 from typing import Iterator, Sequence, Any
@@ -56,10 +57,23 @@ class Jobs(Service):
         env: dict[str, str] | None = None,
         timeout: float = 120,
         on_output: Callable[[str], None] | None = None,
+        max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+        output_to: OutputTarget = None,
+        capture: bool = True,
     ) -> ExecResult:
         from .remote_exec import shaped_command, workload_exec
 
-        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        command = shaped_command(
+            self,
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
+        )
         resolved = self._resolve(ref, workspace)
         from inspire.services.job_events import list_all_job_instances
 
@@ -73,6 +87,9 @@ class Jobs(Service):
             command=command,
             timeout=timeout,
             on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
         )
 
     def _all(self, ws, *, keyword=None):

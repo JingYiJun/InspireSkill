@@ -1,6 +1,7 @@
 """Ray cluster submission and platform observations."""
 
 from __future__ import annotations
+from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.remote_exec import ExecResult
 from datetime import datetime
@@ -46,10 +47,23 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         env: dict[str, str] | None = None,
         timeout: float = 120,
         on_output: Callable[[str], None] | None = None,
+        max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+        output_to: OutputTarget = None,
+        capture: bool = True,
     ) -> ExecResult:
         from .remote_exec import shaped_command, workload_exec
 
-        command = shaped_command(self, command, cwd=cwd, env=env, timeout=timeout, on_output=on_output)
+        command = shaped_command(
+            self,
+            command,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
+        )
         resolved = self._resolve(ref, workspace)
         rows, _ = fetch_ray_instances(resolved.key, limit=500, show_all=True, session=self.session)
         return workload_exec(
@@ -61,6 +75,9 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             command=command,
             timeout=timeout,
             on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
         )
 
     _binding = WorkloadBinding[RayInstanceView](

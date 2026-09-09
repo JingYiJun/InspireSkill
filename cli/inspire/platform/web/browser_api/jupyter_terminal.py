@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from inspire.exec_output import (
+    DEFAULT_MAX_OUTPUT_BYTES,
+    OutputTarget,
+    OutputBuffer,
+    TerminalScanner,
+    output_writer,
+    validate_capture,
+)
+
 import base64
 import contextlib
 import json
@@ -10,7 +19,7 @@ import shlex
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Callable, Iterator, Protocol, Optional
+from typing import Any, Callable, Iterator, Protocol, Optional
 from urllib.parse import urlsplit
 
 from inspire.platform.web import jupyter_urls as rtunnel_module
@@ -46,6 +55,8 @@ class JupyterCommandResult:
     output: str
     completed: bool
     marker: str
+    truncated: bool = False
+    total_output_bytes: int = 0
 
 
 def new_completion_marker() -> str:
@@ -106,6 +117,34 @@ def parse_jupyter_exec_output(raw_output: str, *, marker: str) -> JupyterCommand
     )
 
 
+class TerminalOutput:
+    def __init__(self, marker: str, limit: int | None, capture: bool):
+        self.marker, self.limit, self.capture = marker, limit, capture
+        self.scanner = TerminalScanner(marker)
+        # Extra head space preserves the echoed bootstrap even with a small output cap.
+        self.buffer = OutputBuffer(None if limit is None else limit + 131072, capture=capture)
+
+    def feed(self, text: str) -> None:
+        self.scanner.feed(text)
+        self.buffer.feed(text)
+
+    def result(self) -> JupyterCommandResult:
+        parsed = parse_jupyter_exec_output(
+            self.buffer.text() if self.capture else self.scanner.tail, marker=self.marker
+        )
+        output = OutputBuffer(self.limit, capture=self.capture)
+        output.feed(parsed.output)
+        code = self.scanner.returncode
+        return JupyterCommandResult(
+            code if code is not None else parsed.returncode,
+            output.text(),
+            code is not None or parsed.completed,
+            self.marker,
+            self.buffer.truncated or output.truncated,
+            self.buffer.total,
+        )
+
+
 def build_jupyter_terminal_ws_url(lab_url: str, term_name: str) -> str:
     return rtunnel_module.build_terminal_websocket_url(lab_url, term_name)
 
@@ -134,6 +173,9 @@ def run_command_capture_in_notebook(
     timeout: float = 60,
     marker: str | None = None,
     on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
 ) -> JupyterCommandResult:
     if _in_asyncio_loop():
         return _run_in_thread(
@@ -144,6 +186,9 @@ def run_command_capture_in_notebook(
             timeout=timeout,
             marker=marker,
             on_output=on_output,
+            max_output_bytes=max_output_bytes,
+            output_to=output_to,
+            capture=capture,
         )
     return _run_command_capture_in_notebook_sync(
         notebook_id=notebook_id,
@@ -152,6 +197,9 @@ def run_command_capture_in_notebook(
         timeout=timeout,
         marker=marker,
         on_output=on_output,
+        max_output_bytes=max_output_bytes,
+        output_to=output_to,
+        capture=capture,
     )
 
 
@@ -249,6 +297,9 @@ def _capture_terminal_output(
     timeout_ms: int,
     marker: str,
     on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
 ) -> Optional[JupyterCommandResult]:
     """Run one command on the terminal and read back everything it printed.
 
@@ -263,8 +314,8 @@ def _capture_terminal_output(
     # Bounded wait for the prompt: a terminal that never prints one still has
     # to receive the command, or the call would return empty on a timeout.
     prompt_deadline = time.monotonic() + max(0, min(timeout_ms - 500, 3000)) / 1000.0
-    done_prefix = f"{marker}:exit:"
-    output = ""
+    validate_capture(max_output_bytes, capture, output_to)
+    output = TerminalOutput(marker, max_output_bytes, capture)
     sent = False
     callback_failed = False
 
@@ -274,69 +325,70 @@ def _capture_terminal_output(
             if start + _STDIN_CHUNK < len(stdin_data):
                 time.sleep(_STDIN_CHUNK_DELAY_S)
 
-    try:
-        with WebSocketClient(
-            ws_url, _jupyter_ws_headers(session, ws_url), timeout=max(timeout_ms / 1000, 0.001)
-        ) as ws:
-            while True:
-                now = time.monotonic()
-                if now >= deadline:
-                    break
-                if not sent and now >= prompt_deadline:
-                    sent = True
-                    _send(ws)
-                ready, _, _ = select.select([ws], [], [], min(0.25, deadline - now))
-                if not ready and not ws.has_pending_data():
-                    continue
-                ws.set_read_timeout(max(0.001, deadline - time.monotonic()))
-                try:
-                    opcode, payload = ws.recv_frame()
-                except EOFError:
-                    break
-                if opcode == 0x8:
-                    break
-                if opcode == 0x9:
-                    ws._send_frame(0xA, payload)
-                    continue
-                if opcode not in {0x1, 0x2}:
-                    continue
-                try:
-                    message = json.loads(payload.decode("utf-8", errors="ignore"))
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(message, list) or len(message) < 2:
-                    continue
-                if message[0] != "stdout":
-                    continue
-                text = str(message[1] or "")
-                output += text
-                if on_output is not None:
+    with output_writer(output_to) as writer:
+        try:
+            with WebSocketClient(
+                ws_url, _jupyter_ws_headers(session, ws_url), timeout=max(timeout_ms / 1000, 0.001)
+            ) as ws:
+                while True:
+                    now = time.monotonic()
+                    if now >= deadline:
+                        break
+                    if not sent and now >= prompt_deadline:
+                        sent = True
+                        _send(ws)
+                    ready, _, _ = select.select([ws], [], [], min(0.25, deadline - now))
+                    if not ready and not ws.has_pending_data():
+                        continue
+                    ws.set_read_timeout(max(0.001, deadline - time.monotonic()))
                     try:
-                        on_output(text)
+                        opcode, payload = ws.recv_frame()
+                    except EOFError:
+                        break
+                    if opcode == 0x8:
+                        break
+                    if opcode == 0x9:
+                        ws._send_frame(0xA, payload)
+                        continue
+                    if opcode not in {0x1, 0x2}:
+                        continue
+                    try:
+                        message = json.loads(payload.decode("utf-8", errors="ignore"))
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(message, list) or len(message) < 2:
+                        continue
+                    if message[0] != "stdout":
+                        continue
+                    text = str(message[1] or "")
+                    output.feed(text)
+                    try:
+                        if writer is not None:
+                            writer.write(text)
+                        if on_output is not None:
+                            on_output(text)
                     except BaseException:
                         callback_failed = True
                         raise
-                if not sent and _PROMPT_RE.search(text):
-                    sent = True
-                    _send(ws)
-                if sent:
-                    done_at = output.find(done_prefix)
-                    if done_at >= 0 and _EXIT_CODE_RE.match(output[done_at + len(done_prefix) :]):
+                    if not sent and output.scanner.prompt:
+                        sent = True
+                        _send(ws)
+                    if sent and output.scanner.returncode is not None:
                         break
-    except JobShellAuthError as error:
-        if callback_failed or sent or output:
-            raise
-        raise SessionExpiredError(str(error)) from error
-    except (EOFError, OSError):
-        if callback_failed:
-            raise
-        logger.debug("JupyterTerminal WebSocket failed", exc_info=True)
-    result = parse_jupyter_exec_output(output, marker=marker)
+        except JobShellAuthError as error:
+            if callback_failed or sent or output.buffer.total:
+                raise
+            raise SessionExpiredError(str(error)) from error
+        except (EOFError, OSError):
+            if callback_failed:
+                raise
+            logger.debug("JupyterTerminal WebSocket failed", exc_info=True)
+    result = output.result()
     if not result.completed:
         logger.debug(
             "JupyterTerminal command ended without a completion marker; sent=%s output_chars=%s",
             sent,
-            len(output),
+            output.buffer.total,
         )
     return result
 
@@ -383,6 +435,9 @@ def _run_command_capture_in_notebook_sync(
     timeout: float,
     marker: str | None,
     on_output: Callable[[str], None] | None = None,
+    max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
+    output_to: OutputTarget = None,
+    capture: bool = True,
 ) -> JupyterCommandResult:
     if session is None:
         session = get_web_session()
@@ -403,12 +458,17 @@ def _run_command_capture_in_notebook_sync(
             return _unfinished()
         if time.monotonic() >= deadline:
             return _unfinished()
+        options: dict[str, Any] = {}
+        if on_output is not None:
+            options["on_output"] = on_output
+        if max_output_bytes != DEFAULT_MAX_OUTPUT_BYTES or output_to is not None or not capture:
+            options.update(max_output_bytes=max_output_bytes, output_to=output_to, capture=capture)
         result = _capture_terminal_output(
             ws_url=term.ws_url,
             session=session,
             stdin_data=build_jupyter_exec_command(command, marker=effective_marker),
             timeout_ms=max(1, int((deadline - time.monotonic()) * 1000)),
             marker=effective_marker,
-            **({"on_output": on_output} if on_output is not None else {}),
+            **options,
         )
         return result if result is not None else _unfinished()
