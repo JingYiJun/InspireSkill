@@ -28,6 +28,7 @@ class ApplicationConnection:
         return self.http.cookies
 
     def request(self, method: str, url: str, **options: Any) -> Any:
+        allow_not_found = options.pop("allow_not_found", False)
         timeout = options.pop("timeout", 30)
         if isinstance(timeout, tuple):
             timeout = timeout[1]
@@ -35,7 +36,7 @@ class ApplicationConnection:
         return self.transport.request(
             method,
             url,
-            body=ApplicationRequest(self, options),
+            body=ApplicationRequest(self, options, allow_not_found=allow_not_found),
             timeout=timeout,
         )
 

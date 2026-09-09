@@ -1727,6 +1727,30 @@ class AsyncNotebooks(AsyncFacade):
             ref=ref,
             workspace=workspace)
 
+    async def download(
+        self,
+        ref: str | _m12.NotebookRef,
+        *,
+        local: str | _m12.Path,
+        remote: str,
+        workspace: str | _m12.WorkspaceRef | None = None,
+        transport: str = 'auto',
+        recursive: bool = False,
+        overwrite: bool = True,
+        timeout: float = 120,
+        max_bytes: int = 16777216,
+    ) -> _m12.TransferResult:
+        return await self._client._call('notebooks', 'download',
+            ref=ref,
+            local=local,
+            remote=remote,
+            workspace=workspace,
+            transport=transport,
+            recursive=recursive,
+            overwrite=overwrite,
+            timeout=timeout,
+            max_bytes=max_bytes)
+
     async def estimate_image_size(
         self,
         ref: str | _m12.NotebookRef,
@@ -1983,6 +2007,30 @@ class AsyncNotebooks(AsyncFacade):
         return await self._client._call('notebooks', 'stop',
             ref=ref,
             workspace=workspace)
+
+    async def upload(
+        self,
+        ref: str | _m12.NotebookRef,
+        *,
+        local: str | _m12.Path,
+        remote: str,
+        workspace: str | _m12.WorkspaceRef | None = None,
+        transport: str = 'auto',
+        recursive: bool = False,
+        overwrite: bool = True,
+        timeout: float = 120,
+        max_bytes: int = 16777216,
+    ) -> _m12.TransferResult:
+        return await self._client._call('notebooks', 'upload',
+            ref=ref,
+            local=local,
+            remote=remote,
+            workspace=workspace,
+            transport=transport,
+            recursive=recursive,
+            overwrite=overwrite,
+            timeout=timeout,
+            max_bytes=max_bytes)
 
     async def wait(
         self,

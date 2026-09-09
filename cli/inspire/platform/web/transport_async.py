@@ -133,7 +133,7 @@ class AsyncDriver:
 
     async def execute(self, action: Call) -> Any:
         """Interpret nested workflows without moving authentication into a worker."""
-        from inspire.services import remote_exec
+        from inspire.services import remote_exec, notebook_transfer
         from inspire.platform.web.browser_api import jupyter_terminal
 
         adapters: dict[Any, Any] = {
@@ -141,7 +141,8 @@ class AsyncDriver:
             remote_exec.exec_in_notebook_jupyter: remote_exec.exec_in_notebook_jupyter_async,
             jupyter_terminal.run_command_capture_in_notebook: jupyter_terminal.run_command_capture_in_notebook_async,
         }
-        if action.function in {remote_exec.exec_in_notebook_ssh, remote_exec.cached_notebook_bridge}:
+        if action.function in {remote_exec.exec_in_notebook_ssh, remote_exec.cached_notebook_bridge,
+                               notebook_transfer.transfer_ssh}:
             return await asyncio.to_thread(action.function, *action.args, **action.kwargs)
         if inspect.iscoroutinefunction(action.function):
             return await action.function(*action.args, **action.kwargs)

@@ -168,7 +168,7 @@ if page.next_cursor:
 statuses = await client.jobs.status([job.ref for job in page.items])
 ```
 
-资源结果通常为 frozen dataclass，嵌套字典并非递归冻结；`MetricGroup` 和 `ServingInstanceView` 是可变 dataclass，`JobEvent` 是 `dict[str, Any]` 类型别名。提供业务视图的对象可用 `.to_dict()` 取得映射，但并非每个导出类型都有此方法（例如 `ExecResult`、`MetricGroup`）；Ref 的 `.to_dict()` 则是引用序列化格式。镜像 `ImageSelector(name, source)` 可指定 official/public/project/private，跨来源同名会报歧义。镜像 list 可返回成功来源的目录，名称 get/detail 要求完整候选集。数据集 get 接受 code 或 DatasetRef，validate 接受 `"name:version"` 或 DatasetMount；applications 的单数据集扫描有界，不保证窗口之外的申请历史。
+资源结果通常为 frozen dataclass，嵌套字典并非递归冻结；`MetricGroup` 和 `ServingInstanceView` 是可变 dataclass，`JobEvent` 是 `dict[str, Any]` 类型别名。提供业务视图的对象可用 `.to_dict()` 取得映射，但并非每个导出类型都有此方法（例如 `ExecResult`、`TransferResult`、`MetricGroup`）；Ref 的 `.to_dict()` 则是引用序列化格式。镜像 `ImageSelector(name, source)` 可指定 official/public/project/private，跨来源同名会报歧义。镜像 list 可返回成功来源的目录，名称 get/detail 要求完整候选集。数据集 get 接受 code 或 DatasetRef，validate 接受 `"name:version"` 或 DatasetMount；applications 的单数据集扫描有界，不保证窗口之外的申请历史。
 
 创建工作负载返回提交句柄（Handle），其中 `.ref` 是可持久化的纯数据身份。同步客户端返回 `JobHandle` 等原有类型，继续使用 `client.jobs.wait(handle.ref)` 或对应门面的等待方法；直接 await 同步句柄会报错并提示改用 `InspireAsyncClient`。异步客户端返回显式导出的 `AsyncJobHandle` 等子类，保留提交结果字段，并绑定产生它的异步门面：
 
@@ -288,7 +288,7 @@ for series in scalars.series:
 
 ## 各门面方法表
 
-两种客户端均有 15 个资源门面；资源门面共有 149 个同步方法、154 个异步方法（多出的 5 个是 exec_stream）。另有 cache 的 2 个方法，因此全部实例门面合计 151／156 个方法。计数包含继承的公开方法，不包含客户端自身的 login/init/close/from_credentials、属性、上下文协议或共享的 Accounts 类。
+两种客户端均有 15 个资源门面；资源门面共有 151 个同步方法、156 个异步方法（多出的 5 个是 exec_stream）。另有 cache 的 2 个方法，因此全部实例门面合计 153／158 个方法。计数包含继承的公开方法，不包含客户端自身的 login/init/close/from_credentials、属性、上下文协议或共享的 Accounts 类。
 
 | 门面 | 同步方法数 | 异步方法数 |
 |---|---:|---:|
@@ -456,6 +456,8 @@ for series in scalars.series:
 | `notebooks.estimate_image_size(ref, *, workspace=None)` | `NotebookImageSizeEstimate` | `notebook save-image --dry-run` |
 | `notebooks.events(ref, *, keyword=None, limit=100, workspace=None)` | `EventResult` | `notebook events` |
 | `notebooks.exec(ref, *, command, workspace=None, cwd=None, env=None, timeout=120, transport='auto', on_output=None, max_output_bytes=4194304, output_to=None, capture=True)` | `ExecResult` | `notebook exec` |
+| `notebooks.upload(ref, *, local, remote, workspace=None, transport='auto', recursive=False, overwrite=True, timeout=120, max_bytes=16777216)` | `TransferResult` | `notebook scp（另提供 Jupyter Contents API）` |
+| `notebooks.download(ref, *, local, remote, workspace=None, transport='auto', recursive=False, overwrite=True, timeout=120, max_bytes=16777216)` | `TransferResult` | `notebook scp（另提供 Jupyter Contents API）` |
 | `notebooks.follow_events(ref, *, interval=5, **filters)` | `Iterator[EventResult]／AsyncIterator[EventResult]` | `notebook events --follow` |
 | `notebooks.get(ref, *, workspace=None)` | `Notebook` | `notebook status` |
 | `notebooks.iter(workspace, *, status=None, keyword=None, max_items=None)` | `Iterator[Notebook]／AsyncIterator[Notebook]` | `notebook list --all` |
@@ -649,6 +651,66 @@ async def check_notebook(client: InspireAsyncClient, notebook_ref) -> None:
     print(result.returncode, result.stdout, result.stderr)
 ```
 
+### Notebook 文件传输（upload / download）
+
+同步与异步 Notebook 门面都支持上传和下载，`ref` 后只接受关键字参数。按名称选择 Notebook 时传 `workspace`；已有 `NotebookRef` 时可以省略。
+
+```python
+from inspire import InspireClient
+
+with InspireClient("my-account") as client:
+    uploaded = client.notebooks.upload(
+        "my-notebook", workspace="my-workspace",
+        local="./config.json", remote="experiment/config.json", transport="jupyter",
+    )
+    downloaded = client.notebooks.download(
+        "my-notebook", workspace="my-workspace",
+        remote="experiment/result.bin", local="./results/result.bin",
+        transport="jupyter", overwrite=False,
+    )
+    print(uploaded.bytes_transferred, downloaded.transport)
+```
+
+```python
+from inspire import InspireAsyncClient
+
+# 在 async def 内运行。
+async with InspireAsyncClient("my-account") as client:
+    uploaded = await client.notebooks.upload(
+        notebook_ref, local="./config.json", remote="experiment/config.json",
+        transport="jupyter",
+    )
+    downloaded = await client.notebooks.download(
+        notebook_ref, remote="/inspire/project/checkpoints", local="./checkpoints",
+        transport="ssh", recursive=True,
+    )
+    print(downloaded.files_transferred, downloaded.bytes_transferred)
+```
+
+返回从 `inspire` 和 `inspire.sdk` 导出的 frozen `TransferResult`：`local` 是本地绝对路径，`remote` 是规范化后的远端路径，`bytes_transferred` 为原始文件字节总数，`files_transferred` 为常规文件数量（单文件为 1，空目录为 0），`transport` 是实际使用的 `jupyter` 或 `ssh`。没有 `.to_dict()`，需要时用 `dataclasses.asdict()`。
+
+选择规则与 `exec` 相同，传输开始后失败不会换通道或重放整个传输：
+
+| transport | 选择与用途 |
+|---|---|
+| `auto`（默认） | 优先使用账号、工作区、Notebook 身份匹配且可达的缓存 SSH 桥接，否则使用 Jupyter。 |
+| `jupyter` | 强制使用 Notebook 自身的 Contents API；适合无桥接时传小文件，不支持递归目录。 |
+| `ssh` | 必须已有可达缓存桥接，复用 CLI 的 `run_scp_transfer`；适合大文件和目录。缺失时报 `ValidationError`，提示 `inspire notebook connection refresh <name>`（CLI 中同时指定工作区）。 |
+
+任何选择都不会隐式创建桥接。`recursive=True` 只允许 SSH；`auto` 没有桥接时会提示改用 SSH，不会逐个文件改走 Jupyter。
+
+Jupyter 使用单个 base64 JSON 请求／响应，文本和二进制均按原始字节传输，不转换编码或换行。base64 本身约占原文件的 4/3，两端还需要 JSON、原始数据及解析副本，实际峰值高于这个比例；没有流式传输或断点续传。默认 `max_bytes=16 * 1024 * 1024`（16 MiB）限制单文件，编码正文约 21.3 MiB，给小文件配置／脚本／结果提供有界默认值。上传在读取正文前检查文件大小；下载先读取不含内容的元数据，再请求 base64 并复核字节数。文件在检查后增长仍可能增加 HTTP 响应内存，因此应避免并发修改源文件。超限错误明确提示 `transport="ssh"`；确有需要可显式提高 `max_bytes`，例如 `64 * 1024 * 1024`，该参数不限制 SSH。
+
+路径和失败语义：
+
+- `local` 接受 `str` 或 `pathlib.Path`。目标参数总是完整目标文件／目录路径，不采用 SCP 的“已有目录下再追加源文件名”规则。自动创建父目录；SSH 递归覆盖会合并目录、保留目标中未涉及的文件。
+- Jupyter 的 `remote` 相对服务器 Contents 根，开头 `/` 也按该根解释；SSH 的绝对路径指 Notebook 文件系统，相对路径以 SSH 用户 home 为基准。使用 `auto` 时需确保两种根指向同一位置；根不同或访问 `/inspire/...` 绝对共享路径时显式选 SSH。
+- 拒绝所有 `..` 路径分段（包括编码形式）、反斜杠及控制字符。空格、中文和 URL／shell 特殊字符按字面处理：Contents 路径做 URL 编码，SSH 控制命令的 JSON 参数做 shell 引用，SCP 仅看到 SDK 生成的安全临时远端路径。SSH 不支持源或目标路径中的符号链接；Jupyter 的根目录及符号链接访问边界仍由服务器执行。
+- `overwrite=False` 先检查目标，已存在即报错。本地单文件发布还用原子硬链接防止检查后被抢占。Jupyter 没有条件创建 API，因此远端预检查无法排除并发写入；调用方须保证目标没有其他写者。递归目录合并同样不提供并发隔离。
+- 下载和 SSH 上传先暂存，逐个文件在目标同目录写完后原子替换，因此中断写入不会暴露半个目标文件；目录合并是逐文件进行，失败前已完成的文件和已创建的父目录可能保留，不保证整个目录事务性回滚。SSH 在远端 `/tmp` 暂存完整副本，下载也需本地临时空间，发布时还需目标文件的临时副本空间；远端需要 `python3`。
+- Jupyter 上传依赖服务器 ContentsManager 的原子性保证；失败或响应丢失时目标可能已经改变。每个 PUT 使用 `single_send`，写入不重试，结果未知会抛 `MutationUncertainError`，调用方应先核查目标。任何失败都不返回成功 `TransferResult`。
+- `timeout` 与客户端操作预算共同限制网络步骤。异步 Jupyter HTTP 沿用原生请求调度，SSH/SCP 卸载到线程；本地文件处理和 base64 编解码仍可能短暂阻塞事件循环。取消等待不能撤回已发送的写入，也不能强制停止工作线程；SSH 临时文件可能残留，必要时检查 `/tmp/inspire-transfer-*`。
+
 ### tensorboards
 
 TensorBoard 资源的创建、状态和生命周期查询走共享控制台传输；`tags`／`scalars` 的运行目录、标签和标量数据来自 TensorBoard 应用自身的 HTTP 接口。同步应用读取通过共享 `build_requests_session` 构造临时会话并执行 GET，不经过 `Transport.request()`；该临时会话不属于 Transport 持有的连接池。同步路径每次应用 GET 默认超时为 60 秒，不继承客户端 `timeout` 或剩余 `operation_timeout`，也没有该 dispatcher 的续期／重试保证。异步形式通过原生 HTTP 驱动执行，并将请求超时限制在剩余操作预算内。`points` 只裁剪结果中的尾部点集，底层会读取相应系列再汇总。
@@ -671,16 +733,16 @@ TensorBoard 资源的创建、状态和生命周期查询走共享控制台传�
 
 ## 公共导出与类型清单
 
-`inspire.sdk.__all__` 当前包含 **133 个名称**；`from inspire import X` 对这些名称返回同一个对象。以下按导出名内省分组，不包含内部 facade 类。`inspire` 使用懒加载属性，并未定义同等的 `__all__`；使用显式导入，不依赖 `from inspire import *`。
+`inspire.sdk.__all__` 当前包含 **134 个名称**；`from inspire import X` 对这些名称返回同一个对象。以下按导出名内省分组，不包含内部 facade 类。`inspire` 使用懒加载属性，并未定义同等的 `__all__`；使用显式导入，不依赖 `from inspire import *`。
 
 - 入口与账号工具（3）：`Accounts`、`InspireAsyncClient`、`InspireClient`。
 - 引用类型（19）：`APIKeyRef`、`ComputeGroupRef`、`DatasetApplicationRef`、`DatasetRef`、`DatasetTagRef`、`DatasetVersionRef`、`HPCJobRef`、`ImageRef`、`JobRef`、`ModelRef`、`NotebookRef`、`ProjectOwnerRef`、`ProjectRef`、`QuotaRef`、`RayJobRef`、`ResourceRef`、`ServingRef`、`TensorboardRef`、`WorkspaceRef`。
 - 创建规格（6）：`HPCJobCreateSpec`、`JobCreateSpec`、`NotebookCreateSpec`、`RayJobCreateSpec`、`ServingCreateSpec`、`TensorboardCreateSpec`。
-- 结果、资源与值模型（83）：`AsyncJobHandle`、`AsyncHPCJobHandle`、`AsyncRayJobHandle`、`AsyncServingHandle`、`AsyncTensorboardHandle`、`AsyncNotebookHandle`、`AsyncImageSaveHandle`、`AsyncImageRegisterHandle`、`APIKeyInfo`、`AccountCheck`、`AccountContext`、`AccountInfo`、`DatasetApplication`、`DatasetDetail`、`DatasetInfo`、`DatasetMount`、`DatasetTag`、`DatasetValidation`、`DatasetVersion`、`EventResult`、`ExecResult`、`HPCInstanceView`、`HPCJob`、`HPCJobHandle`、`HPCJobPlan`、`Image`、`ImageDetail`、`ImageRegisterHandle`、`ImageSaveHandle`、`ImageSelector`、`InitResult`、`Job`、`JobHandle`、`JobInstance`、`JobPlan`、`LogResult`、`MetricGroup`、`ModelDeployConfig`、`ModelInfo`、`ModelRegisterHandle`、`ModelStatus`、`ModelVersion`、`Notebook`、`NotebookHandle`、`NotebookImageSizeEstimate`、`NotebookPlan`、`NotebookResourceSnapshot`、`NotebookRun`、`Page`、`Permission`、`ProjectDetail`、`ProjectInfo`、`ProjectOwner`、`Quota`、`QuotaOption`、`RayInstanceView`、`RayJob`、`RayJobHandle`、`RayJobPlan`、`RayScalingEvent`、`Resource`、`ResourceAvailability`、`ResourceUsage`、`Serving`、`ServingAPIMetricSeries`、`ServingAPIMetricTimeRange`、`ServingAPIMetrics`、`ServingConfigItem`、`ServingConfigs`、`ServingHandle`、`ServingInstanceView`、`ServingInvocationCredentials`、`ServingInvocationInfo`、`ServingPlan`、`ServingScaleHistoryEntry`、`ServingVersion`、`Tensorboard`、`TensorboardHandle`、`TensorboardScalarPoint`、`TensorboardScalarSeries`、`TensorboardScalars`、`TensorboardTags`、`WorkloadSchedulePolicy`。
+- 结果、资源与值模型（84）：`AsyncJobHandle`、`AsyncHPCJobHandle`、`AsyncRayJobHandle`、`AsyncServingHandle`、`AsyncTensorboardHandle`、`AsyncNotebookHandle`、`AsyncImageSaveHandle`、`AsyncImageRegisterHandle`、`APIKeyInfo`、`AccountCheck`、`AccountContext`、`AccountInfo`、`DatasetApplication`、`DatasetDetail`、`DatasetInfo`、`DatasetMount`、`DatasetTag`、`DatasetValidation`、`DatasetVersion`、`EventResult`、`ExecResult`、`TransferResult`、`HPCInstanceView`、`HPCJob`、`HPCJobHandle`、`HPCJobPlan`、`Image`、`ImageDetail`、`ImageRegisterHandle`、`ImageSaveHandle`、`ImageSelector`、`InitResult`、`Job`、`JobHandle`、`JobInstance`、`JobPlan`、`LogResult`、`MetricGroup`、`ModelDeployConfig`、`ModelInfo`、`ModelRegisterHandle`、`ModelStatus`、`ModelVersion`、`Notebook`、`NotebookHandle`、`NotebookImageSizeEstimate`、`NotebookPlan`、`NotebookResourceSnapshot`、`NotebookRun`、`Page`、`Permission`、`ProjectDetail`、`ProjectInfo`、`ProjectOwner`、`Quota`、`QuotaOption`、`RayInstanceView`、`RayJob`、`RayJobHandle`、`RayJobPlan`、`RayScalingEvent`、`Resource`、`ResourceAvailability`、`ResourceUsage`、`Serving`、`ServingAPIMetricSeries`、`ServingAPIMetricTimeRange`、`ServingAPIMetrics`、`ServingConfigItem`、`ServingConfigs`、`ServingHandle`、`ServingInstanceView`、`ServingInvocationCredentials`、`ServingInvocationInfo`、`ServingPlan`、`ServingScaleHistoryEntry`、`ServingVersion`、`Tensorboard`、`TensorboardHandle`、`TensorboardScalarPoint`、`TensorboardScalarSeries`、`TensorboardScalars`、`TensorboardTags`、`WorkloadSchedulePolicy`。
 - 异常（20）：`AmbiguousResourceError`、`AuthenticationCooldownError`、`AuthenticationError`、`ClientClosedError`、`ClientThreadError`、`ConfigurationError`、`HPCJobFailedError`、`InspireError`、`JobFailedError`、`MutationUncertainError`、`NotebookFailedError`、`RayJobFailedError`、`ResolutionIncompleteError`、`ResourceNotFoundError`、`ServingFailedError`、`SubmissionUncertainError`、`TensorboardFailedError`、`TransportError`、`ValidationError`、`WaitTimeoutError`。
 - 函数与类型别名（2）：`JobEvent`、`iter_output_file`。
 
-其中 108 个导出对象满足 `dataclasses.is_dataclass`（包括继承 dataclass 的引用类），106 个 frozen；不能把“类型化”理解为所有返回值均不可变或均有 to_dict。`CustomImageInfo` 是两处镜像等待方法的返回类，可从 `inspire.platform.web.browser_api.images` 导入，不在上述顶层导出清单中。
+其中 109 个导出对象满足 `dataclasses.is_dataclass`（包括继承 dataclass 的引用类），107 个 frozen；不能把“类型化”理解为所有返回值均不可变或均有 to_dict。`CustomImageInfo` 是两处镜像等待方法的返回类，可从 `inspire.platform.web.browser_api.images` 导入，不在上述顶层导出清单中。
 
 ## 创建规格字段
 
@@ -925,7 +987,7 @@ SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_sen
 - 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、CLI 的磁盘资源缓存命令 `cache *`（SDK 的 `client.cache` 是独立的目录缓存，可选择跨进程共享）；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。
 - `api-key export` 的文件格式、权限和 stdout 渲染，以及 `api-key run` 的子进程和环境处理；平台密钥读写由 `client.api_keys` 提供。
 - 所有工作负载的 JSON/TOML `batch`；SDK 应用自行循环或编排。
-- Notebook 的 exec 由 SDK 提供；`ssh/shell/scp/ssh-config/ssh-proxy/connection */install-deps/proxy-url` 仍为 CLI-only，创建后的 `--post-start/--post-start-script` 及 `job/hpc/ray/serving shell` 也仅保留在 CLI。
+- Notebook 的 exec 和文件传输（upload/download，含 SCP）由 SDK 提供；`ssh/shell/ssh-config/ssh-proxy/connection */install-deps/proxy-url` 仍为 CLI-only，创建后的 `--post-start/--post-start-script` 及 `job/hpc/ray/serving shell` 也仅保留在 CLI。
 - 日志 SSH 文件来源选项 `--path/--remote-log-path/--notebook/--source`，及终端专用格式、字符展示预算；SDK 使用平台日志来源并返回结构化记录。
 - 指标 `--plot/--open/--sparkline` 和 TensorBoard 终端趋势渲染；SDK 返回样本或标量摘要。
 - `serving api --format` 的 shell 格式输出；SDK 返回共享 access 核心的结构化 endpoint / invocation 信息。

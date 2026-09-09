@@ -136,6 +136,7 @@ class ApplicationRequest:
 
     connection: Any
     options: dict[str, Any]
+    allow_not_found: bool = False
 
 
 @dataclass(frozen=True)

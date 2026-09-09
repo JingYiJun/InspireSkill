@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from inspire.services.notebook_transfer import TransferResult, DEFAULT_JUPYTER_MAX_BYTES
 from .resources import image_mutation
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
@@ -144,6 +146,98 @@ class Notebooks(Service):
             output_to=output_to,
             capture=capture,
         )
+
+    @operation
+    def upload(
+        self,
+        ref: str | NotebookRef,
+        *,
+        local: str | Path,
+        remote: str,
+        workspace: str | WorkspaceRef | None = None,
+        transport: str = "auto",
+        recursive: bool = False,
+        overwrite: bool = True,
+        timeout: float = 120,
+        max_bytes: int = DEFAULT_JUPYTER_MAX_BYTES,
+    ) -> TransferResult:
+        """Upload a file, or recursively transfer a directory over cached SSH.
+
+        Small files without a bridge: Jupyter. Large files/directories: SSH.
+        Auto prefers reachable cached SSH; never creates a bridge. Jupyter
+        holds the entire base64 JSON body (~4/3 file size plus copies), has
+        no resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.
+        Jupyter paths are relative to its contents root (leading / is ignored);
+        SSH paths are absolute or relative to the SSH home. '..' is rejected.
+        Destinations name the exact file/directory, not a containing directory.
+
+        Downloads and SSH publication replace complete files atomically;
+        recursive directory merges are incremental, not transactional. SSH
+        stages a full copy in remote /tmp (and locally for downloads).
+        Jupyter upload atomicity depends on the server's ContentsManager;
+        a failed/uncertain PUT may have changed the remote file. Writes are
+        never replayed and failures never return a success result. Existing
+        destinations are checked before overwrite=False; Jupyter has no
+        conditional create, so callers must exclude concurrent remote writers.
+        Local no-overwrite file publication also checks atomically. Symbolic
+        links are unsupported by SSH; Jupyter root/symlink confinement is
+        enforced by the server. Cancellation may leave SSH staging files.
+        """
+        from .notebook_transfer import transfer
+
+        _duration(timeout)
+        with self.client._transport.scope(timeout=timeout):
+            return transfer(
+                self, ref, local=local, remote=remote, workspace=workspace,
+                transport=transport, recursive=recursive, overwrite=overwrite,
+                timeout=timeout, max_bytes=max_bytes, download=False,
+            )
+
+    @operation
+    def download(
+        self,
+        ref: str | NotebookRef,
+        *,
+        local: str | Path,
+        remote: str,
+        workspace: str | WorkspaceRef | None = None,
+        transport: str = "auto",
+        recursive: bool = False,
+        overwrite: bool = True,
+        timeout: float = 120,
+        max_bytes: int = DEFAULT_JUPYTER_MAX_BYTES,
+    ) -> TransferResult:
+        """Download a file, or recursively transfer a directory over cached SSH.
+
+        Small files without a bridge: Jupyter. Large files/directories: SSH.
+        Auto prefers reachable cached SSH; never creates a bridge. Jupyter
+        holds the entire base64 JSON body (~4/3 file size plus copies), has
+        no resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.
+        Jupyter paths are relative to its contents root (leading / is ignored);
+        SSH paths are absolute or relative to the SSH home. '..' is rejected.
+        Destinations name the exact file/directory, not a containing directory.
+
+        Downloads and SSH publication replace complete files atomically;
+        recursive directory merges are incremental, not transactional. SSH
+        stages a full copy in remote /tmp (and locally for downloads).
+        Jupyter upload atomicity depends on the server's ContentsManager;
+        a failed/uncertain PUT may have changed the remote file. Writes are
+        never replayed and failures never return a success result. Existing
+        destinations are checked before overwrite=False; Jupyter has no
+        conditional create, so callers must exclude concurrent remote writers.
+        Local no-overwrite file publication also checks atomically. Symbolic
+        links are unsupported by SSH; Jupyter root/symlink confinement is
+        enforced by the server. Cancellation may leave SSH staging files.
+        """
+        from .notebook_transfer import transfer
+
+        _duration(timeout)
+        with self.client._transport.scope(timeout=timeout):
+            return transfer(
+                self, ref, local=local, remote=remote, workspace=workspace,
+                transport=transport, recursive=recursive, overwrite=overwrite,
+                timeout=timeout, max_bytes=max_bytes, download=True,
+            )
 
     def _notebook(self, data, workspace_id, ref=None):
         view = public_notebook(data, fallback_name=ref.name if ref else "")

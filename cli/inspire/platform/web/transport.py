@@ -325,7 +325,8 @@ class Transport:
         self._decisions.dispatched()
         response = yield http_call(getattr(connection.http, method.lower()), url, **options)
         self.check_deadline()
-        classify_application_response(response)
+        if not (body.allow_not_found and method.upper() == "GET" and response.status_code == 404):
+            classify_application_response(response)
         return response
 
     def _dispatch(self, send: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

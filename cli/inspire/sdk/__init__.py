@@ -1,5 +1,6 @@
 """Experimental synchronous and asynchronous SDK. CLI installation requirements are unchanged."""
 
+from inspire.services.notebook_transfer import TransferResult
 from inspire.services.remote_exec import ExecResult
 from inspire.exec_output import iter_output_file
 
@@ -172,6 +173,7 @@ __all__ = [
     "Accounts",
     "InitResult",
     "ExecResult",
+    "TransferResult",
     "iter_output_file",
     "ServingInstanceView",
     "Serving",
