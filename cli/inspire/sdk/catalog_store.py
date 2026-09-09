@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
 from dataclasses import fields
 import json
 import math
@@ -164,11 +166,13 @@ class CatalogStore:
         os.chmod(tmp, 0o600)
         atomic_write_text(self.path, content)
 
+    @blocking_io
     def read(self, key: tuple[Any, ...]) -> tuple[str, dict[str, Any] | None]:
         with exclusive_cache_lock(self.path, timeout=5):
             data = self._read()
             return data["generation"], data["entries"].get(key_string(key))
 
+    @blocking_io
     def put(
         self, key: tuple[Any, ...], value: Any, ttl: float, generation: str
     ) -> dict[str, Any] | None:
@@ -187,6 +191,7 @@ class CatalogStore:
             self._write(data)
             return data["entries"].get(key_text)
 
+    @blocking_io
     def invalidate(self, prefix: tuple[Any, ...] | None = None) -> None:
         with exclusive_cache_lock(self.path, timeout=5):
             data = self._read()

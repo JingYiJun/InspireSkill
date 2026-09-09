@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_call, perform_sync
+
 import math
 from copy import deepcopy
 from typing import Any
@@ -190,7 +192,9 @@ class InspireClient:
                     "Re-run `inspire init` with an account that can see at least one workspace."
                 )
             path = Accounts.config_path(self.account)
-            before = path.read_text(encoding="utf-8") if path.exists() else None
+            before = perform_sync(blocking_call(
+                lambda: path.read_text(encoding="utf-8") if path.exists() else None
+            ))
             existing = tomllib.loads(before) if before is not None else {}
             data = (
                 sanitize_account_config(tomllib.loads(ACCOUNT_CONFIG_TEMPLATE))
@@ -207,7 +211,7 @@ class InspireClient:
                 api["base_url"] = self.base_url
             changed = data != existing
             if changed:
-                atomic_write_text(path, toml_dumps(data))
+                perform_sync(blocking_call(atomic_write_text, path, toml_dumps(data)))
             return InitResult(path, changed)
 
     @property

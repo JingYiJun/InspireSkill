@@ -8,24 +8,33 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Generator, cast
 
 from inspire.accounts import cache_lock
+from inspire.services.async_output import _finish_io
 
 
 @asynccontextmanager
 async def cache_lock_async(path: Any, transport: Any) -> AsyncIterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(f"{path.name}.lock")
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    descriptor = None
+
+    def open_lock() -> None:
+        nonlocal descriptor
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f"{path.name}.lock")
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+
     acquired = False
     try:
-        while not cache_lock._try_acquire(descriptor):
+        await _finish_io(open_lock)
+        assert descriptor is not None
+        while not await _finish_io(cache_lock._try_acquire, descriptor):
             await asyncio.sleep(min(0.05, transport.remaining()))
         acquired = True
         transport.check_deadline()
         yield
     finally:
         if acquired:
-            cache_lock._release(descriptor)
-        os.close(descriptor)
+            await _finish_io(cache_lock._release, descriptor)
+        if descriptor is not None:
+            await _finish_io(os.close, descriptor)
 
 
 @asynccontextmanager
@@ -35,8 +44,8 @@ async def authentication_context(context: Any, transport: Any) -> AsyncIterator[
     name = context.func.__name__
     if name == "exclusive_session_refresh":
         account = context.args[0] if context.args else context.kwds.get("account")
-        cache_file = refresh_lock.get_session_cache_file(account)
-        if cache_file is None or not cache_file.parent.is_dir():
+        cache_file = await _finish_io(refresh_lock.get_session_cache_file, account)
+        if cache_file is None or not await _finish_io(cache_file.parent.is_dir):
             yield
             return
         async with cache_lock_async(cache_file.with_name(f"{cache_file.name}.refresh"), transport):
@@ -49,7 +58,7 @@ async def authentication_context(context: Any, transport: Any) -> AsyncIterator[
         return
     username, password = context.args
     account = context.kwds["account"]
-    path = login_guard.block_file(account)
+    path = await _finish_io(login_guard.block_file, account)
     if path is None:
         yield
         return
@@ -65,19 +74,26 @@ async def authentication_context(context: Any, transport: Any) -> AsyncIterator[
                 now=context.kwds.get("now"),
             ),
         )
-        next(guard)
+        await _finish_io(next, guard, None)
         try:
             yield
         except BaseException as error:
             try:
-                guard.throw(error)
+                await _finish_io(_throw_guard, guard, error)
             except StopIteration:
                 pass
             raise
         else:
             try:
-                next(guard)
+                await _finish_io(next, guard, None)
             except StopIteration:
                 pass
         finally:
-            guard.close()
+            await _finish_io(guard.close)
+
+
+def _throw_guard(guard: Generator[None, Any, None], error: BaseException) -> None:
+    try:
+        guard.throw(error)
+    except StopIteration:
+        pass

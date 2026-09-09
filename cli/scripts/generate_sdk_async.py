@@ -82,7 +82,10 @@ def generate() -> str:
                 params.append("*")
                 keyword = True
             prefix = "**" if param.kind == param.VAR_KEYWORD else ""
-            item = prefix + param.name + ": " + annotation(param.annotation)
+            item = prefix + param.name + ": " + (
+                "Callable[[str], None | Awaitable[None]] | None" if param.name == "on_output"
+                else annotation(param.annotation)
+            )
             if param.default is not param.empty:
                 item += " = " + repr(param.default)
             params.append(item)
@@ -199,6 +202,7 @@ def generate() -> str:
         'from typing import Any, AsyncIterator, Literal\n'
         'from .accounts import Accounts, InitResult\n'
         'from .models_resources import AccountInfo\n'
+        'from collections.abc import Awaitable, Callable\n'
         'from ._async_runtime import AsyncFacade, AsyncRuntime\n'
         'from . import async_handles as _handles\n'
         'from .exceptions import ValidationError\n'

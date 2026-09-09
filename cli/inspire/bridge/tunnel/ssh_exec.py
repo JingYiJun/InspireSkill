@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io, perform_sync, call
+
 import logging
 import shlex
 import subprocess
@@ -28,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+@blocking_io
 def _resolve_bridge_and_proxy(
     bridge_name: Optional[str],
     config: Optional[TunnelConfig],
@@ -199,10 +202,8 @@ def run_ssh_command_streaming(
     """Execute a command on Bridge via SSH with streaming output."""
     _config, bridge, proxy_cmd = _resolve_bridge_and_proxy(bridge_name, config)
     ssh_cmd = _build_ssh_base_args(bridge=bridge, proxy_cmd=proxy_cmd)
-    popen_stdin: int | None = subprocess.PIPE
     if pass_stdin:
         ssh_cmd.append(_wrap_remote_command(command))
-        popen_stdin = None
     else:
         ssh_cmd.append("bash -l")
 
@@ -224,6 +225,15 @@ def run_ssh_command_streaming(
 
         output_callback = _default_output_callback
 
+    return perform_sync(call(
+        _stream_process, ssh_cmd, _build_stdin_script(command) if not pass_stdin else None,
+        output_callback, stderr_callback, timeout, build_ssh_process_env(), bridge.name,
+    ))
+
+
+def _stream_process(ssh_cmd, script, output_callback, stderr_callback, timeout, env, bridge_name):
+    pass_stdin = script is None
+    popen_stdin = None if pass_stdin else subprocess.PIPE
     process = subprocess.Popen(
         ssh_cmd,
         stdin=popen_stdin,
@@ -233,7 +243,7 @@ def run_ssh_command_streaming(
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=build_ssh_process_env(),
+        env=env,
     )
     stdout = process.stdout
     if stdout is None:
@@ -241,7 +251,6 @@ def run_ssh_command_streaming(
 
     # Feed the command via stdin so it never appears in the process cmdline.
     if not pass_stdin:
-        script = _build_stdin_script(command)
         if process.stdin is not None:
             process.stdin.write(script)
             process.stdin.close()
@@ -259,7 +268,7 @@ def run_ssh_command_streaming(
                 if elapsed >= timeout:
                     logger.debug(
                         "run_ssh_command_streaming timeout bridge=%s elapsed=%.2fs limit=%ss",
-                        bridge.name,
+                        bridge_name,
                         elapsed,
                         timeout,
                     )
@@ -274,13 +283,13 @@ def run_ssh_command_streaming(
         process.wait()
         logger.debug(
             "run_ssh_command_streaming completed bridge=%s returncode=%s",
-            bridge.name,
+            bridge_name,
             process.returncode,
         )
         return process.returncode
 
     except KeyboardInterrupt:
-        logger.debug("run_ssh_command_streaming interrupted bridge=%s", bridge.name)
+        logger.debug("run_ssh_command_streaming interrupted bridge=%s", bridge_name)
         process.terminate()
         process.wait()
         raise

@@ -618,7 +618,7 @@ class AsyncWebSocketClient:
         if not host:
             raise JobShellError("Websocket URL has no host")
         port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-        proxy = urlsplit(WebSocketClient._proxy_url(self.url))
+        proxy = urlsplit(await asyncio.to_thread(WebSocketClient._proxy_url, self.url))
         if proxy.scheme and proxy.scheme not in {"http", "https"}:
             raise JobShellError("WebSocket proxy only supports HTTP(S) proxies. "
                                 f"Configured proxy scheme: {proxy.scheme}")
@@ -626,7 +626,7 @@ class AsyncWebSocketClient:
         target_port = (proxy.port or (443 if proxy.scheme == "https" else 80)) if proxy.hostname else port
         tls = proxy.scheme == "https" if proxy.hostname else parsed.scheme == "wss"
         self.reader, self.writer = await asyncio.open_connection(
-            target_host, target_port, ssl=ssl.create_default_context() if tls else None,
+            target_host, target_port, ssl=await asyncio.to_thread(ssl.create_default_context) if tls else None,
         )
         if proxy.hostname:
             lines = [f"CONNECT {host}:{port} HTTP/1.1", f"Host: {host}:{port}"]
@@ -641,7 +641,7 @@ class AsyncWebSocketClient:
                 loop = asyncio.get_running_loop()
                 protocol = self.writer.transport.get_protocol()
                 transport = await loop.start_tls(
-                    self.writer.transport, protocol, ssl.create_default_context(),
+                    self.writer.transport, protocol, await asyncio.to_thread(ssl.create_default_context),
                     server_hostname=host,
                 )
                 if transport is None:

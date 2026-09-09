@@ -3,19 +3,16 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
-from contextvars import copy_context
 from copy import copy
 import os
+import inspect
 import threading
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any
 import warnings
 
-from greenlet import greenlet, getcurrent
 
-from inspire.platform.web.flow import async_call, call
-if TYPE_CHECKING:
-    from inspire.platform.web.transport_async import AsyncDriver
+from inspire.platform.web.flow import async_call, call, run_sync as _run_sync
 from .client import InspireClient
 from .models import ResourceRef
 from .exceptions import ClientClosedError, ClientThreadError, ValidationError
@@ -37,36 +34,6 @@ async def _finish(future: asyncio.Future[Any]) -> Any:
     return future.result()
 
 
-async def _run_sync(driver: AsyncDriver, function: Callable[[], Any]) -> Any:
-    """A stack switch is not a thread: all SDK code stays on this event loop.
-
-    Each suspended stack keeps its own ContextVars. The I/O interpreter inherits
-    those values, but disables the bridge while interpreting native workflows.
-    Cancellation is thrown back through the original synchronous finally blocks.
-    """
-    parent = getcurrent()
-
-    def invoke() -> Any:
-        token = async_call.set(parent.switch)
-        try:
-            return function()
-        finally:
-            async_call.reset(token)
-
-    child = greenlet(invoke)
-    child.gr_context = copy_context()
-    action = child.switch()
-    while not child.dead:
-        context = child.gr_context.copy()
-        context.run(async_call.set, None)
-        task = context.run(asyncio.create_task, driver.execute(action))
-        try:
-            result = await task
-        except BaseException as error:
-            action = child.throw(error)
-        else:
-            action = child.switch(result)
-    return action
 
 
 class AsyncRuntime:
@@ -129,6 +96,15 @@ class AsyncRuntime:
                       deadline: float | None = None) -> Any:
         from inspire.platform.web.transport_async import AsyncDriver
 
+        callback = kwargs.get("on_output")
+        if callback is not None and producer is None:
+            def output(chunk: str) -> Any:
+                value = callback(chunk)
+                bridge = async_call.get()
+                if inspect.isawaitable(value) and bridge is not None:
+                    return bridge(call(_await_output, value))
+                return value
+            kwargs = dict(kwargs, on_output=output)
         client = self._operation_client()
         client._transport.deadline = deadline
         try:
@@ -228,10 +204,18 @@ class AsyncRuntime:
             if output:
                 callback = kwargs.get("on_output")
 
-                def on_output(chunk: str) -> Any:
+                async def publish(chunk: str) -> None:
+                    from inspire.services.async_output import deliver_output
+
                     if callback is not None:
-                        callback(chunk)
-                    return emit(chunk)
+                        await deliver_output(callback, chunk)
+                    await queue.put(chunk)
+
+                def on_output(chunk: str) -> Any:
+                    bridge = async_call.get()
+                    if bridge is not None:
+                        return bridge(call(publish, chunk))
+                    return publish(chunk)
 
                 bound(*args, **dict(kwargs, on_output=on_output))
             else:
@@ -286,3 +270,7 @@ class AsyncRuntime:
 class AsyncFacade:
     def __init__(self, client: AsyncRuntime) -> None:
         self._client = client
+
+
+async def _await_output(value: Any) -> Any:
+    return await value

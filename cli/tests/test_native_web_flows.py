@@ -157,7 +157,19 @@ def scripted_run(monkeypatch, asynchronous, scenario, cli=False):
         patch.setattr(proxy, "resolve_requests_proxy_config", lambda **kw: ({}, "none"))
         patch.setattr(requests.Session, "send", sync_send)
         patch.setattr(httpx.AsyncClient, "send", async_send)
-        patch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("native flow offloaded"))
+        original_to_thread = asyncio.to_thread
+
+        async def local_io_only(function, *args, **kwargs):
+            from functools import partial
+
+            leaf = function.func if isinstance(function, partial) else function
+            assert leaf.__name__ in {
+                "_configure", "_load_runtime_config", "_load_proxy_toml_values", "_persist", "_close_browser_client",
+                "_prepare", "prepare", "build", "load", "save", "get_session_cache_file", "is_dir",
+            }, f"unexpected offload: {leaf.__name__}"
+            return await original_to_thread(function, *args, **kwargs)
+
+        patch.setattr(asyncio, "to_thread", local_io_only)
         if scenario == "deadline":
             owner.deadline = 1
             patch.setattr(owner, "remaining", lambda: remaining(30, owner.deadline, clock[0]))

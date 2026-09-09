@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path, PurePosixPath
-import tempfile
 from typing import Any, TYPE_CHECKING
 
 from inspire.platform.web.browser_api.jupyter_terminal import _notebook_jupyter_url
 from inspire.platform.web.jupyter_urls import jupyter_server_base
-from inspire.platform.web.flow import call, perform_sync
+from inspire.platform.web.flow import call, perform_sync, blocking_io
 from inspire.services import remote_exec, notebook_transfer as core
 from .exceptions import ValidationError, TransportError
 if TYPE_CHECKING:
@@ -28,13 +27,7 @@ def transfer(
         raise ValidationError("max_bytes must be a positive integer.")
     remote = core.remote_path(remote)
     path = Path(local).absolute()
-    if download:
-        if not overwrite and (path.exists() or path.is_symlink()):
-            raise ValidationError(f"Destination already exists: {path}")
-    else:
-        core.inventory(path)
-        if path.is_dir() and not recursive:
-            raise ValidationError("Directories require recursive=True and transport='ssh'.")
+    _validate_local(path, download, overwrite, recursive)
     resolved = service._resolve(ref, workspace)
     bridge = None
     if transport != "jupyter":
@@ -65,10 +58,7 @@ def jupyter_transfer(
     download: bool, overwrite: bool, timeout: float, max_bytes: int,
 ) -> core.TransferResult:
     if not download:
-        core.check_size(local.stat().st_size, max_bytes)
-        with local.open("rb") as source:
-            data = source.read(max_bytes + 1)
-        core.check_size(len(data), max_bytes)
+        data = _read_upload(local, max_bytes)
     owner = service.client._transport
     lab = _notebook_jupyter_url(service.session, notebook_id)
     if not lab:
@@ -112,10 +102,7 @@ def jupyter_transfer(
             core.check_size((len(encoded) // 4) * 3 - padding, max_bytes)
             data = base64.b64decode(encoded, validate=True)
             core.check_size(len(data), max_bytes)
-            with tempfile.TemporaryDirectory(prefix="inspire-transfer-") as directory:
-                staged = Path(directory) / "payload"
-                staged.write_bytes(data)
-                core.publish(staged, local, overwrite)
+            _publish_download(data, local, overwrite)
         else:
             if existing is not None:
                 if not overwrite:
@@ -142,3 +129,31 @@ def jupyter_transfer(
                 if response.status_code not in (200, 201):
                     raise TransportError("Jupyter did not confirm the upload.")
     return core.TransferResult(str(local), remote, len(data), "jupyter")
+
+
+@blocking_io
+def _validate_local(path: Path, download: bool, overwrite: bool, recursive: bool) -> None:
+    if download:
+        if not overwrite and (path.exists() or path.is_symlink()):
+            raise ValidationError(f"Destination already exists: {path}")
+    else:
+        core.inventory(path)
+        if path.is_dir() and not recursive:
+            raise ValidationError("Directories require recursive=True and transport='ssh'.")
+
+
+@blocking_io
+def _read_upload(local: Path, max_bytes: int) -> bytes:
+    core.check_size(local.stat().st_size, max_bytes)
+    with local.open("rb") as source:
+        data = source.read(max_bytes + 1)
+    core.check_size(len(data), max_bytes)
+    return data
+
+
+@blocking_io
+def _publish_download(data: bytes, local: Path, overwrite: bool) -> None:
+    with core.temporary_directory() as directory:
+        staged = Path(directory) / "payload"
+        staged.write_bytes(data)
+        core.publish(staged, local, overwrite)

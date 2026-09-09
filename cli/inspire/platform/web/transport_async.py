@@ -12,7 +12,7 @@ import httpx
 import requests
 
 from inspire.platform.web.transport_core import ApplicationRequest, Observe, Send, Refresh, Sleep, Action
-from inspire.platform.web.flow import Call, call, program_for, enter_context, exit_context
+from inspire.platform.web.flow import Call, call, program_for, enter_context, exit_context, run_sync, drive_program
 from inspire.platform.web.transport_policy import _CLI_POLICY, _SDK_POLICY, http_options
 from inspire.platform.web.session.requests import build_requests_session
 
@@ -89,60 +89,67 @@ class AsyncDriver:
         # requests only prepares bytes here; it never sends async API traffic.
         # This preserves JSON encoding, cookie domain/path matching, default
         # headers, netrc and explicit/system proxy precedence exactly.
-        with build_requests_session(owner.session, url) as preparation:
-            options = http_options(
-                action.method,
-                action.body,
-                action.referer,
-                owner.base_url,
-                action.timeout,
-                owner.cli_compat,
-            )
-            prepared = preparation.prepare_request(
-                requests.Request(options.method, url, headers=options.headers, json=options.body)
-            )
-            settings = preparation.merge_environment_settings(url, {}, None, None, None)
-            proxy = requests.utils.select_proxy(url, settings["proxies"])
-            key = (proxy, settings["verify"], settings["cert"])
-            client = self.clients.get(key)
-            if client is None:
-                client = await self.stack.enter_async_context(
-                    httpx.AsyncClient(
-                        proxy=proxy,
-                        verify=settings["verify"],
-                        cert=settings["cert"],
-                        trust_env=False,
-                        follow_redirects=False,
-                    )
-                )
-                self.clients[key] = client
-            timeout = httpx.Timeout(
-                action.timeout,
-                connect=options.connect_timeout,
-            )
-            request = httpx.Request(
-                prepared.method or action.method,
-                prepared.url or url,
-                headers=dict(prepared.headers),
-                content=prepared.body,
-                extensions={"timeout": timeout.as_dict()},
-            )
+        options = http_options(
+            action.method, action.body, action.referer, owner.base_url,
+            action.timeout, owner.cli_compat,
+        )
+
+        session = owner.session
+
+        def prepare() -> Any:
+            with build_requests_session(session, url) as preparation:
+                return self._prepare(preparation, requests.Request(
+                    options.method, url, headers=options.headers, json=options.body,
+                ))
+
+        prepared, settings = await asyncio.to_thread(prepare)
+        client = await self._client(prepared.url, settings)
+        timeout = httpx.Timeout(action.timeout, connect=options.connect_timeout)
+        request = httpx.Request(
+            prepared.method or action.method, prepared.url or url,
+            headers=dict(prepared.headers), content=prepared.body,
+            extensions={"timeout": timeout.as_dict()},
+        )
         response = await owner._dispatch(client.send, request, follow_redirects=False)
         policy = _CLI_POLICY if owner.cli_compat else _SDK_POLICY
         return policy.response(response)
 
     async def execute(self, action: Call) -> Any:
         """Interpret nested workflows without moving authentication into a worker."""
-        from inspire.services import remote_exec, notebook_transfer
+        from inspire.services import remote_exec
         from inspire.platform.web.browser_api import jupyter_terminal
+
+        from inspire.bridge.tunnel.ssh_exec import _stream_process
+        from inspire.bridge.tunnel.process_async import stream_process, run_process
+        import subprocess
+
+        if action.function is subprocess.run:
+            return await run_process(*action.args, **action.kwargs)
+        if action.function is _stream_process:
+            async def deliver(callback: Any, chunk: str) -> None:
+                result = await run_sync(self, lambda: callback(chunk))
+                if inspect.isawaitable(result):
+                    await result
+            return await stream_process(*action.args, **action.kwargs, deliver=deliver)
+
+        if action.blocking:
+            from inspire.services.async_output import _finish_io
+            from functools import partial
+
+            return await _finish_io(partial(action.function, *action.args, **action.kwargs))
+
+        from inspire.platform.web.session.auth import _playwright_context
+        if action.function is _playwright_context:
+            from playwright.async_api import async_playwright
+
+            return async_playwright()
 
         adapters: dict[Any, Any] = {
             remote_exec.exec_over_pty_websocket: remote_exec.exec_over_pty_websocket_async,
             remote_exec.exec_in_notebook_jupyter: remote_exec.exec_in_notebook_jupyter_async,
             jupyter_terminal.run_command_capture_in_notebook: jupyter_terminal.run_command_capture_in_notebook_async,
         }
-        if action.function in {remote_exec.exec_in_notebook_ssh, remote_exec.cached_notebook_bridge,
-                               notebook_transfer.transfer_ssh}:
+        if action.function in {remote_exec.cached_notebook_bridge}:
             return await asyncio.to_thread(action.function, *action.args, **action.kwargs)
         if inspect.iscoroutinefunction(action.function):
             return await action.function(*action.args, **action.kwargs)
@@ -155,6 +162,10 @@ class AsyncDriver:
             from inspire.platform.web.async_context import authentication_context
 
             context = action.args[0]
+            if hasattr(context, "__aenter__"):
+                result = await context.__aenter__()
+                self.contexts[id(context)] = context
+                return result
             if not hasattr(context, "func"):
                 return context.__enter__()
             asynchronous = authentication_context(context, self.transport)
@@ -167,8 +178,6 @@ class AsyncDriver:
             if asynchronous is None:
                 return context.__exit__(*error)
             return await asynchronous.__aexit__(*error)
-        if getattr(action.function, "__name__", "") == "_login_with_browser":
-            return await asyncio.to_thread(action.function, *action.args, **action.kwargs)
         if getattr(action.function, "__name__", "") in {"_borrow_plaza_slot", "reset_plaza_client"}:
             while self.transport._plaza_busy:
                 self.transport.check_deadline()
@@ -177,21 +186,10 @@ class AsyncDriver:
             await asyncio.sleep(*action.args)
             return None
         program = program_for(action)
-        if program is None:
-            return action.function(*action.args, **action.kwargs)
-        try:
-            step = next(program)
-            while True:
-                try:
-                    result = await self.execute(step)
-                except BaseException as error:
-                    step = program.throw(error)
-                else:
-                    step = program.send(result)
-        except StopIteration as done:
-            return done.value
-        finally:
-            program.close()
+        if program is not None:
+            return await run_sync(self, lambda: drive_program(program))
+        result = await run_sync(self, lambda: action.function(*action.args, **action.kwargs))
+        return await result if inspect.isawaitable(result) else result
 
     async def _http(self, action: Call) -> requests.Response:
         """Send prepared requests with native redirects and a caller-owned cookie jar."""
@@ -211,17 +209,10 @@ class AsyncDriver:
         else:
             connect = budget
         budget = min(budget, owner.remaining())
-        prepared = http.prepare_request(requests.Request(method.upper(), url, **kwargs))
-        settings = http.merge_environment_settings(prepared.url, {}, None, None, None)
-        proxy = requests.utils.select_proxy(prepared.url, settings["proxies"])
-        key = (proxy, settings["verify"], settings["cert"])
-        client = self.clients.get(key)
-        if client is None:
-            client = await self.stack.enter_async_context(httpx.AsyncClient(
-                proxy=proxy, verify=settings["verify"], cert=settings["cert"],
-                trust_env=False, follow_redirects=False,
-            ))
-            self.clients[key] = client
+        prepared, settings = await asyncio.to_thread(
+            self._prepare, http, requests.Request(method.upper(), url, **kwargs),
+        )
+        client = await self._client(prepared.url, settings)
         client.cookies.clear()
         client.cookies.update(http.cookies)
         request = httpx.Request(
@@ -251,3 +242,41 @@ class AsyncDriver:
         result.encoding = response.encoding
         result.request = prepared
         return result
+
+
+    def _prepare(self, http: requests.Session, request: requests.Request) -> Any:
+        # requests retains cookie/header/body and environment proxy semantics.
+        # A truthy auth callable suppresses its repeated implicit netrc lookup.
+        if http.trust_env and not http.auth and not request.auth:
+            request.auth = self.transport._netrc_auth
+        prepared = http.prepare_request(request)
+        return prepared, http.merge_environment_settings(prepared.url, {}, None, None, None)
+
+    async def _client(self, url: str, settings: Any) -> httpx.AsyncClient:
+        proxy = requests.utils.select_proxy(url, settings["proxies"])
+        key = (proxy, settings["verify"], settings["cert"])
+        client = self.clients.get(key)
+        if client is None:
+            def build() -> httpx.AsyncClient:
+                from httpx import create_ssl_context
+
+                tls_key = (settings["verify"], settings["cert"])
+                contexts = self.transport._tls_contexts
+                # The shared lock is held only in workers, never across awaits.
+                with self.transport._preparation_lock:
+                    if tls_key not in contexts:
+                        contexts[tls_key] = create_ssl_context(
+                            verify=settings["verify"], cert=settings["cert"], trust_env=False,
+                        )
+                    context = contexts[tls_key]
+                    proxy_config: Any = proxy
+                    if proxy and proxy.startswith("https://"):
+                        if (True, None) not in contexts:
+                            contexts[(True, None)] = create_ssl_context(trust_env=False)
+                        proxy_config = httpx.Proxy(proxy, ssl_context=contexts[(True, None)])
+                return httpx.AsyncClient(proxy=proxy_config, verify=context,
+                                         trust_env=False, follow_redirects=False)
+            client = await asyncio.to_thread(build)
+            await self.stack.enter_async_context(client)
+            self.clients[key] = client
+        return client

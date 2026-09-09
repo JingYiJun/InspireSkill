@@ -615,7 +615,7 @@ async def run_command_capture_in_notebook_async(
         return unfinished
     base = rtunnel_module.jupyter_server_base(lab_url)
     term_name = ""
-    with owner.application_connection(lab_url) as http:
+    async with owner.application_connection_async(lab_url) as http:
         async def send(method: str, url: str, **options: Any) -> Any:
             options.setdefault("allow_redirects", False)
             return await owner.request_async(

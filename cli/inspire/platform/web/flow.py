@@ -7,7 +7,10 @@ this description; interpreters supply the I/O.
 
 from __future__ import annotations
 
-from contextvars import ContextVar
+import asyncio
+from greenlet import greenlet, getcurrent
+
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, Generator, ParamSpec, TypeVar
@@ -23,6 +26,7 @@ class Call:
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = field(default_factory=dict)
     http: bool = False
+    blocking: bool = False
 
 
 def call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Call:
@@ -42,20 +46,7 @@ def workflow(function: Callable[P, Program[T]]) -> Callable[P, T]:
         bridge = async_call.get()
         if bridge is not None:
             return bridge(call(execute, *args, **kwargs))
-        program = function(*args, **kwargs)
-        try:
-            action = next(program)
-            while True:
-                try:
-                    result = perform_sync(action)
-                except Exception as error:
-                    action = program.throw(error)
-                else:
-                    action = program.send(result)
-        except StopIteration as done:
-            return done.value
-        finally:
-            program.close()
+        return drive_program(function(*args, **kwargs))
 
     execute.__workflow__ = function  # type: ignore[attr-defined]
     return execute
@@ -95,3 +86,64 @@ def perform_sync(action: Call) -> Any:
     finally:
         if owner is not None:
             owner.check_deadline()
+
+
+def blocking_call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Call:
+    """An indivisible local I/O operation; async drivers finish it off the loop."""
+    return Call(function, args, kwargs, blocking=True)
+
+
+def blocking_io(function: Callable[P, T]) -> Callable[P, T]:
+    """Keep one implementation of local I/O for both execution modes."""
+    @wraps(function)
+    def execute(*args: P.args, **kwargs: P.kwargs) -> T:
+        return perform_sync(blocking_call(function, *args, **kwargs))
+    return execute
+
+
+def drive_program(program: Program[T]) -> T:
+    try:
+        action = next(program)
+        while True:
+            try:
+                result = perform_sync(action)
+            except BaseException as error:
+                action = program.throw(error)
+            else:
+                action = program.send(result)
+    except StopIteration as done:
+        return done.value
+    finally:
+        program.close()
+
+
+async def run_sync(driver: Any, function: Callable[[], Any]) -> Any:
+    """A stack switch is not a thread: all SDK code stays on this event loop.
+
+    Each suspended stack keeps its own ContextVars. The I/O interpreter inherits
+    those values, but disables the bridge while interpreting native workflows.
+    Cancellation is thrown back through the original synchronous finally blocks.
+    """
+    parent = getcurrent()
+
+    def invoke() -> Any:
+        token = async_call.set(parent.switch)
+        try:
+            return function()
+        finally:
+            async_call.reset(token)
+
+    child = greenlet(invoke)
+    child.gr_context = copy_context()
+    action = child.switch()
+    while not child.dead:
+        context = child.gr_context.copy()
+        context.run(async_call.set, None)
+        task = context.run(asyncio.create_task, driver.execute(action))
+        try:
+            result = await task
+        except BaseException as error:
+            action = child.throw(error)
+        else:
+            action = child.switch(result)
+    return action

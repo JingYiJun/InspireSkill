@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_call, perform_sync
+
 import os
 import re
 from collections import deque
@@ -32,8 +34,18 @@ def validate_capture(max_output_bytes: int | None, capture: bool, output_to: Out
 @contextmanager
 def output_writer(target: OutputTarget) -> Iterator[IO[str] | None]:
     if isinstance(target, (str, os.PathLike)):
-        with open(target, "w", encoding="utf-8", newline="") as stream:
+        stream = None
+
+        def open_stream():
+            nonlocal stream
+            stream = open(target, "w", encoding="utf-8", newline="")
+
+        try:
+            perform_sync(blocking_call(open_stream))
             yield stream
+        finally:
+            if stream is not None:
+                perform_sync(blocking_call(stream.close))
     else:
         yield target
 

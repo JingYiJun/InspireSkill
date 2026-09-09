@@ -7,6 +7,8 @@ switches session cache in lockstep.
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
 import json
 import math
 import os
@@ -317,6 +319,7 @@ class WebSession:
             cookies=cookies,
         )
 
+    @blocking_io
     def save(self, account: Optional[str] = None) -> None:
         """Save under the explicit, bound, or current account, in that order."""
         resolved_account = _resolve_account_for_storage(
@@ -344,6 +347,7 @@ class WebSession:
                 pass
 
     @classmethod
+    @blocking_io
     def load(
         cls,
         allow_expired: bool = False,

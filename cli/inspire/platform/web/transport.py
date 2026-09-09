@@ -6,8 +6,8 @@ from inspire.platform.web.flow import Program as FlowProgram, workflow, call, ht
 import os
 import threading
 import time
-from contextlib import contextmanager, nullcontext
-from typing import TYPE_CHECKING, Any, Callable, Iterator, NoReturn
+from contextlib import contextmanager, nullcontext, asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator, NoReturn
 
 from inspire.platform.errors import (
     AuthenticationError,
@@ -67,6 +67,11 @@ class Transport:
         self._plaza: PlazaClient | None = None
         self._plaza_key: tuple[str | None, float] | None = None
         self.deadline: float | None = None
+        self._tls_contexts: dict[Any, Any] = {}
+        self._preparation_lock = threading.Lock()
+        from inspire.platform.web.session.requests import CachedNetrcAuth
+
+        self._netrc_auth = CachedNetrcAuth()
 
     @property
     def _force_browser(self) -> bool:
@@ -310,6 +315,22 @@ class Transport:
             yield connection
         finally:
             http.close()
+
+    @asynccontextmanager
+    async def application_connection_async(self, url: str) -> AsyncIterator[Any]:
+        """Drive the same application jar lifecycle from native async callers."""
+        from inspire.platform.web.transport_async import AsyncDriver
+        from inspire.platform.web.flow import run_sync
+        import sys
+
+        context = self.application_connection(url)
+        async with AsyncDriver(self) as driver:
+            connection = await run_sync(driver, context.__enter__)
+            try:
+                yield connection
+            finally:
+                error = sys.exc_info()
+                await run_sync(driver, lambda: context.__exit__(*error))
 
     @workflow
     def _application_send(

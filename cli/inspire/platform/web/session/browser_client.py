@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
+import asyncio
 import hashlib
 import json
 import threading
@@ -183,6 +186,7 @@ def _close_client_best_effort(client: _BrowserRequestClient, *, timeout: float |
     return done.is_set()
 
 
+@blocking_io
 def _close_browser_client() -> None:
     with _BROWSER_CLIENTS_LOCK:
         clients = list(_BROWSER_CLIENTS)
@@ -235,7 +239,7 @@ class AsyncBrowserRequestClient:
     async def __aenter__(self) -> AsyncBrowserRequestClient:
         from playwright.async_api import async_playwright
 
-        proxy = cast(Any, get_playwright_proxy(account=self.session.account))
+        proxy = cast(Any, await asyncio.to_thread(get_playwright_proxy, account=self.session.account))
         try:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(

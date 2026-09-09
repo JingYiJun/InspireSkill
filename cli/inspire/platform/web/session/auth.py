@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
 import sys
+from contextlib import contextmanager
 from inspire.platform.web.flow import enter_context, exit_context
 
-from inspire.platform.web.flow import Program, workflow, call, http_call
+from inspire.platform.web.flow import Program, workflow, call, http_call, perform_sync
 
 from html.parser import HTMLParser
 import json
@@ -118,6 +121,7 @@ def _asks_for_verification_code(html: str, page_url: str) -> bool:
     return _references_live_captcha_image(html, page_url)
 
 
+@blocking_io
 def _load_runtime_config(account: Optional[str] = None) -> Config:
     """Use the same account and runtime settings for login and API requests."""
     account_name = str(account or "").strip()
@@ -423,7 +427,7 @@ def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
 def _page_content(page: Any) -> str:
     """The page's HTML, or ``""`` when the page is already closed."""
     try:
-        return str(page.content() or "")
+        return str(perform_sync(call(page.content)) or "")
     except Exception:
         return ""
 
@@ -1142,6 +1146,7 @@ def _login_with_cas_requests(
     return session
 
 
+@blocking_io
 def _persist(session: WebSession, *, account: Optional[str]) -> None:
     """Cache an authenticated session, keeping it usable if the write fails.
 
@@ -1288,8 +1293,6 @@ def _submit_credentials(
 def _login_with_browser(
     username: str, password: str, *, base_url: str, headless: bool, account: Optional[str],
 ) -> WebSession:
-    from playwright.sync_api import sync_playwright
-
     resolved_proxy, playwright_proxy_source = resolve_playwright_proxy_config(account=account)
     playwright_proxy = cast(Any, resolved_proxy)
     effective_proxy = describe_effective_proxy_config(account=account, base_url=base_url)
@@ -1305,28 +1308,28 @@ def _login_with_browser(
         redact_proxy_url(resolved_proxy.get("server")) if resolved_proxy else "",
         bool(resolved_proxy and resolved_proxy.get("bypass")),
     )
-    with sync_playwright() as p:
+    with _playwright_runtime() as p:
         try:
-            browser = p.chromium.launch(
+            browser = perform_sync(call(p.chromium.launch,
                 **chromium_launch_kwargs(headless=headless, proxy=playwright_proxy)
-            )
+            ))
         except Exception as exc:
             if _is_browser_launch_runtime_error(exc):
                 _raise_browser_launch_runtime_error(exc)
             raise
-        context = browser.new_context(proxy=playwright_proxy, ignore_https_errors=True)
-        page = context.new_page()
+        context = perform_sync(call(browser.new_context, proxy=playwright_proxy, ignore_https_errors=True))
+        page = perform_sync(call(context.new_page))
 
         # Navigate to login page; use domcontentloaded since CAS may have
         # long-polling resources that prevent networkidle from completing.
         try:
-            page.goto(f"{base_url}/login", wait_until="domcontentloaded", timeout=60000)
+            perform_sync(call(page.goto, f"{base_url}/login", wait_until="domcontentloaded", timeout=60000))
         except Exception as exc:
             if _is_browser_closed_error(exc):
                 _raise_browser_closed_error(exc)
             raise
         # Give some time for any redirects to settle
-        page.wait_for_timeout(2000)
+        perform_sync(call(page.wait_for_timeout, 2000))
 
         login_pairs = [
             ("input#username", "input#passwordShow"),
@@ -1337,12 +1340,12 @@ def _login_with_browser(
         def _fill_login_form() -> Optional[object]:
             for user_sel, pass_sel in login_pairs:
                 try:
-                    page.wait_for_selector(user_sel, timeout=5000, state="visible")
-                    page.wait_for_selector(pass_sel, timeout=5000, state="visible")
+                    perform_sync(call(page.wait_for_selector, user_sel, timeout=5000, state="visible"))
+                    perform_sync(call(page.wait_for_selector, pass_sel, timeout=5000, state="visible"))
                     user_locator = page.locator(user_sel).first
                     pass_locator = page.locator(pass_sel).first
-                    user_locator.fill(username)
-                    pass_locator.fill(password)
+                    perform_sync(call(user_locator.fill, username))
+                    perform_sync(call(pass_locator.fill, password))
                     return pass_locator
                 except Exception:
                     continue
@@ -1350,17 +1353,17 @@ def _login_with_browser(
 
         def _submit_login_form(pass_locator) -> None:  # noqa: ANN001
             try:
-                pass_locator.press("Enter", timeout=3000)
+                perform_sync(call(pass_locator.press, "Enter", timeout=3000))
                 return
             except Exception:
                 pass
             try:
-                pass_locator.evaluate("el => el.form && el.form.submit()")
+                perform_sync(call(pass_locator.evaluate, "el => el.form && el.form.submit()"))
                 return
             except Exception:
                 pass
             try:
-                pass_locator.evaluate(
+                perform_sync(call(pass_locator.evaluate,
                     """
                     el => {
                       const btn = el.form?.querySelector('#passbutton,button[type="submit"],input[type="submit"]');
@@ -1368,15 +1371,15 @@ def _login_with_browser(
                       return false;
                     }
                     """
-                )
+                ))
             except Exception:
                 pass
 
         pass_locator = _fill_login_form()
         if not pass_locator:
             try:
-                page.get_by_text("Account login", exact=True).click(timeout=3000, force=True)
-                page.wait_for_timeout(500)
+                perform_sync(call(page.get_by_text("Account login", exact=True).click, timeout=3000, force=True))
+                perform_sync(call(page.wait_for_timeout, 500))
             except Exception:
                 pass
             pass_locator = _fill_login_form()
@@ -1426,18 +1429,18 @@ def _login_with_browser(
             }
             while time.time() < deadline:
                 try:
-                    resp = context.request.post(
+                    resp = perform_sync(call(context.request.post,
                         f"{base_url}{USER_DETAIL_PATH}",
                         headers=headers,
                         data={},
                         timeout=10000,
-                    )
+                    ))
                     last_status = resp.status
                     if resp.status == 200:
                         return
                 except Exception:
                     pass
-                page.wait_for_timeout(500)
+                perform_sync(call(page.wait_for_timeout, 500))
             if credentials_submitted:
                 raise _authentication_error(last_status)
             # The form was never found, so nothing was submitted; this is a
@@ -1459,7 +1462,7 @@ def _login_with_browser(
         # fontconfig is incomplete; rendering the SPA is unnecessary for CLI
         # session capture.
         try:
-            page.close()
+            perform_sync(call(page.close))
         except Exception:
             pass
 
@@ -1469,14 +1472,14 @@ def _login_with_browser(
             "Referer": f"{base_url}/login",
         }
         try:
-            user_detail_resp = context.request.post(
+            user_detail_resp = perform_sync(call(context.request.post,
                 f"{base_url}{USER_DETAIL_PATH}",
                 headers=request_headers,
                 data={},
                 timeout=10000,
-            )
+            ))
             if user_detail_resp.status == 200:
-                detail = _v2_result(user_detail_resp.json())
+                detail = _v2_result(perform_sync(call(user_detail_resp.json)))
                 if detail:
                     user_detail = detail
         except Exception:
@@ -1489,15 +1492,15 @@ def _login_with_browser(
         all_workspace_names: dict[str, str] = {}
         all_workspace_fair_scheduling: dict[str, bool] = {}
         try:
-            routes_resp = context.request.post(
+            routes_resp = perform_sync(call(context.request.post,
                 f"{base_url}{USER_ROUTES_PATH}",
                 headers=request_headers,
                 data=BOOTSTRAP_ROUTES_BODY,
                 timeout=15000,
-            )
+            ))
             if routes_resp.status == 200:
                 route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
-                    routes_resp.json()
+                    perform_sync(call(routes_resp.json))
                 )
                 _merge_workspace_routes(
                     all_workspace_ids,
@@ -1513,13 +1516,13 @@ def _login_with_browser(
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 
         # Capture storage state (cookies + localStorage)
-        storage_state = context.storage_state()
+        storage_state = perform_sync(call(context.storage_state))
 
         # Keep a simple cookie name->value mapping for websocket clients.
-        cookies = context.cookies()
+        cookies = perform_sync(call(context.cookies))
         cookie_dict = {c["name"]: c["value"] for c in cookies}
 
-        browser.close()
+        perform_sync(call(browser.close))
 
         session = WebSession(
             storage_state=cast(dict[str, Any], storage_state),
@@ -1610,3 +1613,19 @@ def get_web_session(
     if owner is not None and not owner.allow_browser:
         return (yield call(login_without_browser, username, password, base_url=base_url, account=account))
     return (yield call(login_with_playwright, username, password, base_url=base_url, account=account))
+
+
+@contextmanager
+def _playwright_runtime():
+    context = perform_sync(call(_playwright_context))
+    runtime = perform_sync(call(enter_context, context))
+    try:
+        yield runtime
+    finally:
+        perform_sync(call(exit_context, context, *sys.exc_info()))
+
+
+def _playwright_context():
+    from playwright.sync_api import sync_playwright
+
+    return sync_playwright()

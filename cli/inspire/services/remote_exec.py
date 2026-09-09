@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import call, blocking_call, perform_sync
 from inspire.services.async_output import deliver_output
 
 import asyncio
@@ -264,23 +265,23 @@ def exec_in_notebook_ssh(
             buffer.feed(chunk)
             try:
                 if writer is not None:
-                    writer.write(chunk)
+                    perform_sync(blocking_call(writer.write, chunk))
                 if on_output is not None:
-                    on_output(chunk)
+                    perform_sync(call(on_output, chunk))
             except BaseException:
                 callback_failed = True
                 raise
 
         completed = True
         try:
-            code = run_ssh_command_streaming(
+            code = perform_sync(call(run_ssh_command_streaming,
                 command,
                 bridge_name=bridge_name,
                 config=config,
                 timeout=timeout,
                 output_callback=lambda chunk: observe(chunk, out),
                 stderr_callback=lambda chunk: observe(chunk, err),
-            )
+            ))
         except subprocess.TimeoutExpired:
             if callback_failed:
                 raise

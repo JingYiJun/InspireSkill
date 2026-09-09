@@ -8,6 +8,8 @@ import math
 import time
 from typing import Any, TypeVar, cast
 
+from inspire.platform.web.flow import blocking_call, perform_sync
+
 from .exceptions import ValidationError
 from .catalog_store import CatalogStore, KINDS, MAX_ENTRIES
 
@@ -108,7 +110,7 @@ class CatalogCache:
                 del self._entries[key]
                 self._tokens.pop(key, None)
         disk = self._invalidation_store
-        if disk is not None and (self._store is not None or disk.path.exists()):
+        if disk is not None and (self._store is not None or perform_sync(blocking_call(disk.path.exists))):
             disk.invalidate(prefix)
 
     def stats(self) -> dict[str, int]:

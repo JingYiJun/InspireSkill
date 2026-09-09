@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Awaitable, Callable
 from contextlib import aclosing
 import inspect
 from pathlib import Path
@@ -76,6 +76,8 @@ def test_every_facade_and_signature_has_typed_async_mirror(client):
         for base in getattr(type(bound.__self__), "__orig_bases__", ()):
             bindings.update(zip(getattr(get_origin(base), "__parameters__", ()), get_args(base)))
         hints = {name: specialize(value, bindings) for name, value in get_type_hints(bound).items()}
+        if "on_output" in hints:
+            hints["on_output"] = specialize(Callable[[str], None | Awaitable[None]] | None, {})
         if key in ASYNC_HANDLE_RETURNS:
             assert issubclass(ASYNC_HANDLE_RETURNS[key], hints["return"])
             hints["return"] = ASYNC_HANDLE_RETURNS[key]
@@ -202,8 +204,15 @@ def test_native_concurrency_without_workers(tracked, monkeypatch, concurrency):
 
     monkeypatch.setattr(Workspaces, "_all", rows)
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
-    monkeypatch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("worker offload"))
-    monkeypatch.setattr(threading.Thread, "start", lambda *a: pytest.fail("worker started"))
+    original_to_thread = asyncio.to_thread
+    offloaded = []
+
+    async def local_io_only(function, *args, **kwargs):
+        assert function.__name__ in {"prepare", "build"}, "business/network offload"
+        offloaded.append(function.__name__)
+        return await original_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", local_io_only)
 
     async def run():
         options = {} if concurrency is None else {"concurrency": concurrency}
@@ -217,6 +226,7 @@ def test_native_concurrency_without_workers(tracked, monkeypatch, concurrency):
         assert not c._active and not hasattr(c, "_workers")
 
     asyncio.run(run())
+    assert offloaded.count("prepare") == offloaded.count("build") == 2
     assert maximum == 2
     assert len(tracked) == 1 and tracked[0].closed
     assert threads == [threading.get_ident()] * 2
@@ -808,7 +818,7 @@ def test_concurrent_writes_have_separate_single_send_and_deadline_state(tracked,
 
 
 @pytest.mark.parametrize("transport", ["jupyter", "ssh"])
-def test_notebook_exec_uses_native_adapter_or_per_call_offload(tracked, monkeypatch, transport):
+def test_notebook_exec_uses_native_io_and_loop_callbacks(tracked, monkeypatch, transport):
     from inspire.sdk.notebooks import Notebooks
     from inspire.services import remote_exec as core
     from inspire.services.async_output import deliver_output
@@ -860,7 +870,7 @@ def test_notebook_exec_uses_native_adapter_or_per_call_offload(tracked, monkeypa
                 assert closed.is_set()
 
     asyncio.run(run())
-    assert all((thread == threading.get_ident()) == (transport == "jupyter") for thread in threads)
+    assert threads and all(thread == threading.get_ident() for thread in threads)
 
 
 def test_first_call_acquires_session_through_native_driver(client, tracked, monkeypatch):
@@ -881,7 +891,13 @@ def test_first_call_acquires_session_through_native_driver(client, tracked, monk
     monkeypatch.setattr(WebSession, "load", cached)
     monkeypatch.setattr(Workspaces, "_all", rows)
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
-    monkeypatch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("native auth offloaded"))
+    original_to_thread = asyncio.to_thread
+
+    async def preparation_only(function, *args, **kwargs):
+        assert function.__name__ in {"prepare", "build"}, "authentication workflow offloaded"
+        return await original_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", preparation_only)
 
     async def run():
         async with InspireAsyncClient("alpha") as c:

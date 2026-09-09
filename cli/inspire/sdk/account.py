@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from inspire.platform.web.flow import blocking_call, perform_sync
+
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api
 from inspire.platform.web.browser_api import api_keys
@@ -36,9 +38,9 @@ class AccountInformation(Service):
 
     @operation
     def check(self) -> AccountCheck:
-        cfg, sources = Config.from_files_and_env(
-            require_credentials=False, account=self.client.account
-        )
+        cfg, sources = perform_sync(blocking_call(
+            Config.from_files_and_env, require_credentials=False, account=self.client.account
+        ))
         issues = []
         placeholder = account_check.find_placeholder_host_issues(cfg, sources)
         if placeholder:

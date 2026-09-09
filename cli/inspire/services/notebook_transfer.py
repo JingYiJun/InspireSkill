@@ -1,6 +1,8 @@
 """Notebook file transfer primitives; no bridge creation or browser fallback."""
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io, blocking_call, call, perform_sync
+
 import contextlib
 import json
 import os
@@ -55,6 +57,7 @@ def check_size(size: int, cap: int) -> None:
         )
 
 
+@blocking_io
 def inventory(path: Path) -> tuple[int, int]:
     if any(parent.is_symlink() for parent in (path, *path.parents)):
         raise ValueError("Symbolic links are not supported in transfers.")
@@ -70,6 +73,7 @@ def inventory(path: Path) -> tuple[int, int]:
     return size, count
 
 
+@blocking_io
 def publish(source: Path, destination: Path, overwrite: bool) -> None:
     """Publish complete files; directory merges are incremental, not transactional."""
     if any(parent.is_symlink() for parent in (destination, *destination.parents)):
@@ -110,7 +114,8 @@ def transfer_ssh(
 
     deadline = time.monotonic() + timeout
     config = load_tunnel_config(account=account)
-    program = _REMOTE + inspect.getsource(inventory) + "\n" + inspect.getsource(publish)
+    program = _REMOTE + perform_sync(blocking_call(inspect.getsource, inventory)) + "\n" + perform_sync(blocking_call(inspect.getsource, publish))
+    program = program.replace("@blocking_io\n", "")
     program += "\na = json.loads(sys.argv[1])\np = Path(a['remote'])\n"
     program += """
 if a['action'] == 'prepare':
@@ -146,11 +151,11 @@ elif a['action'] == 'cleanup':
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("SSH transfer timed out.")
-        result = exec_in_notebook_ssh(
+        result = perform_sync(call(exec_in_notebook_ssh,
             bridge_name=bridge_name, account=account,
             command="python3 -c " + shlex.quote(program) + " " + shlex.quote(args),
             timeout=remaining,
-        )
+        ))
         if not result.completed or result.returncode:
             raise ValueError("SSH transfer failed: " + result.stderr[-1000:])
         return json.loads(result.stdout) if result.stdout.strip() else {}
@@ -159,13 +164,13 @@ elif a['action'] == 'cleanup':
     if not re.fullmatch(r"/tmp/inspire-transfer-[a-zA-Z0-9_-]+", stage):
         raise ValueError("SSH returned an invalid staging path.")
     try:
-        with tempfile.TemporaryDirectory(prefix="inspire-transfer-") as directory:
+        with temporary_directory() as directory:
             target = Path(directory) / "payload" if download else Path(local).absolute()
-            result = run_scp_transfer(
+            result = perform_sync(call(run_scp_transfer,
                 local_path=str(target), remote_path=stage + "/payload", download=download,
                 recursive=recursive, bridge_name=bridge_name, config=config,
                 timeout=max(1, int(deadline - time.monotonic())),
-            )
+            ))
             if result.returncode:
                 raise ValueError("SCP transfer failed: " + (result.stderr or "")[-1000:])
             if download:
@@ -182,3 +187,19 @@ elif a['action'] == 'cleanup':
 
 def contents_url(base: str, path: str) -> str:
     return base + "api/contents/" + quote(path.lstrip("/"), safe="/")
+
+
+@contextlib.contextmanager
+def temporary_directory():
+    context = None
+
+    def create():
+        nonlocal context
+        context = tempfile.TemporaryDirectory(prefix="inspire-transfer-")
+        return context.name
+
+    try:
+        yield perform_sync(blocking_call(create))
+    finally:
+        if context is not None:
+            perform_sync(blocking_call(context.cleanup))

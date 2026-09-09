@@ -12,6 +12,8 @@ Active account is resolved from ``inspire.accounts.current_account()``
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
 import json
 import logging
 import os
@@ -66,6 +68,7 @@ def _read_json_into_config(path: Path, config: TunnelConfig) -> Optional[str]:
     return default_name or None
 
 
+@blocking_io
 def load_tunnel_config(
     config_dir: Optional[Path] = None,
     account: Optional[str] = None,
