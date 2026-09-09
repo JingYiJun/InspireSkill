@@ -1,6 +1,8 @@
 """Notebook specs, resolved plans and platform observations."""
 
 from __future__ import annotations
+
+from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field, asdict
 from typing import Any
 from .models import (
@@ -98,7 +100,7 @@ class NotebookPlan:
 
 
 @dataclass(frozen=True)
-class NotebookHandle:
+class NotebookHandle(SyncHandle):
     name: str
     ref: NotebookRef
     operation_id: str
@@ -106,7 +108,7 @@ class NotebookHandle:
 
 
 @dataclass(frozen=True)
-class ImageSaveHandle:
+class ImageSaveHandle(SyncHandle):
     name: str
     ref: ImageRef | None
     notebook: NotebookRef

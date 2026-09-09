@@ -17,6 +17,15 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        AsyncJobHandle as AsyncJobHandle,
+        AsyncNotebookHandle as AsyncNotebookHandle,
+        AsyncHPCJobHandle as AsyncHPCJobHandle,
+        AsyncRayJobHandle as AsyncRayJobHandle,
+        AsyncServingHandle as AsyncServingHandle,
+        AsyncTensorboardHandle as AsyncTensorboardHandle,
+        AsyncImageSaveHandle as AsyncImageSaveHandle,
+        AsyncImageRegisterHandle as AsyncImageRegisterHandle,
+
         ServingVersion as ServingVersion,
         ServingScaleHistoryEntry as ServingScaleHistoryEntry,
         ServingConfigItem as ServingConfigItem,

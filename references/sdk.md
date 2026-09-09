@@ -170,6 +170,56 @@ statuses = await client.jobs.status([job.ref for job in page.items])
 
 资源结果通常为 frozen dataclass，嵌套字典并非递归冻结；`MetricGroup` 和 `ServingInstanceView` 是可变 dataclass，`JobEvent` 是 `dict[str, Any]` 类型别名。提供业务视图的对象可用 `.to_dict()` 取得映射，但并非每个导出类型都有此方法（例如 `ExecResult`、`MetricGroup`）；Ref 的 `.to_dict()` 则是引用序列化格式。镜像 `ImageSelector(name, source)` 可指定 official/public/project/private，跨来源同名会报歧义。镜像 list 可返回成功来源的目录，名称 get/detail 要求完整候选集。数据集 get 接受 code 或 DatasetRef，validate 接受 `"name:version"` 或 DatasetMount；applications 的单数据集扫描有界，不保证窗口之外的申请历史。
 
+创建工作负载返回提交句柄（Handle），其中 `.ref` 是可持久化的纯数据身份。同步客户端返回 `JobHandle` 等原有类型，继续使用 `client.jobs.wait(handle.ref)` 或对应门面的等待方法；直接 await 同步句柄会报错并提示改用 `InspireAsyncClient`。异步客户端返回显式导出的 `AsyncJobHandle` 等子类，保留提交结果字段，并绑定产生它的异步门面：
+
+| 异步提交 | 句柄类型 | `await handle` 等价调用 |
+|---|---|---|
+| `jobs.create` | `AsyncJobHandle` | `await client.jobs.wait(handle.ref)` |
+| `hpc.create` | `AsyncHPCJobHandle` | `await client.hpc.wait(handle.ref)` |
+| `ray.create` | `AsyncRayJobHandle` | `await client.ray.wait(handle.ref)` |
+| `servings.create` | `AsyncServingHandle` | `await client.servings.wait(handle.ref)` |
+| `tensorboards.create` | `AsyncTensorboardHandle` | `await client.tensorboards.wait(handle.ref)` |
+| `notebooks.create` | `AsyncNotebookHandle` | `await client.notebooks.wait(handle.ref)` |
+| `notebooks.save_image` | `AsyncImageSaveHandle` | `await client.notebooks.wait_image_ready(handle)` |
+| `images.register` | `AsyncImageRegisterHandle` | `await client.images.wait_ready(handle.ref)` |
+
+`models.register` 仍返回 `ModelRegisterHandle`，没有等待语义。以下三种写法在 `async def` 内并列使用；`handles` 是已经提交的异步句柄列表：
+
+```python
+finished = await handle                              # 门面的默认参数
+finished = await handle.wait(timeout=7200, raise_on_failure=True)
+finished_all = await asyncio.gather(*handles)         # 并发等待全部句柄
+```
+
+`handle.wait()` 是协程方法，接受对应门面 wait 的全部关键字参数，默认值及返回对象完全相同；例如 Notebook 支持 `target`，镜像等待仅支持对应的 timeout／poll_interval 等参数，不额外添加 `raise_on_failure`。
+
+**取消等待只会停止轮询，不会停止远端工作负载；任务继续运行，也可能继续计费。** `await handle`、`handle.wait()`、`future()` 的取消均如此。要释放计算资源，显式调用 `await client.jobs.stop(handle.ref)` 或对应工作负载门面的 `stop()`；句柄没有 `cancel()` 方法。
+
+等待会轮询平台，不是订阅，也不是零成本操作；它沿用门面 wait 的请求预算、总等待超时和会话续期规则。可以反复 await 同一句柄，每次重新读取状态并等待；已处于对应终态／目标状态时，下一次读取后即可返回，不缓存上次结果。工作负载的默认 `raise_on_failure=False` 意味着**失败时返回失败对象而非抛异常**，这一点与通常用 Future 表示失败的习惯不同；设置 True 才抛对应 SDK 失败异常。镜像等待继续沿用其门面自己的异常规则。
+
+Python 3.11 起 `asyncio.wait` 只接受 Task／Future；使用 `future()` 将句柄的默认等待立即调度为当前事件循环上的 `asyncio.Future`（实际为 Task）：
+
+```python
+futures = [handle.future() for handle in handles]
+done, pending = await asyncio.wait(futures, return_when=asyncio.FIRST_COMPLETED)
+for ready in asyncio.as_completed(futures):
+    result = await ready
+```
+
+每次 `future()` 都创建一次新的等待，不共享或缓存 Future；取消其中一个不会取消同一句柄的另一次独立等待。它需要正在运行的事件循环，返回的是 asyncio Future，不是跨线程的 `concurrent.futures.Future`。单纯达到 `asyncio.wait(..., timeout=...)` 的时限不会自动取消 pending Future，调用方负责剩余等待任务的生命周期。
+
+Ref 仍 frozen、可序列化且不持有客户端。恢复时使用异步门面的 `bind_ref`，它只初始化本地客户端并校验引用类型、账号和来源，不请求平台、不创建资源：
+
+```python
+from inspire import JobRef
+
+ref = JobRef.from_dict(saved_ref_dict)
+handle = await client.jobs.bind_ref(ref)
+finished = await handle
+```
+
+Jobs、HPC、Ray、Servings、Tensorboards、Notebooks 和 Images 都支持 `await client.<facade>.bind_ref(ref)`。Notebook 镜像保存可用 `await client.notebooks.bind_image_ref(image_ref, notebook=notebook_ref)` 恢复，并校验两者工作区一致；只保存了 ImageRef 时也可直接使用 `await client.images.bind_ref(image_ref)`。恢复句柄没有原始提交元数据：`operation_id` 为空字符串，其他非身份字段采用默认值；状态须等待后读取，不能把句柄默认值当作平台快照。保存镜像若暂时没有 Ref，await 仍会明确报身份不可用，需先在目录中解析；不会重新保存镜像。
+
 ### 缓存
 
 每个 `InspireClient` 默认使用独立的进程内目录缓存，`catalog_ttl=60`（秒），`catalog_ttl=0` 禁用两层读取和填充。设置 `catalog_disk_cache=True` 可选择跨进程共享目录；默认关闭，避免调用方不知情地持久化目录、引入本地文件锁等待或改变已有缓存行为。每个子进程仍须自行创建 Client。
@@ -621,16 +671,16 @@ TensorBoard 资源的创建、状态和生命周期查询走共享控制台传�
 
 ## 公共导出与类型清单
 
-`inspire.sdk.__all__` 当前包含 **125 个名称**；`from inspire import X` 对这些名称返回同一个对象。以下按导出名内省分组，不包含内部 facade 类。`inspire` 使用懒加载属性，并未定义同等的 `__all__`；使用显式导入，不依赖 `from inspire import *`。
+`inspire.sdk.__all__` 当前包含 **133 个名称**；`from inspire import X` 对这些名称返回同一个对象。以下按导出名内省分组，不包含内部 facade 类。`inspire` 使用懒加载属性，并未定义同等的 `__all__`；使用显式导入，不依赖 `from inspire import *`。
 
 - 入口与账号工具（3）：`Accounts`、`InspireAsyncClient`、`InspireClient`。
 - 引用类型（19）：`APIKeyRef`、`ComputeGroupRef`、`DatasetApplicationRef`、`DatasetRef`、`DatasetTagRef`、`DatasetVersionRef`、`HPCJobRef`、`ImageRef`、`JobRef`、`ModelRef`、`NotebookRef`、`ProjectOwnerRef`、`ProjectRef`、`QuotaRef`、`RayJobRef`、`ResourceRef`、`ServingRef`、`TensorboardRef`、`WorkspaceRef`。
 - 创建规格（6）：`HPCJobCreateSpec`、`JobCreateSpec`、`NotebookCreateSpec`、`RayJobCreateSpec`、`ServingCreateSpec`、`TensorboardCreateSpec`。
-- 结果、资源与值模型（75）：`APIKeyInfo`、`AccountCheck`、`AccountContext`、`AccountInfo`、`DatasetApplication`、`DatasetDetail`、`DatasetInfo`、`DatasetMount`、`DatasetTag`、`DatasetValidation`、`DatasetVersion`、`EventResult`、`ExecResult`、`HPCInstanceView`、`HPCJob`、`HPCJobHandle`、`HPCJobPlan`、`Image`、`ImageDetail`、`ImageRegisterHandle`、`ImageSaveHandle`、`ImageSelector`、`InitResult`、`Job`、`JobHandle`、`JobInstance`、`JobPlan`、`LogResult`、`MetricGroup`、`ModelDeployConfig`、`ModelInfo`、`ModelRegisterHandle`、`ModelStatus`、`ModelVersion`、`Notebook`、`NotebookHandle`、`NotebookImageSizeEstimate`、`NotebookPlan`、`NotebookResourceSnapshot`、`NotebookRun`、`Page`、`Permission`、`ProjectDetail`、`ProjectInfo`、`ProjectOwner`、`Quota`、`QuotaOption`、`RayInstanceView`、`RayJob`、`RayJobHandle`、`RayJobPlan`、`RayScalingEvent`、`Resource`、`ResourceAvailability`、`ResourceUsage`、`Serving`、`ServingAPIMetricSeries`、`ServingAPIMetricTimeRange`、`ServingAPIMetrics`、`ServingConfigItem`、`ServingConfigs`、`ServingHandle`、`ServingInstanceView`、`ServingInvocationCredentials`、`ServingInvocationInfo`、`ServingPlan`、`ServingScaleHistoryEntry`、`ServingVersion`、`Tensorboard`、`TensorboardHandle`、`TensorboardScalarPoint`、`TensorboardScalarSeries`、`TensorboardScalars`、`TensorboardTags`、`WorkloadSchedulePolicy`。
+- 结果、资源与值模型（83）：`AsyncJobHandle`、`AsyncHPCJobHandle`、`AsyncRayJobHandle`、`AsyncServingHandle`、`AsyncTensorboardHandle`、`AsyncNotebookHandle`、`AsyncImageSaveHandle`、`AsyncImageRegisterHandle`、`APIKeyInfo`、`AccountCheck`、`AccountContext`、`AccountInfo`、`DatasetApplication`、`DatasetDetail`、`DatasetInfo`、`DatasetMount`、`DatasetTag`、`DatasetValidation`、`DatasetVersion`、`EventResult`、`ExecResult`、`HPCInstanceView`、`HPCJob`、`HPCJobHandle`、`HPCJobPlan`、`Image`、`ImageDetail`、`ImageRegisterHandle`、`ImageSaveHandle`、`ImageSelector`、`InitResult`、`Job`、`JobHandle`、`JobInstance`、`JobPlan`、`LogResult`、`MetricGroup`、`ModelDeployConfig`、`ModelInfo`、`ModelRegisterHandle`、`ModelStatus`、`ModelVersion`、`Notebook`、`NotebookHandle`、`NotebookImageSizeEstimate`、`NotebookPlan`、`NotebookResourceSnapshot`、`NotebookRun`、`Page`、`Permission`、`ProjectDetail`、`ProjectInfo`、`ProjectOwner`、`Quota`、`QuotaOption`、`RayInstanceView`、`RayJob`、`RayJobHandle`、`RayJobPlan`、`RayScalingEvent`、`Resource`、`ResourceAvailability`、`ResourceUsage`、`Serving`、`ServingAPIMetricSeries`、`ServingAPIMetricTimeRange`、`ServingAPIMetrics`、`ServingConfigItem`、`ServingConfigs`、`ServingHandle`、`ServingInstanceView`、`ServingInvocationCredentials`、`ServingInvocationInfo`、`ServingPlan`、`ServingScaleHistoryEntry`、`ServingVersion`、`Tensorboard`、`TensorboardHandle`、`TensorboardScalarPoint`、`TensorboardScalarSeries`、`TensorboardScalars`、`TensorboardTags`、`WorkloadSchedulePolicy`。
 - 异常（20）：`AmbiguousResourceError`、`AuthenticationCooldownError`、`AuthenticationError`、`ClientClosedError`、`ClientThreadError`、`ConfigurationError`、`HPCJobFailedError`、`InspireError`、`JobFailedError`、`MutationUncertainError`、`NotebookFailedError`、`RayJobFailedError`、`ResolutionIncompleteError`、`ResourceNotFoundError`、`ServingFailedError`、`SubmissionUncertainError`、`TensorboardFailedError`、`TransportError`、`ValidationError`、`WaitTimeoutError`。
 - 函数与类型别名（2）：`JobEvent`、`iter_output_file`。
 
-其中 100 个导出对象满足 `dataclasses.is_dataclass`（包括继承 dataclass 的引用类），98 个 frozen；不能把“类型化”理解为所有返回值均不可变或均有 to_dict。`CustomImageInfo` 是两处镜像等待方法的返回类，可从 `inspire.platform.web.browser_api.images` 导入，不在上述顶层导出清单中。
+其中 108 个导出对象满足 `dataclasses.is_dataclass`（包括继承 dataclass 的引用类），106 个 frozen；不能把“类型化”理解为所有返回值均不可变或均有 to_dict。`CustomImageInfo` 是两处镜像等待方法的返回类，可从 `inspire.platform.web.browser_api.images` 导入，不在上述顶层导出清单中。
 
 ## 创建规格字段
 
@@ -644,7 +694,7 @@ TensorBoard 资源的创建、状态和生命周期查询走共享控制台传�
 | `workspace` | `str \| WorkspaceRef` | `必填` |
 | `project` | `str \| ProjectRef` | `必填` |
 | `group` | `str \| ComputeGroupRef` | `必填` |
-| `quota` | `Quota \| QuotaRef` | `必填` |
+| `quota` | `str \| Quota \| QuotaRef` | `必填` |
 | `image` | `str \| ImageRef \| ImageSelector` | `必填` |
 | `command` | `str` | `必填` |
 | `nodes` | `int` | `1` |
@@ -782,13 +832,13 @@ handle = client.jobs.create(spec, operation_id="pipeline-stage-1")
 finished = client.jobs.wait(handle.ref, raise_on_failure=True)
 ```
 
-异步创建使用相同的规格对象与返回模型，在 `async def` 中执行：
+异步创建使用相同的规格对象，返回对应的可等待 Async 句柄，在 `async def` 中执行：
 
 ```python
 plan = await client.jobs.plan(spec)
 print(plan.summary)
 handle = await client.jobs.create(spec, operation_id="pipeline-stage-1")
-finished = await client.jobs.wait(handle.ref, raise_on_failure=True)
+finished = await handle.wait(raise_on_failure=True)
 ```
 
 `plan()` 可能读取目录和校验接口，属于只读平台操作；构造 `CreateSpec` 本身不联网。异步 `plan()` 也必须 await。
@@ -868,7 +918,7 @@ SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_sen
 
 ## 维护接口
 
-维护接口时，在 `cli/` 运行 `uv run python scripts/generate_sdk_async.py` 更新已签入的显式包装方法。`tests/test_sdk_async.py` 比较所有实例 facade、方法签名和返回类型，并检查生成文件完全一致；新增同步方法未生成异步版本会导致测试失败，mypy 可直接检查真实签名。
+维护接口时，在 `cli/` 运行 `uv run python scripts/generate_sdk_async.py` 更新已签入的显式包装方法。`tests/test_sdk_async.py` 比较所有实例 facade、方法签名和返回类型，并检查生成文件完全一致；新增同步方法未生成异步版本会导致测试失败，mypy 可直接检查真实签名。异步提交返回 Async 句柄，以及异步独有的 `bind_ref`／`bind_image_ref`，均在签名对等测试中明确列为有意差异；句柄 wait 的关键字签名仍必须与门面一致。
 
 ## CLI-only 范围
 

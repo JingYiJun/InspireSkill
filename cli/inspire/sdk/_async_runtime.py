@@ -17,6 +17,7 @@ from inspire.platform.web.flow import async_call, call
 if TYPE_CHECKING:
     from inspire.platform.web.transport_async import AsyncDriver
 from .client import InspireClient
+from .models import ResourceRef
 from .exceptions import ClientClosedError, ClientThreadError, ValidationError
 
 STATUS_CONCURRENCY = 8
@@ -182,6 +183,11 @@ class AsyncRuntime:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _validate_binding(self, ref: ResourceRef, kind: type[ResourceRef]) -> None:
+        await self._start()
+        assert self._client is not None
+        self._client._validate_ref(ref, kind)
 
     async def _call(self, facade: str, method: str, *args: Any, **kwargs: Any) -> Any:
         await self._start()

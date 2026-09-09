@@ -144,6 +144,15 @@ from .models_observations import (
 
 
 __all__ = [
+    "AsyncJobHandle",
+    "AsyncNotebookHandle",
+    "AsyncHPCJobHandle",
+    "AsyncRayJobHandle",
+    "AsyncServingHandle",
+    "AsyncTensorboardHandle",
+    "AsyncImageSaveHandle",
+    "AsyncImageRegisterHandle",
+
     "ServingVersion",
     "ServingScaleHistoryEntry",
     "ServingConfigItem",
@@ -271,3 +280,14 @@ __all__ = [
     "WaitTimeoutError",
     "JobFailedError",
 ]
+
+from .async_handles import (
+    AsyncJobHandle,
+    AsyncNotebookHandle,
+    AsyncHPCJobHandle,
+    AsyncRayJobHandle,
+    AsyncServingHandle,
+    AsyncTensorboardHandle,
+    AsyncImageSaveHandle,
+    AsyncImageRegisterHandle,
+)

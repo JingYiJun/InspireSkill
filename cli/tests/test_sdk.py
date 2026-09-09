@@ -38,6 +38,7 @@ def client(tmp_path, monkeypatch):
         raise AssertionError("SDK tests must mock all HTTP requests.")
 
     monkeypatch.setattr("requests.sessions.Session.send", reject_http)
+    monkeypatch.setattr("httpx.AsyncClient.send", reject_http)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / ".inspire"
     for name in ("alpha", "beta"):
@@ -1438,3 +1439,23 @@ def test_root_sdk_exports_match_static_type_checking_imports():
     }
     assert exported == set(sdk.__all__)
     assert all(getattr(inspire, name) is getattr(sdk, name) for name in exported)
+
+
+def test_training_string_and_typed_quota_create_identical_payload(client, planned, monkeypatch):
+    from dataclasses import replace
+    payloads = []
+
+    def create(**kwargs):
+        payloads.append(kwargs["payload"])
+        return {"job_id": "created"}
+
+    monkeypatch.setattr("inspire.platform.web.browser_api.jobs.create_training_job", create)
+    quota_ref = client.jobs._quota_rows(None, None)[0][0].ref
+    for quota in (planned.quota, "1,20,200", " 1, 20, 200 ", quota_ref):
+        client.jobs.create(replace(planned, quota=quota))
+    assert len(payloads) == 4
+    assert all(payload == payloads[0] for payload in payloads)
+    for quota in ("bad", "1,0,200", "-1,20,200"):
+        with pytest.raises(ValidationError):
+            client.jobs.create(replace(planned, quota=quota))
+    assert len(payloads) == 4

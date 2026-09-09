@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ._sync_handle import SyncHandle
+
 from dataclasses import dataclass, field, asdict
 from typing import Any, Generic, TypeVar, ClassVar
 
@@ -145,7 +147,7 @@ class Job:
 
 
 @dataclass(frozen=True)
-class JobHandle:
+class JobHandle(SyncHandle):
     name: str
     ref: JobRef
     operation_id: str
@@ -165,7 +167,7 @@ class JobCreateSpec:
     workspace: str | WorkspaceRef
     project: str | ProjectRef
     group: str | ComputeGroupRef
-    quota: Quota | QuotaRef
+    quota: str | Quota | QuotaRef
     image: str | ImageRef | ImageSelector
     command: str = field(repr=False)
     nodes: int = 1

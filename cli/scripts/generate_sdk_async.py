@@ -12,6 +12,19 @@ from unittest.mock import patch
 from inspire.sdk.client import InspireClient
 
 
+# Deliberate async-only return types and local reference binding methods.
+AWAITABLE_HANDLES = {
+    ("jobs", "create"): ("JobHandle", "JobRef", "bind_ref"),
+    ("notebooks", "create"): ("NotebookHandle", "NotebookRef", "bind_ref"),
+    ("hpc", "create"): ("HPCJobHandle", "HPCJobRef", "bind_ref"),
+    ("ray", "create"): ("RayJobHandle", "RayJobRef", "bind_ref"),
+    ("servings", "create"): ("ServingHandle", "ServingRef", "bind_ref"),
+    ("tensorboards", "create"): ("TensorboardHandle", "TensorboardRef", "bind_ref"),
+    ("notebooks", "save_image"): ("ImageSaveHandle", "ImageRef", "bind_image_ref"),
+    ("images", "register"): ("ImageRegisterHandle", "ImageRef", "bind_ref"),
+}
+
+
 def generate() -> str:
     # Local bindings only: no account files or platform access.
     with patch("inspire.accounts.account_exists", return_value=True), patch(
@@ -23,6 +36,7 @@ def generate() -> str:
                if not name.startswith("_") and not isinstance(value, (str, int, float, bool))}
     client.close()
     modules: dict[str, str] = {}
+    binding_modules: dict[str, str] = {}
 
     def module(name: str) -> str:
         if name not in modules:
@@ -74,6 +88,9 @@ def generate() -> str:
             params.append(item)
             calls.append(prefix + param.name if prefix else f"{param.name}={param.name}")
         returns = "AsyncIterator[str]" if output else annotation(signature.return_annotation)
+        handle = AWAITABLE_HANDLES.get((facade, name))
+        if handle:
+            returns = f"_handles.Async{handle[0]}"
         is_iterator = returns.startswith("AsyncIterator[")
         public_name = "exec_stream" if output else name
         lines = [f"    async def {public_name}(\n" +
@@ -86,6 +103,10 @@ def generate() -> str:
         if is_iterator:
             lines.append(f"        async with aclosing({invocation}) as stream:\n")
             lines.append("            async for item in stream:\n                yield item\n")
+        elif handle:
+            lines.append(f'        """Submit and return {returns}; awaiting polls, cancellation never stops remote work."""\n')
+            lines.append(f"        result = await {invocation}\n")
+            lines.append(f"        return {returns}(**vars(result), _facade=self)\n")
         else:
             lines.append(f"        return await {invocation}\n")
         return "".join(lines)
@@ -99,6 +120,29 @@ def generate() -> str:
             body.append(wrapper(cls, facade, name))
             if name == "exec":
                 body.append(wrapper(cls, facade, name, output=True))
+        for (owner, producer), (handle, ref, binding) in AWAITABLE_HANDLES.items():
+            if owner != facade:
+                continue
+            model_module = inspect.unwrap(getattr(cls, producer)).__globals__[handle].__module__
+            alias = binding_modules.setdefault(model_module, f"_refs{len(binding_modules)}")
+            ref_type = f"{alias}.{ref}"
+            # ImageSaveHandle imports ImageRef from models; it is public there too.
+            notebook = f"{alias}.NotebookRef"
+            extra = f", *, notebook: {notebook}" if binding == "bind_image_ref" else ""
+            body.append(f"    async def {binding}(self, ref: {ref_type}{extra}) -> _handles.Async{handle}:\n")
+            body.append('        """Bind a stored ref locally; no platform request or submission.\n\n'
+                        '        Awaiting polls; cancelling the wait never stops remote work.\n'
+                        '        Submission metadata is unknown on restored handles.\n'
+                        '        """\n')
+            body.append(f"        await self._client._validate_binding(ref, {ref_type})\n")
+            if binding == "bind_image_ref":
+                body.append(f"        await self._client._validate_binding(notebook, {notebook})\n")
+                body.append("        if ref.workspace_id != notebook.workspace_id:\n"
+                            "            raise ValidationError('Image and notebook workspaces must match.')\n")
+                extras = "notebook=notebook"
+            else:
+                extras = "operation_id=''"
+            body.append(f"        return _handles.Async{handle}(name=ref.name, ref=ref, {extras}, _facade=self)\n")
         body.append("\n")
     body.append("class InspireAsyncClient(AsyncRuntime):\n")
     body.append('    """Async SDK with native I/O on the caller event loop."""\n')
@@ -156,8 +200,11 @@ def generate() -> str:
         'from .accounts import Accounts, InitResult\n'
         'from .models_resources import AccountInfo\n'
         'from ._async_runtime import AsyncFacade, AsyncRuntime\n'
+        'from . import async_handles as _handles\n'
+        'from .exceptions import ValidationError\n'
         + "".join(f"import {name} as {alias}\n" for name, alias in modules.items()
                   if alias + "." in "".join(body))
+        + "".join(f"import {name} as {alias}\n" for name, alias in binding_modules.items())
         + "\n\n" + "\n".join(body)
     )
 

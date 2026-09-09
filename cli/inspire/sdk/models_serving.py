@@ -1,6 +1,8 @@
 """Serving, TensorBoard and registry creation values."""
 
 from __future__ import annotations
+
+from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field
 from .models import (
     ResourceRef,
@@ -59,7 +61,7 @@ class ServingPlan(WorkloadPlan):
 
 
 @dataclass(frozen=True)
-class ServingHandle:
+class ServingHandle(SyncHandle):
     name: str
     ref: ServingRef
     operation_id: str
@@ -98,14 +100,14 @@ class Tensorboard:
 
 
 @dataclass(frozen=True)
-class TensorboardHandle:
+class TensorboardHandle(SyncHandle):
     name: str
     ref: TensorboardRef
     operation_id: str
 
 
 @dataclass(frozen=True)
-class ImageRegisterHandle:
+class ImageRegisterHandle(SyncHandle):
     name: str
     ref: ImageRef
     operation_id: str

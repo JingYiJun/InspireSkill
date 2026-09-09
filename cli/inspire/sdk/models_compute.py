@@ -1,6 +1,8 @@
 """Typed HPC and Ray specs, plans, handles and observations."""
 
 from __future__ import annotations
+
+from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 from .models import (
@@ -135,7 +137,7 @@ class RayJobPlan(WorkloadPlan):
 
 
 @dataclass(frozen=True)
-class HPCJobHandle:
+class HPCJobHandle(SyncHandle):
     name: str
     ref: HPCJobRef
     operation_id: str
@@ -143,7 +145,7 @@ class HPCJobHandle:
 
 
 @dataclass(frozen=True)
-class RayJobHandle:
+class RayJobHandle(SyncHandle):
     name: str
     ref: RayJobRef
     operation_id: str

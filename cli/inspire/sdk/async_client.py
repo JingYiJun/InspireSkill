@@ -6,6 +6,8 @@ from typing import Any, AsyncIterator, Literal
 from .accounts import Accounts, InitResult
 from .models_resources import AccountInfo
 from ._async_runtime import AsyncFacade, AsyncRuntime
+from . import async_handles as _handles
+from .exceptions import ValidationError
 import inspire.sdk.resources as _m0
 import inspire.sdk.jobs as _m1
 import inspire.sdk.models_compute as _m2
@@ -20,6 +22,10 @@ import inspire.sdk.account as _m13
 import inspire.sdk.datasets as _m14
 import inspire.sdk.model_registry as _m15
 import inspire.sdk.resource_monitor as _m16
+import inspire.sdk.models_serving as _refs0
+import inspire.sdk.models as _refs1
+import inspire.sdk.models_compute as _refs2
+import inspire.sdk.models_notebooks as _refs3
 
 
 class AsyncCatalogCache(AsyncFacade):
@@ -181,14 +187,16 @@ class AsyncImages(AsyncFacade):
         description: str | None = None,
         visibility: str | None = None,
         operation_id: str | None = None,
-    ) -> _m0.ImageRegisterHandle:
-        return await self._client._call('images', 'register',
+    ) -> _handles.AsyncImageRegisterHandle:
+        """Submit and return _handles.AsyncImageRegisterHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('images', 'register',
             name=name,
             workspace=workspace,
             version=version,
             description=description,
             visibility=visibility,
             operation_id=operation_id)
+        return _handles.AsyncImageRegisterHandle(**vars(result), _facade=self)
 
     async def set_visibility(
         self,
@@ -216,6 +224,18 @@ class AsyncImages(AsyncFacade):
             poll_interval=poll_interval,
             workspace=workspace)
 
+    async def bind_ref(self, ref: _refs0.ImageRef) -> _handles.AsyncImageRegisterHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs0.ImageRef)
+
+        return _handles.AsyncImageRegisterHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
 
 
 class AsyncJobs(AsyncFacade):
@@ -235,10 +255,12 @@ class AsyncJobs(AsyncFacade):
         spec: _m1.JobCreateSpec,
         *,
         operation_id: str | None = None,
-    ) -> _m1.JobHandle:
-        return await self._client._call('jobs', 'create',
+    ) -> _handles.AsyncJobHandle:
+        """Submit and return _handles.AsyncJobHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('jobs', 'create',
             spec=spec,
             operation_id=operation_id)
+        return _handles.AsyncJobHandle(**vars(result), _facade=self)
 
     async def delete(
         self,
@@ -525,6 +547,18 @@ class AsyncJobs(AsyncFacade):
             poll_interval=poll_interval,
             raise_on_failure=raise_on_failure)
 
+    async def bind_ref(self, ref: _refs1.JobRef) -> _handles.AsyncJobHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs1.JobRef)
+
+        return _handles.AsyncJobHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
 
 
 class AsyncHPC(AsyncFacade):
@@ -534,10 +568,12 @@ class AsyncHPC(AsyncFacade):
         spec: _m4.HPCJobCreateSpec,
         *,
         operation_id: str | None = None,
-    ) -> _m4.HPCJobHandle:
-        return await self._client._call('hpc', 'create',
+    ) -> _handles.AsyncHPCJobHandle:
+        """Submit and return _handles.AsyncHPCJobHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('hpc', 'create',
             spec=spec,
             operation_id=operation_id)
+        return _handles.AsyncHPCJobHandle(**vars(result), _facade=self)
 
     async def delete(
         self,
@@ -796,6 +832,18 @@ class AsyncHPC(AsyncFacade):
             raise_on_failure=raise_on_failure,
             workspace=workspace)
 
+    async def bind_ref(self, ref: _refs2.HPCJobRef) -> _handles.AsyncHPCJobHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs2.HPCJobRef)
+
+        return _handles.AsyncHPCJobHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
 
 
 class AsyncRay(AsyncFacade):
@@ -805,10 +853,12 @@ class AsyncRay(AsyncFacade):
         spec: _m7.RayJobCreateSpec,
         *,
         operation_id: str | None = None,
-    ) -> _m7.RayJobHandle:
-        return await self._client._call('ray', 'create',
+    ) -> _handles.AsyncRayJobHandle:
+        """Submit and return _handles.AsyncRayJobHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('ray', 'create',
             spec=spec,
             operation_id=operation_id)
+        return _handles.AsyncRayJobHandle(**vars(result), _facade=self)
 
     async def delete(
         self,
@@ -1093,6 +1143,18 @@ class AsyncRay(AsyncFacade):
             raise_on_failure=raise_on_failure,
             workspace=workspace)
 
+    async def bind_ref(self, ref: _refs2.RayJobRef) -> _handles.AsyncRayJobHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs2.RayJobRef)
+
+        return _handles.AsyncRayJobHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
 
 
 class AsyncServings(AsyncFacade):
@@ -1137,10 +1199,12 @@ class AsyncServings(AsyncFacade):
         spec: _m10.ServingCreateSpec,
         *,
         operation_id: str | None = None,
-    ) -> _m10.ServingHandle:
-        return await self._client._call('servings', 'create',
+    ) -> _handles.AsyncServingHandle:
+        """Submit and return _handles.AsyncServingHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('servings', 'create',
             spec=spec,
             operation_id=operation_id)
+        return _handles.AsyncServingHandle(**vars(result), _facade=self)
 
     async def delete(
         self,
@@ -1465,6 +1529,18 @@ class AsyncServings(AsyncFacade):
             workspace=workspace,
             target=target)
 
+    async def bind_ref(self, ref: _refs0.ServingRef) -> _handles.AsyncServingHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs0.ServingRef)
+
+        return _handles.AsyncServingHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
 
 
 class AsyncTensorboards(AsyncFacade):
@@ -1474,10 +1550,12 @@ class AsyncTensorboards(AsyncFacade):
         spec: _m11.TensorboardCreateSpec,
         *,
         operation_id: str | None = None,
-    ) -> _m11.TensorboardHandle:
-        return await self._client._call('tensorboards', 'create',
+    ) -> _handles.AsyncTensorboardHandle:
+        """Submit and return _handles.AsyncTensorboardHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('tensorboards', 'create',
             spec=spec,
             operation_id=operation_id)
+        return _handles.AsyncTensorboardHandle(**vars(result), _facade=self)
 
     async def delete(
         self,
@@ -1601,6 +1679,18 @@ class AsyncTensorboards(AsyncFacade):
             poll_interval=poll_interval,
             workspace=workspace)
 
+    async def bind_ref(self, ref: _refs0.TensorboardRef) -> _handles.AsyncTensorboardHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs0.TensorboardRef)
+
+        return _handles.AsyncTensorboardHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
 
 
 class AsyncNotebooks(AsyncFacade):
@@ -1620,10 +1710,12 @@ class AsyncNotebooks(AsyncFacade):
         spec: _m12.NotebookCreateSpec,
         *,
         operation_id: str | None = None,
-    ) -> _m12.NotebookHandle:
-        return await self._client._call('notebooks', 'create',
+    ) -> _handles.AsyncNotebookHandle:
+        """Submit and return _handles.AsyncNotebookHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('notebooks', 'create',
             spec=spec,
             operation_id=operation_id)
+        return _handles.AsyncNotebookHandle(**vars(result), _facade=self)
 
     async def delete(
         self,
@@ -1850,8 +1942,9 @@ class AsyncNotebooks(AsyncFacade):
         visibility: str | None = None,
         flatten: bool = False,
         workspace: str | _m12.WorkspaceRef | None = None,
-    ) -> _m12.ImageSaveHandle:
-        return await self._client._call('notebooks', 'save_image',
+    ) -> _handles.AsyncImageSaveHandle:
+        """Submit and return _handles.AsyncImageSaveHandle; awaiting polls, cancellation never stops remote work."""
+        result = await self._client._call('notebooks', 'save_image',
             ref=ref,
             name=name,
             version=version,
@@ -1859,6 +1952,7 @@ class AsyncNotebooks(AsyncFacade):
             visibility=visibility,
             flatten=flatten,
             workspace=workspace)
+        return _handles.AsyncImageSaveHandle(**vars(result), _facade=self)
 
     async def start(
         self,
@@ -1919,6 +2013,35 @@ class AsyncNotebooks(AsyncFacade):
             ref=ref,
             timeout=timeout,
             poll_interval=poll_interval)
+
+    async def bind_ref(self, ref: _refs3.NotebookRef) -> _handles.AsyncNotebookHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs3.NotebookRef)
+
+        return _handles.AsyncNotebookHandle(name=ref.name, ref=ref, operation_id='', _facade=self)
+
+    async def bind_image_ref(self, ref: _refs3.ImageRef, *, notebook: _refs3.NotebookRef) -> _handles.AsyncImageSaveHandle:
+
+        """Bind a stored ref locally; no platform request or submission.
+
+        Awaiting polls; cancelling the wait never stops remote work.
+        Submission metadata is unknown on restored handles.
+        """
+
+        await self._client._validate_binding(ref, _refs3.ImageRef)
+
+        await self._client._validate_binding(notebook, _refs3.NotebookRef)
+
+        if ref.workspace_id != notebook.workspace_id:
+            raise ValidationError('Image and notebook workspaces must match.')
+
+        return _handles.AsyncImageSaveHandle(name=ref.name, ref=ref, notebook=notebook, _facade=self)
 
 
 

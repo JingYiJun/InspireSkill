@@ -371,8 +371,14 @@ class Jobs(Service):
             or spec.max_time_hours <= 0
         ):
             raise ValidationError("max_time_hours must be finite and positive.")
-        if not isinstance(spec.quota, (Quota, QuotaRef)):
-            raise ValidationError("quota must be Quota or QuotaRef.")
+        if not isinstance(spec.quota, (str, Quota, QuotaRef)):
+            raise ValidationError("quota must be str, Quota or QuotaRef.")
+        requested_quota = spec.quota
+        if isinstance(requested_quota, str):
+            from inspire.services.quotas import parse_quota
+
+            parsed = parse_quota(requested_quota)
+            requested_quota = Quota(parsed.gpu_count, parsed.cpu_count, parsed.memory_gib)
         ws = self.client.workspaces.get(spec.workspace)
         project_rows = self.client.projects._all(ws)
         project = exact(
@@ -402,7 +408,7 @@ class Jobs(Service):
             self.client._validate_ref(spec.quota, QuotaRef, ws.ref.key)
             matches = [x for x in options if x[0].ref.key == spec.quota.key]
         else:
-            matches = [x for x in options if x[0].quota == spec.quota]
+            matches = [x for x in options if x[0].quota == requested_quota]
         if not matches:
             raise ResourceNotFoundError("No exact quota tier matches in the selected group.")
         if len(matches) > 1:

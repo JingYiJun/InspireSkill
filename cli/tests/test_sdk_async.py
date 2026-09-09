@@ -46,6 +46,22 @@ def specialize(value, bindings):
     return origin, args
 
 
+# Intentional divergences: submissions return client-bound async handle subclasses.
+# Models.register has no wait contract and is deliberately absent.
+HANDLE_CASES = [
+    ("jobs", "create", "JobHandle", "JobRef", "wait", "bind_ref"),
+    ("hpc", "create", "HPCJobHandle", "HPCJobRef", "wait", "bind_ref"),
+    ("ray", "create", "RayJobHandle", "RayJobRef", "wait", "bind_ref"),
+    ("servings", "create", "ServingHandle", "ServingRef", "wait", "bind_ref"),
+    ("tensorboards", "create", "TensorboardHandle", "TensorboardRef", "wait", "bind_ref"),
+    ("notebooks", "create", "NotebookHandle", "NotebookRef", "wait", "bind_ref"),
+    ("notebooks", "save_image", "ImageSaveHandle", "ImageRef", "wait_image_ready", "bind_image_ref"),
+    ("images", "register", "ImageRegisterHandle", "ImageRef", "wait_ready", "bind_ref"),
+]
+ASYNC_HANDLE_RETURNS = {(facade, producer): getattr(inspire, "Async" + handle)
+                        for facade, producer, handle, _, _, _ in HANDLE_CASES}
+
+
 def test_every_facade_and_signature_has_typed_async_mirror(client):
     async_client = InspireAsyncClient("alpha")
     expected = {(facade, method): bound for facade, method, bound in facade_methods(client)}
@@ -53,13 +69,16 @@ def test_every_facade_and_signature_has_typed_async_mirror(client):
     assert {key[0] for key in expected} == {key[0] for key in actual}
     assert set(actual) - set(expected) == {
         (name, "exec_stream") for name in ("jobs", "notebooks", "hpc", "ray", "servings")
-    }
+    } | {(facade, binding) for facade, _, _, _, _, binding in HANDLE_CASES}
     for key, bound in expected.items():
         mirror = actual[key]
         bindings = {}
         for base in getattr(type(bound.__self__), "__orig_bases__", ()):
             bindings.update(zip(getattr(get_origin(base), "__parameters__", ()), get_args(base)))
         hints = {name: specialize(value, bindings) for name, value in get_type_hints(bound).items()}
+        if key in ASYNC_HANDLE_RETURNS:
+            assert issubclass(ASYNC_HANDLE_RETURNS[key], hints["return"])
+            hints["return"] = ASYNC_HANDLE_RETURNS[key]
         assert {name: specialize(value, {}) for name, value in get_type_hints(mirror).items()} == hints, key
         sync_params = inspect.signature(bound).parameters
         async_params = inspect.signature(mirror).parameters
@@ -872,3 +891,222 @@ def test_first_call_acquires_session_through_native_driver(client, tracked, monk
 
     asyncio.run(run())
     assert loads and set(loads) == {threading.get_ident()}
+
+
+@pytest.mark.parametrize("case", HANDLE_CASES)
+def test_async_submission_handles_and_restored_refs(client, tracked, monkeypatch, case):
+    from dataclasses import FrozenInstanceError, fields
+    import json
+    from unittest.mock import AsyncMock
+
+    facade, producer, handle_name, ref_name, waiting, binding = case
+    sync_type = getattr(inspire, handle_name)
+    async_type = getattr(inspire, "Async" + handle_name)
+    ref_type = getattr(inspire, ref_name)
+    ref = ref_type("fake", "alpha", client.base_url, "fake-key", "ws-test")
+    notebook = inspire.NotebookRef("nb", "alpha", client.base_url, "nb-key", "ws-test")
+    extras = {"notebook": notebook} if producer == "save_image" else {"operation_id": "submission"}
+    original = sync_type(name=ref.name, ref=ref, **extras)
+    sync_facade = type(getattr(client, facade))
+    monkeypatch.setattr(sync_facade, producer, lambda *a, **kw: original)
+    snapshot = ref.to_dict()
+    restored_ref = ref_type.from_dict(json.loads(json.dumps(snapshot)))
+    assert restored_ref == ref and vars(restored_ref) == vars(ref)
+    with pytest.raises(FrozenInstanceError):
+        ref.key = "changed"
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            service = getattr(c, facade)
+            if producer == "save_image":
+                handle = await service.save_image(notebook, name="fake")
+            elif producer == "register":
+                handle = await service.register("fake", workspace="fake")
+            else:
+                handle = await service.create(object())
+            assert type(handle) is async_type
+            assert getattr(inspire.sdk, "Async" + handle_name) is async_type
+            assert {f.name: getattr(handle, f.name) for f in fields(original)} == vars(original)
+            assert "_facade" not in repr(handle)
+            assert not hasattr(handle, "cancel")
+            result = object()
+            wait = AsyncMock(return_value=result)
+            monkeypatch.setattr(service, waiting, wait)
+            # Typed keyword arguments and defaults exactly match the facade.
+            expected_sig = inspect.signature(getattr(type(service), waiting))
+            handle_sig = inspect.signature(type(handle).wait)
+            assert list(handle_sig.parameters) == [n for n in expected_sig.parameters if n != "ref"]
+            for name, param in handle_sig.parameters.items():
+                assert param.kind == expected_sig.parameters[name].kind
+                assert param.default == expected_sig.parameters[name].default
+            assert get_type_hints(type(handle).wait) == {
+                k: v for k, v in get_type_hints(getattr(type(service), waiting)).items() if k != "ref"
+            }
+            assert await handle is result
+            assert await handle is result
+            assert wait.await_count == 2
+            expected_arg = handle if producer == "save_image" else ref
+            defaults = {n: p.default for n, p in expected_sig.parameters.items()
+                        if p.kind == p.KEYWORD_ONLY}
+            wait.assert_awaited_with(expected_arg, **defaults)
+            options = dict(timeout=23, poll_interval=0.1)
+            if "raise_on_failure" in defaults:
+                options["raise_on_failure"] = True
+            assert await handle.wait(**options) is result
+            wait.assert_awaited_with(expected_arg, **(defaults | options))
+            restored = await getattr(service, binding)(restored_ref, **(
+                {"notebook": notebook} if binding == "bind_image_ref" else {}
+            ))
+            assert type(restored) is async_type and restored.ref is restored_ref
+            assert await restored is result
+            assert restored_ref.to_dict() == snapshot
+            # Wrong account, type and origin fail locally, before polling.
+            from dataclasses import replace
+            for invalid in (replace(ref, account="beta"), replace(ref, base_url="https://invalid"), notebook
+                            if ref_name != "NotebookRef" else inspire.JobRef(**vars(ref))):
+                with pytest.raises(ValidationError):
+                    await getattr(service, binding)(invalid, **(
+                        {"notebook": notebook} if binding == "bind_image_ref" else {}
+                    ))
+            with pytest.raises(TypeError, match=r"client.jobs.wait.*InspireAsyncClient"):
+                await original
+            assert not hasattr(original, "future")
+        with pytest.raises(ClientClosedError):
+            await getattr(service, binding)(ref, **(
+                {"notebook": notebook} if binding == "bind_image_ref" else {}
+            ))
+
+    asyncio.run(run())
+
+
+def test_handles_gather_and_future_composition_are_concurrent(client, tracked, monkeypatch):
+    from inspire.sdk.jobs import Jobs
+    active = 0
+    all_entered = asyncio.Event()
+
+    async def poll(ref):
+        nonlocal active
+        active += 1
+        if active == 3:
+            all_entered.set()
+        await asyncio.wait_for(all_entered.wait(), 1)
+        return ref.key
+
+    monkeypatch.setattr(Jobs, "wait", lambda self, ref, **kw: perform_sync(call(poll, ref)))
+
+    async def run():
+        nonlocal active
+        async with InspireAsyncClient("alpha") as c:
+            handles = [await c.jobs.bind_ref(inspire.JobRef(str(i), "alpha", client.base_url, str(i)))
+                       for i in range(3)]
+            for mode in ("gather", "wait", "as_completed"):
+                active = 0
+                all_entered.clear()
+                if mode == "gather":
+                    results = await asyncio.gather(*handles)
+                else:
+                    futures = [h.future() for h in handles]
+                    assert all(isinstance(f, asyncio.Future) for f in futures)
+                    if mode == "wait":
+                        done, pending = await asyncio.wait(futures, timeout=2)
+                        assert not pending
+                        results = [f.result() for f in done]
+                    else:
+                        results = [await f for f in asyncio.as_completed(futures)]
+                assert sorted(results) == ["0", "1", "2"] and active == 3
+            # Each future is a new wait, even for the same handle.
+            a, b, d = (handles[0].future() for _ in range(3))
+            assert a is not b and b is not d
+            assert await asyncio.gather(a, b, d) == ["0"] * 3
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", HANDLE_CASES)
+def test_handle_cancellation_interrupts_polling_without_stop(client, tracked, monkeypatch, case):
+    import time
+    facade, _, _, ref_name, waiting, binding = case
+    service_type = type(getattr(client, facade))
+    polled = asyncio.Event()
+    polls = []
+
+    def get(self, *a, **kw):
+        polls.append(1)
+        polled.set()
+        return types.SimpleNamespace(status="PENDING")
+
+    if waiting == "wait":
+        monkeypatch.setattr(service_type, "_resolve", lambda self, ref, ws: ref)
+        monkeypatch.setattr(service_type, "get", get)
+        monkeypatch.setattr(service_type, "stop", lambda *a, **kw: pytest.fail("cancel stopped workload"))
+    else:
+        def image_poll(**kwargs):
+            get(None)
+            perform_sync(call(time.sleep, 60))
+            pytest.fail("polling was not cancelled")
+        monkeypatch.setattr("inspire.platform.web.browser_api.wait_for_image_ready", image_poll)
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            ref = getattr(inspire, ref_name)("fake", "alpha", client.base_url, "key", "ws-test")
+            extra = {"notebook": inspire.NotebookRef(**vars(ref))} if binding == "bind_image_ref" else {}
+            handle = await getattr(getattr(c, facade), binding)(ref, **extra)
+            for mode in ("await", "wait", "future"):
+                polled.clear()
+                async def direct():
+                    return await handle
+                task = (handle.future() if mode == "future" else asyncio.create_task(
+                    direct() if mode == "await" else handle.wait(poll_interval=60)
+                ))
+                await asyncio.wait_for(polled.wait(), 1)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 1)
+                assert not c._active
+            assert polls == [1, 1, 1]
+            assert (await c.cache.stats())["entries"] == 0
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", HANDLE_CASES[:6])
+def test_failed_workload_handles_follow_facade_policy(client, tracked, monkeypatch, case):
+    facade, _, _, ref_name, _, _ = case
+    cls = type(getattr(client, facade))
+    failed = types.SimpleNamespace(name="fake", status="failed" if facade == "tensorboards" else "FAILED")
+    monkeypatch.setattr(cls, "_resolve", lambda self, ref, ws: ref)
+    monkeypatch.setattr(cls, "get", lambda *a, **kw: failed)
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            handle = await getattr(c, facade).bind_ref(
+                getattr(inspire, ref_name)("fake", "alpha", client.base_url, "key")
+            )
+            assert await handle is failed
+            assert await handle is failed
+            with pytest.raises(inspire.InspireError):
+                await handle.wait(raise_on_failure=True)
+
+    asyncio.run(run())
+
+
+def test_saved_image_without_identity_and_models_without_wait(client, tracked, monkeypatch):
+    from inspire.sdk.notebooks import Notebooks
+    Models = type(client.models)
+    notebook = inspire.NotebookRef("fake", "alpha", client.base_url, "key", "ws-test")
+    missing = inspire.ImageSaveHandle("image", None, notebook, warning="not visible yet")
+    model = inspire.ModelRegisterHandle("model", inspire.ModelRef(**vars(notebook)), "op")
+    monkeypatch.setattr(Notebooks, "save_image", lambda *a, **kw: missing)
+    monkeypatch.setattr(Models, "register", lambda *a, **kw: model)
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            handle = await c.notebooks.save_image(notebook, name="image")
+            assert handle.warning == missing.warning and handle.ref is None
+            with pytest.raises(ValidationError, match="Image identity is not available"):
+                await handle
+            result = await c.models.register("model", source_path="/fake", workspace="fake", project="fake")
+            assert result is model and not inspect.isawaitable(result)
+            assert not hasattr(result, "future") and not hasattr(c.models, "bind_ref")
+
+    asyncio.run(run())
