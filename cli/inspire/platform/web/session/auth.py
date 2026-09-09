@@ -59,6 +59,16 @@ class _CasVerificationRequired(ValueError):
 _VERIFICATION_FIELD_NAMES = frozenset({"authcode", "captcha", "smscode", "vercode", "verifycode"})
 
 
+def _request_timeout(timeout: float) -> float:
+    """Keep HTTP authentication steps inside the caller's operation budget."""
+    from inspire.platform.web.runtime import active_transport
+
+    transport = active_transport.get()
+    if transport is not None and transport.deadline is not None:
+        return min(timeout, transport.remaining())
+    return timeout
+
+
 def _required_verification_field(fields: dict[str, str]) -> str | None:
     for name in fields:
         if name.strip().lower() in _VERIFICATION_FIELD_NAMES:
@@ -640,7 +650,7 @@ def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> tuple[str, str]
         if urlparse(script_url).netloc != page_host:
             continue
         try:
-            response = http.get(script_url, timeout=15)
+            response = http.get(script_url, timeout=_request_timeout(15))
             response.raise_for_status()
         except Exception:
             continue
@@ -798,11 +808,11 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
     _seed_sso_renewal_cookies(http, session)
 
     try:
-        login_resp = http.get(f"{base_url}/login", timeout=30, allow_redirects=True)
+        login_resp = http.get(f"{base_url}/login", timeout=_request_timeout(30), allow_redirects=True)
         login_resp.raise_for_status()
         cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
         if cas_login_url:
-            login_resp = http.get(cas_login_url, timeout=30, allow_redirects=True)
+            login_resp = http.get(cas_login_url, timeout=_request_timeout(30), allow_redirects=True)
             login_resp.raise_for_status()
 
         # Reaching the password form is the decisive "SSO is gone" answer.
@@ -821,7 +831,7 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
             f"{base_url}{USER_DETAIL_PATH}",
             headers=api_headers,
             json={},
-            timeout=15,
+            timeout=_request_timeout(15),
             allow_redirects=False,
         )
         if user_detail_resp.status_code == 401 or 300 <= user_detail_resp.status_code < 400:
@@ -864,7 +874,7 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
                 f"{base_url}{USER_ROUTES_PATH}",
                 headers=api_headers,
                 json=BOOTSTRAP_ROUTES_BODY,
-                timeout=15,
+                timeout=_request_timeout(15),
                 allow_redirects=False,
             )
             if routes_resp.status_code == 200:
@@ -959,11 +969,13 @@ def _login_with_cas_requests(
         }
     )
 
-    login_resp = http.get(f"{base_url.rstrip('/')}/login", timeout=30, allow_redirects=True)
+    login_resp = http.get(
+        f"{base_url.rstrip('/')}/login", timeout=_request_timeout(30), allow_redirects=True
+    )
     login_resp.raise_for_status()
     cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
     if cas_login_url:
-        login_resp = http.get(cas_login_url, timeout=30, allow_redirects=True)
+        login_resp = http.get(cas_login_url, timeout=_request_timeout(30), allow_redirects=True)
         login_resp.raise_for_status()
 
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
@@ -1009,7 +1021,7 @@ def _login_with_cas_requests(
             action,
             data=fields,
             headers={"Referer": login_resp.url},
-            timeout=30,
+            timeout=_request_timeout(30),
             allow_redirects=True,
         )
     except Exception as exc:
@@ -1031,7 +1043,7 @@ def _login_with_cas_requests(
             f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
             headers=api_headers,
             json={},
-            timeout=15,
+            timeout=_request_timeout(15),
         )
     except Exception as exc:
         raise _CasLoginFailure(
@@ -1080,7 +1092,7 @@ def _login_with_cas_requests(
             f"{base_url.rstrip('/')}{USER_ROUTES_PATH}",
             headers=api_headers,
             json=BOOTSTRAP_ROUTES_BODY,
-            timeout=15,
+            timeout=_request_timeout(15),
         )
         if routes_resp.status_code == 200:
             route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(

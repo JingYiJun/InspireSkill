@@ -21,6 +21,7 @@ from inspire.platform.errors import (
 
 
 if TYPE_CHECKING:
+    from inspire.platform.web.plaza.core import PlazaClient
     from inspire.platform.web.session.models import WebSession
 
 class _NonJSONResponse(ValueError):
@@ -94,6 +95,16 @@ def _classify_after_dispatch(error: Exception) -> Exception | None:
     """Return a definite rejection, or None when the write outcome is unknown."""
     from inspire.platform.web.session.models import TransientAPIError
 
+    from inspire.platform.web.plaza.core import PlazaRejected
+
+    # Plaza business rejections carry raw envelope messages, without the
+    # platform envelope's "API error:" prefix; HTTP status alone is insufficient.
+    if isinstance(error, PlazaRejected):
+        if error.status == 403:
+            return AuthenticationError(str(error))
+        if error.status is not None and error.status >= 500:
+            return None
+        return ValidationError(str(error))
     if isinstance(error, (AuthenticationError, TransportError)):
         return error
     # TransientAPIError is also a ValueError; classify it before business errors.
@@ -133,10 +144,14 @@ class Transport:
         self._force_browser = False
         self._unproven_rebuild: float | None = None
         self._generation_lock = threading.RLock()
+        self._plaza_lock = threading.Condition()
+        self._plaza_busy = False
         self._closed = False
         self._session: Any = None
         self._http: Any = None
         self._browser: Any = None
+        self._plaza: PlazaClient | None = None
+        self._plaza_key: tuple[str | None, float] | None = None
         self.deadline: float | None = None
         self._write: dict[str, Any] | None = None
         self._last_success: float | None = None
@@ -155,6 +170,10 @@ class Transport:
         if remaining <= 0:
             raise WaitTimeoutError("Operation deadline exceeded; remote resources are unchanged.")
         return remaining
+
+    def check_deadline(self) -> None:
+        """Raise WaitTimeoutError when the operation budget is exhausted."""
+        self.remaining()
 
     @contextmanager
     def scope(self, *, timeout: float | None = 120) -> Iterator[None]:
@@ -321,6 +340,7 @@ class Transport:
                         self._adopt_session(cached)
                         return
                 except Exception as error:
+                    self.check_deadline()
                     if getattr(error, "retry_at", None) is not None:
                         raise
                 try:
@@ -332,6 +352,7 @@ class Transport:
                             self._adopt_session(renewed)
                             return
                 except Exception as error:
+                    self.check_deadline()
                     if getattr(error, "retry_at", None) is not None:
                         raise
                 try:
@@ -342,6 +363,7 @@ class Transport:
                         )
                     )
                 except Exception as error:
+                    self.check_deadline()
                     if (
                         not self.allow_browser
                         or getattr(error, "retry_at", None) is not None
@@ -351,9 +373,10 @@ class Transport:
                     self._adopt_session(
                         auth.get_web_session(force_refresh=True, account=self.account)
                     )
-        except AuthenticationError:
+        except (AuthenticationError, WaitTimeoutError):
             raise
         except Exception as error:
+            self.check_deadline()
             retry_at = getattr(error, "retry_at", None)
             if isinstance(retry_at, (int, float)):
                 raise AuthenticationCooldownError(retry_at) from None
@@ -513,11 +536,112 @@ class Transport:
                 attempt += 1
         raise AssertionError("unreachable")
 
+    def reset_plaza_client(self) -> None:
+        """Discard only this transport's signed-in data plaza connection."""
+        self.check()
+        with self._plaza_lock:
+            self._plaza_lock.wait_for(lambda: not self._plaza_busy)
+            stale, self._plaza, self._plaza_key = self._plaza, None, None
+            if stale is not None:
+                stale.close()
+
+    @contextmanager
+    def _plaza_client(self, session: WebSession, timeout: float) -> Iterator[PlazaClient]:
+        from inspire.platform.web.plaza.core import sign_in
+
+        key = (session.account, session.created_at)
+        with self._plaza_lock:
+            self._plaza_lock.wait_for(lambda: not self._plaza_busy)
+            if self._plaza_key != key:
+                if self._plaza is not None:
+                    self._plaza.close()
+                self._plaza, self._plaza_key = None, None
+            client = self._plaza
+            # Reserve the cookie jar, but release the state lock during I/O.
+            # Reset waits for the borrower before closing or replacing it.
+            self._plaza_busy = True
+        try:
+            if client is None:
+                client = sign_in(session, self, timeout)
+                with self._plaza_lock:
+                    self._plaza, self._plaza_key = client, key
+            yield client
+        finally:
+            with self._plaza_lock:
+                self._plaza_busy = False
+                self._plaza_lock.notify_all()
+
+    def plaza_request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None, timeout: float = 30
+    ) -> Any:
+        """Dispatch plaza calls with caller-owned authentication and retry budgets."""
+        import requests
+        from inspire.platform.web.plaza.core import (
+            PLAZA_BASE_URL, PlazaError, PlazaNotSignedIn, unwrap,
+        )
+        from inspire.platform.web.session.models import SessionExpiredError, TransientAPIError
+        from inspire.platform.web.session.retry import backoff_delay
+
+        self.check()
+        state = self._write
+        if state is not None:
+            if state["used"]:
+                raise _SingleSendViolation("single_send allows exactly one request.")
+            state["used"] = True
+        auth_attempt, transient_attempt = 0, 0
+        while True:
+            self.check_deadline()
+            session = self.session
+            try:
+                with self._plaza_client(session, timeout) as client:
+                    response = self._dispatch(
+                        client.http.request, method.upper(), PLAZA_BASE_URL + path,
+                        params=params, json=body, timeout=min(timeout, self.remaining()),
+                        allow_redirects=False,
+                    )
+                    self.check_deadline()
+                    return unwrap(response)
+            except Exception as error:
+                if state is not None and state["sent"]:
+                    classified = _classify_after_dispatch(error)
+                    if classified is error:
+                        raise
+                    if classified is not None:
+                        raise classified from error
+                    self._uncertain(state, error)
+                self.check_deadline()
+                if isinstance(error, (SessionExpiredError, PlazaNotSignedIn)):
+                    self.reset_plaza_client()
+                    if auth_attempt == 2:
+                        raise SessionExpiredError(
+                            "The data plaza rejected the refreshed platform session."
+                        ) from error
+                    auth_attempt += 1
+                    if auth_attempt == 2:
+                        try:
+                            self._refresh()
+                        except AuthenticationError as refresh_error:
+                            if self.cli_compat:
+                                raise SessionExpiredError(str(refresh_error)) from refresh_error
+                            raise
+                    continue
+                if isinstance(error, TransientAPIError):
+                    if transient_attempt == 2 or state is not None:
+                        raise
+                    time.sleep(min(backoff_delay(transient_attempt, error), self.remaining()))
+                    transient_attempt += 1
+                    continue
+                if isinstance(error, requests.RequestException):
+                    raise PlazaError("The data plaza did not answer.") from error
+                raise
+
     def close(self) -> None:
         if self._closed:
             return
         self.check()
         try:
+            self.reset_plaza_client()
             if self.cli_compat:
                 from inspire.platform.web import session as web_session
 
