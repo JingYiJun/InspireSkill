@@ -17,6 +17,22 @@ def __getattr__(name: str):
 
 if TYPE_CHECKING:
     from .sdk import (
+        ServingVersion as ServingVersion,
+        ServingScaleHistoryEntry as ServingScaleHistoryEntry,
+        ServingConfigItem as ServingConfigItem,
+        ServingConfigs as ServingConfigs,
+        ServingInvocationCredentials as ServingInvocationCredentials,
+        ServingInvocationInfo as ServingInvocationInfo,
+        ServingAPIMetricSeries as ServingAPIMetricSeries,
+        ServingAPIMetricTimeRange as ServingAPIMetricTimeRange,
+        ServingAPIMetrics as ServingAPIMetrics,
+        TensorboardTags as TensorboardTags,
+        TensorboardScalarPoint as TensorboardScalarPoint,
+        TensorboardScalarSeries as TensorboardScalarSeries,
+        TensorboardScalars as TensorboardScalars,
+        RayScalingEvent as RayScalingEvent,
+        NotebookRun as NotebookRun,
+
         Accounts as Accounts,
         InitResult as InitResult,
         ExecResult as ExecResult,

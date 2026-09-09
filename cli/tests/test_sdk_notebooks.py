@@ -446,7 +446,7 @@ def test_metrics_and_lifecycle(client, ref, monkeypatch):
     monkeypatch.setattr(
         api, "list_notebook_runs", lambda *a, **kw: [{"index": 3}, {"index": 1}, {"index": 2}]
     )
-    assert [r["index"] for r in client.notebooks.lifecycle(ref, limit=2)] == [2, 3]
+    assert [r.index for r in client.notebooks.lifecycle(ref, limit=2)] == [2, 3]
 
 
 def test_save_image_estimate_visibility_and_wait(client, ref, monkeypatch):

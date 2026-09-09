@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import time
-from typing import Any, Sequence
+from typing import Sequence
 from uuid import uuid4
 from inspire.services import tensorboards as core
 from inspire.services import tensorboard_data as data_core
@@ -10,6 +10,9 @@ from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.tensorboards import tensorboard_app_url
 from .resources import Service, operation, exact
 from .models import ComputeGroupRef, JobRef, Resource, WorkspaceRef, Page
+from .models_observations import (
+    TensorboardTags, TensorboardScalars, TensorboardScalarSeries, TensorboardScalarPoint,
+)
 from .models_serving import Tensorboard, TensorboardRef, TensorboardCreateSpec, TensorboardHandle
 from .exceptions import ValidationError, SubmissionUncertainError, TensorboardFailedError
 from .compute_jobs import duration
@@ -246,13 +249,17 @@ class Tensorboards(Service):
     @operation
     def tags(
         self, ref: str | TensorboardRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> dict[str, Any]:
+    ) -> TensorboardTags:
         board = self._live(ref, workspace)
-        return dict(
+        view = dict(
             name=board.name,
             summary_path=board.summary_path,
             runs=api.read_tensorboard_runs(board.url, session=self.session),
             scalar_tags=api.read_tensorboard_scalar_tags(board.url, session=self.session),
+        )
+        return TensorboardTags.from_view(
+            view, runs=tuple(view["runs"]),
+            scalar_tags={run: tuple(tags) for run, tags in view["scalar_tags"].items()},
         )
 
     @operation
@@ -264,12 +271,12 @@ class Tensorboards(Service):
         run: str | None = None,
         points: int | None = None,
         workspace: str | WorkspaceRef | None = None,
-    ) -> dict[str, Any]:
+    ) -> TensorboardScalars:
         if points is not None and (not isinstance(points, int) or points < 0):
             raise ValidationError("points must be a non-negative integer.")
         board = self._live(ref, workspace)
         series = data_core.collect_series(self.session, board, run=run or "", tag=tag)
-        return dict(
+        view = dict(
             name=board.name,
             summary_path=board.summary_path,
             series=[
@@ -279,6 +286,14 @@ class Tensorboards(Service):
                 }
                 for row in series
             ],
+        )
+        return TensorboardScalars.from_view(
+            view, series=tuple(
+                TensorboardScalarSeries.from_view(
+                    row, points=tuple(TensorboardScalarPoint(*point) for point in row.get("points", []))
+                )
+                for row in view["series"]
+            ),
         )
 
     @operation

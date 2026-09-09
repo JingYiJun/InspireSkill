@@ -223,9 +223,9 @@ def test_endpoint_and_traffic(client, monkeypatch):
         }),
     )
     info = client.servings.api(ref, affinity_key="session-1")
-    assert info["endpoint"] == "https://serving.example"
-    assert info["base_url"] == "https://serving.example/v1"
-    assert "session-1" in info["example"]
+    assert info.endpoint == "https://serving.example"
+    assert info.base_url == "https://serving.example/v1"
+    assert "session-1" in info.example
     calls = []
 
     def metrics(*a, **kw):
@@ -239,7 +239,7 @@ def test_endpoint_and_traffic(client, monkeypatch):
 
     monkeypatch.setattr(api, "get_serving_api_metrics", metrics)
     result = client.servings.api_metrics(ref, metric="qps", window="30m")
-    assert result["series"][0] == dict(metric="QPS", count=2, min=2, max=4, avg=3, last=4, total=6)
+    assert result.series[0].to_dict() == dict(metric="QPS", count=2, min=2, max=4, avg=3, last=4, total=6)
     assert calls[0]["end_timestamp"] - calls[0]["start_timestamp"] == 1800
 
 
@@ -343,19 +343,19 @@ def test_quotas_metrics_configs_and_history(client, catalog, monkeypatch):
     assert calls[0]["task_type"] == "inference_serving"
     assert calls[0]["logic_compute_group_id"] == "group-test"
     monkeypatch.setattr(api, "get_serving_configs", lambda **kw: {})
-    assert isinstance(client.servings.configs("Workspace"), dict)
+    assert client.servings.configs("Workspace").to_dict() == {"items": []}
     monkeypatch.setattr(
         api,
         "list_serving_versions",
         lambda *a, **kw: ([{"version": 2, "command": "python serve.py"}], 1),
     )
-    assert client.servings.versions(ref)[0]["version"] == 2
+    assert client.servings.versions(ref)[0].version == 2
     monkeypatch.setattr(
         api,
         "list_serving_scale_history",
         lambda *a, **kw: ([{"id": "h1", "replicas_before_scale": 1, "replicas_after_scale": 2}], 1),
     )
-    assert client.servings.scale_history(ref).items[0]["replicas_to"] == 2
+    assert client.servings.scale_history(ref).items[0].replicas_to == 2
 
 
 @pytest.mark.parametrize("via_binding", [False, True])

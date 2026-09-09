@@ -101,6 +101,33 @@ with InspireClient(catalog_ttl=60) as client:
 
 镜像注册、删除、可见性修改和 Notebook 保存镜像会清理受影响的镜像目录；会话续期不清理目录。指定 `ImageSelector(source=...)` 只读取该来源，`ImageRef` 直接读取详情，registry URL 不枚举镜像目录。长时间运行且必须立即看到外部目录变更的进程，应设置 `catalog_ttl=0`，或在需要最新目录时先调用 `client.cache.clear()`。
 
+## 观察结果类型
+
+以下方法返回 frozen dataclass；所有类型均从 `inspire.sdk` 和 `inspire` 导出。序列字段使用元组，`.to_dict()` 返回转换前的共享业务映射，保留条件键的缺省状态；可选字段在对象上为 `None` 或空元组，并不会因此在映射中补键。
+
+| 方法 | 返回类型 |
+|---|---|
+| `servings.versions` | `tuple[ServingVersion, ...]` |
+| `servings.scale_history` | `Page[ServingScaleHistoryEntry]` |
+| `servings.configs` | `ServingConfigs`，含 `tuple[ServingConfigItem, ...]` |
+| `servings.api` | `ServingInvocationInfo`，继承 `ServingInvocationCredentials` 的扁平字段 |
+| `servings.api_metrics` | `ServingAPIMetrics`，含 `ServingAPIMetricTimeRange` 和 `tuple[ServingAPIMetricSeries, ...]` |
+| `tensorboards.tags` | `TensorboardTags` |
+| `tensorboards.scalars` | `TensorboardScalars`，含 `tuple[TensorboardScalarSeries, ...]` 与 `tuple[TensorboardScalarPoint, ...]` |
+| `ray.scaling` | `tuple[RayScalingEvent, ...]` |
+| `notebooks.lifecycle` | `tuple[NotebookRun, ...]` |
+
+Serving 调用信息沿用 `credential_env`、`auth_header`、`auth_scheme`、`affinity_header` 字段，不获取密钥。配置的 `auto_stop` 是可选布尔值，配置项的 `auto_stop_rules` 保留服务返回的规则字符串；API 指标系列只有摘要，不添加原始点集。TensorBoard 标量点通过 `.step`、`.value` 读取，`.to_list()` 返回原有 `[step, value]`；外层 `.to_dict()` 将序列还原为列表。`scalar_tags` 按运行名称映射到标签元组。
+
+```python
+for version in client.servings.versions(serving_ref):
+    print(version.version, version.status)
+for series in client.tensorboards.scalars(board_ref, points=10).series:
+    print(series.run, series.tag, series.last_value)
+    for point in series.points:
+        print(point.step, point.value)
+```
+
 ## 各门面方法表
 
 以下签名省略类型注解；`*` 后参数必须以关键字传入。CLI 栏表示对应平台能力，名称解析、迭代及等待可以组合一个 CLI 子命令的能力；不会启动 CLI 子进程。

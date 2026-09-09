@@ -42,6 +42,7 @@ from .models import (
     EventResult,
     MetricGroup,
 )
+from .models_observations import NotebookRun
 from .models_notebooks import (
     Notebook,
     NotebookRef,
@@ -633,7 +634,7 @@ class Notebooks(Service):
         *,
         limit: int | None = None,
         workspace: str | WorkspaceRef | None = None,
-    ) -> tuple[dict[str, Any], ...]:
+    ) -> tuple[NotebookRun, ...]:
         if limit is not None:
             positive(limit)
         resolved = self._resolve(ref, workspace)
@@ -641,7 +642,10 @@ class Notebooks(Service):
             browser_api.list_notebook_runs(resolved.key, session=self.session),
             key=lambda x: x.get("index", 0),
         )
-        return tuple(public_runs(rows[-limit:] if limit is not None else rows))
+        return tuple(
+            NotebookRun.from_view(row)
+            for row in public_runs(rows[-limit:] if limit is not None else rows)
+        )
 
     @operation
     def metrics(

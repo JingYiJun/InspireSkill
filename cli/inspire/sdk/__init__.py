@@ -122,7 +122,42 @@ from inspire.services.serving_instances import ServingInstanceView
 from .exceptions import ServingFailedError, TensorboardFailedError
 
 
+from .models_observations import (
+    ServingVersion,
+    ServingScaleHistoryEntry,
+    ServingConfigItem,
+    ServingConfigs,
+    ServingInvocationCredentials,
+    ServingInvocationInfo,
+    ServingAPIMetricSeries,
+    ServingAPIMetricTimeRange,
+    ServingAPIMetrics,
+    TensorboardTags,
+    TensorboardScalarPoint,
+    TensorboardScalarSeries,
+    TensorboardScalars,
+    RayScalingEvent,
+    NotebookRun,
+)
+
+
 __all__ = [
+    "ServingVersion",
+    "ServingScaleHistoryEntry",
+    "ServingConfigItem",
+    "ServingConfigs",
+    "ServingInvocationCredentials",
+    "ServingInvocationInfo",
+    "ServingAPIMetricSeries",
+    "ServingAPIMetricTimeRange",
+    "ServingAPIMetrics",
+    "TensorboardTags",
+    "TensorboardScalarPoint",
+    "TensorboardScalarSeries",
+    "TensorboardScalars",
+    "RayScalingEvent",
+    "NotebookRun",
+
     "Accounts",
     "InitResult",
     "ExecResult",

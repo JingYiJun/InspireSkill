@@ -27,6 +27,7 @@ from .models import (
     EventResult,
     LogResult,
 )
+from .models_observations import RayScalingEvent
 from .models_compute import RayJob, RayJobRef, RayJobCreateSpec, RayJobPlan, RayJobHandle
 from .exceptions import ValidationError, RayJobFailedError, SubmissionUncertainError
 
@@ -264,7 +265,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         group: str | None = None,
         limit: int | None = None,
         workspace: str | WorkspaceRef | None = None,
-    ) -> tuple[dict, ...]:
+    ) -> tuple[RayScalingEvent, ...]:
         from inspire.services.ray_scaling import public_ray_scaling_events, event_time
 
         if limit is not None and (type(limit) is not int or limit < 1):
@@ -275,4 +276,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
             resolved.key, worker_group_name=group, page_num=1, page_size=-1, session=self.session
         )
         rows = sorted(rows, key=event_time)
-        return tuple(public_ray_scaling_events(rows[-limit:] if limit else rows, group=group))
+        return tuple(
+            RayScalingEvent.from_view(row)
+            for row in public_ray_scaling_events(rows[-limit:] if limit else rows, group=group)
+        )

@@ -153,12 +153,12 @@ def test_wait_and_data(client, catalog, monkeypatch):
     monkeypatch.setattr(
         api, "read_tensorboard_scalar_series", lambda *a, **kw: [(1.0, 2, 0.2), (2.0, 1, 0.8)]
     )
-    assert client.tensorboards.tags(ref)["runs"] == ["."]
-    series = client.tensorboards.scalars(ref, tag="loss", points=1)["series"][0]
+    assert client.tensorboards.tags(ref).runs == (".",)
+    series = client.tensorboards.scalars(ref, tag="loss", points=1).series[0]
     assert (
-        series["first_value"] == 0.8
-        and series["last_value"] == 0.2
-        and series["points"] == [[2, 0.2]]
+        series.first_value == 0.8
+        and series.last_value == 0.2
+        and [point.to_list() for point in series.points] == [[2, 0.2]]
     )
     assert client.tensorboards.url(ref).startswith("https://tensorboard.example/app")
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board("stopped"))

@@ -92,3 +92,36 @@ def test_all_facade_signatures(client):
         if method == "register" or (method == "create" and facade == "api_keys"):
             assert params[0].name == "name", label
     assert len(discovered) >= 15
+
+
+def test_observation_return_types_and_exports(client):
+    import ast
+    from pathlib import Path
+    import inspire
+    import inspire.sdk as sdk
+    from inspire.sdk import models_observations
+
+    expected = {
+        "servings.versions": tuple[sdk.ServingVersion, ...],
+        "servings.scale_history": sdk.Page[sdk.ServingScaleHistoryEntry],
+        "servings.configs": sdk.ServingConfigs,
+        "servings.api": sdk.ServingInvocationInfo,
+        "servings.api_metrics": sdk.ServingAPIMetrics,
+        "tensorboards.tags": sdk.TensorboardTags,
+        "tensorboards.scalars": sdk.TensorboardScalars,
+        "ray.scaling": tuple[sdk.RayScalingEvent, ...],
+        "notebooks.lifecycle": tuple[sdk.NotebookRun, ...],
+    }
+    for path, annotation in expected.items():
+        facade, method = path.split(".")
+        assert get_type_hints(getattr(getattr(client, facade), method))["return"] == annotation
+    tree = ast.parse(Path(inspire.__file__).read_text())
+    checking = next(node for node in tree.body if isinstance(node, ast.If))
+    static_exports = {alias.asname or alias.name for node in ast.walk(checking) if isinstance(node, ast.ImportFrom) for alias in node.names}
+    names = {name for name, cls in vars(models_observations).items() if inspect.isclass(cls) and cls.__module__ == models_observations.__name__}
+    assert len(names) >= 14
+    for name in names:
+        cls = getattr(models_observations, name)
+        assert cls.__dataclass_params__.frozen
+        assert getattr(inspire, name) is getattr(sdk, name) is cls
+        assert name in sdk.__all__ and name in static_exports

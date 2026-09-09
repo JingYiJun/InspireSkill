@@ -7,7 +7,7 @@ import time
 from dataclasses import replace
 from uuid import uuid4
 from datetime import datetime
-from typing import Any, Iterator, Sequence
+from typing import Iterator, Sequence
 from inspire.platform.web import browser_api as api
 from inspire.services import serving_submission as core, serving_status as statuses
 from inspire.services import serving_logs as logs_core, serving_api_metrics as traffic
@@ -34,6 +34,10 @@ from .models import (
     Quota,
     EventResult,
     LogResult,
+)
+from .models_observations import (
+    ServingVersion, ServingScaleHistoryEntry, ServingConfigItem, ServingConfigs,
+    ServingInvocationInfo, ServingAPIMetrics, ServingAPIMetricSeries, ServingAPIMetricTimeRange,
 )
 from .models_resources import ModelRef
 from .models_serving import Serving, ServingRef, ServingCreateSpec, ServingPlan, ServingHandle
@@ -419,33 +423,36 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
     @operation
     def versions(
         self, ref: str | ServingRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> tuple[dict[str, Any], ...]:
+    ) -> tuple[ServingVersion, ...]:
         resolved = self._resolve(ref, workspace)
         rows, _ = api.list_serving_versions(resolved.key, session=self.session)
-        return tuple(public_serving_version(row) for row in rows)
+        return tuple(ServingVersion.from_view(public_serving_version(row)) for row in rows)
 
     @operation
     def scale_history(
         self, ref: str | ServingRef, *, workspace: str | WorkspaceRef | None = None,
         limit: int = 20, cursor: str | None = None,
-    ) -> Page[dict[str, Any]]:
+    ) -> Page[ServingScaleHistoryEntry]:
         resolved = self._resolve(ref, workspace)
         rows = self._collect_pages(
             lambda **kw: api.list_serving_scale_history(resolved.key, session=self.session, **kw),
             lambda row: row.get("id") or repr(row),
         )
         return self._page(
-            [public_scale_history_entry(row) for row in rows],
+            [ServingScaleHistoryEntry.from_view(public_scale_history_entry(row)) for row in rows],
             limit=limit,
             cursor=cursor,
             query=(resolved,),
         )
 
     @operation
-    def configs(self, workspace: str | WorkspaceRef) -> dict[str, Any]:
+    def configs(self, workspace: str | WorkspaceRef) -> ServingConfigs:
         ws = self.client.workspaces.get(workspace)
-        return public_configs(
+        view = public_configs(
             api.get_serving_configs(workspace_id=ws.ref.key, session=self.session)
+        )
+        return ServingConfigs.from_view(
+            view, items=tuple(ServingConfigItem.from_view(row) for row in view["items"])
         )
 
     @operation
@@ -455,7 +462,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         *,
         affinity_key: str | None = None,
         workspace: str | WorkspaceRef | None = None,
-    ) -> dict[str, Any]:
+    ) -> ServingInvocationInfo:
         resolved = self._resolve(ref, workspace)
         if affinity_key is not None and (
             not affinity_key
@@ -463,7 +470,9 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             or any(ord(c) < 32 or ord(c) == 127 for c in affinity_key)
         ):
             raise ValidationError("Use 1-256 characters without control characters.")
-        return invocation_info(self._detail(resolved.key), resolved.name, affinity=affinity_key)
+        return ServingInvocationInfo.from_view(
+            invocation_info(self._detail(resolved.key), resolved.name, affinity=affinity_key)
+        )
 
     @operation
     def api_metrics(
@@ -474,7 +483,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         window: str = "1h",
         interval: str | None = None,
         workspace: str | WorkspaceRef | None = None,
-    ) -> dict[str, Any]:
+    ) -> ServingAPIMetrics:
         from inspire.platform.web.browser_api.metrics import INTERVAL_CHOICES
 
         interval = interval or "1m"
@@ -492,12 +501,17 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             interval_second=INTERVAL_CHOICES[interval],
             session=self.session,
         )
-        return dict(
+        view = dict(
             resource="serving",
             name=resolved.name,
             metrics=metrics,
             time_range=dict(start=start, end=end, interval=interval),
             series=[traffic.group_summary(row) for row in rows],
+        )
+        return ServingAPIMetrics.from_view(
+            view, metrics=tuple(metrics),
+            time_range=ServingAPIMetricTimeRange.from_view(view["time_range"]),
+            series=tuple(ServingAPIMetricSeries.from_view(row) for row in view["series"]),
         )
 
     @operation

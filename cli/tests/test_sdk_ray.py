@@ -62,7 +62,7 @@ def test_ray_scaling_views(client, monkeypatch):
 
     monkeypatch.setattr(api, "list_ray_job_scaling_histories", fetch)
     ref = RayJobRef("example", client.account, client.base_url, "key", "ws-test")
-    assert client.ray.scaling(ref, group="decode", limit=1) == tuple(
+    assert tuple(row.to_dict() for row in client.ray.scaling(ref, group="decode", limit=1)) == tuple(
         _public_ray_scaling_events(rows[:1], group="decode")
     )
     assert calls[0]["worker_group_name"] == "decode" and calls[0]["page_size"] == -1
