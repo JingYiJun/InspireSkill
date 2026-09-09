@@ -1037,7 +1037,7 @@ def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
     root = Path(__file__).resolve().parents[1] / "inspire"
     violations = []
     private_services = []
-    for package in ("services", "sdk"):
+    for package in ("services", "sdk", "platform"):
         for path in (root / package).rglob("*.py"):
             tree = ast.parse(path.read_text(), filename=str(path))
             imports = {}
@@ -1076,14 +1076,16 @@ def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
                     if package == "sdk" and module.startswith("inspire.services."):
                         if any(alias.name.startswith("_") for alias in node.names):
                             private_services.append(f"{path.relative_to(root)}:{node.lineno}")
-                forbidden = ("inspire.cli", "click", "rich", "playwright")
+                forbidden = ("inspire.cli", "click", "rich", "playwright") if package != "platform" else ()
+                if package in ("platform", "services"):
+                    forbidden += ("inspire.sdk",)
                 if any(
                     name == prefix or name.startswith(prefix + ".")
                     for name in modules
                     for prefix in forbidden
                 ):
                     violations.append(f"{path.relative_to(root)}:{node.lineno}")
-    assert not violations, "CLI/UI imports in shared layers: " + ", ".join(violations)
+    assert not violations, "Forbidden imports in shared layers: " + ", ".join(violations)
     assert not private_services, "Private service names in SDK: " + ", ".join(private_services)
 
 

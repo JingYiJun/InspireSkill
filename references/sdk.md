@@ -15,6 +15,14 @@ with InspireClient(account="my-account") as client:
 
 SDK 面向能访问平台的本机或控制节点。CPU 节点需满足网络、账号缓存和文件锁条件；GPU 训练容器及任意网络共享盘锁语义尚未验证。
 
+## 架构
+
+依赖方向为 `sdk → services → platform`；CLI 也复用 services 与 platform，平台层和服务层不得导入 SDK。共享 dispatcher 位于 `inspire.platform.web.transport`，`inspire.sdk.transport` 保留兼容重导出及既有补丁入口。与传输共用的异常基础层位于 `inspire.platform.errors`，SDK 的 `exceptions` 重导出同一批类；携带 SDK 资源模型的工作负载失败异常仍由 SDK 定义。
+
+两种前端共用一次 HTTP／浏览器发送路径，以独立响应策略保留异常类型和原始消息。SDK 与 CLI 的连接所有权、Referer、超时格式及请求体规则保持各自既有语义。CLI 的暂时 HTTP 状态仍是固定集合 `408/425/429/500/502/503/504`。重试循环显式保留两种策略的分支：CLI 刷新／浏览器回退不消耗暂时错误重试次数，SDK 按尝试次数与剩余截止时间计费；写请求发送后在进入这些分支前直接分类退出。
+
+Session 为传输提供公开的浏览器创建／获取／关闭、运行时错误报告、原地刷新与无凭据续期入口。刷新中的 `acquire_web_session` 与普通 `get_web_session` 有意区分：前者供已持有刷新锁的调用者使用，不触发前端 adoption；后者获取刷新锁并通知当前前端。传输先原地更新既有会话，避免刷新期间替换调用方持有的对象。
+
 ## 账号与会话
 
 本地账号管理可直接使用 `from inspire import Accounts`，无需先构造 Client；`InspireClient.accounts` 指向同一个类。所有账号状态仍保存在 `~/.inspire/accounts/<alias>/`，没有仓库级配置层。

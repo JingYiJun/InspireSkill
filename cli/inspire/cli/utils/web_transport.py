@@ -9,7 +9,7 @@ import click
 from inspire.accounts import current_account
 from inspire.platform.web.runtime import new_default_transport, session_transport
 from inspire.platform.web.session.models import WebSession
-from inspire.sdk.transport import Transport
+from inspire.platform.web.transport import Transport
 
 
 def install_web_transport() -> None:

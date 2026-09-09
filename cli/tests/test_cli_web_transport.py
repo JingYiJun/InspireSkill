@@ -337,3 +337,69 @@ def test_missing_storage_is_not_misclassified_as_non_json(monkeypatch, cli_sessi
     monkeypatch.setattr(ws, "_get_browser_client", lambda _: pytest.fail("not a body failure"))
     with pytest.raises(ValueError, match="missing storage state"):
         get_transport(cli_session).request("GET", "/test")
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+@pytest.mark.parametrize("status", [300, 301, 302, 307, 308, 399, 400, 401, 403, 404,
+                                   408, 425, 429, 499, 500, 501, 502, 503, 504, 599])
+def test_shared_dispatch_cli_policy_preserves_error_bytes(
+    monkeypatch, cli_session, method, status
+):
+    from inspire.platform.web.transport import _CLI_POLICY
+
+    text = "平台拒绝\n" + "x" * 600
+    reply = response(status)
+    reply.text = text
+    reply.headers = {"Retry-After": "7"}
+    calls = []
+
+    def send(url, **kwargs):
+        calls.append((url, kwargs))
+        return reply
+
+    monkeypatch.setattr(
+        ws, "pooled_requests_session",
+        lambda *args: SimpleNamespace(**{method.lower(): send}),
+    )
+    transport = Transport("chosen", cli_session.base_url, username="", cli_compat=True)
+    transport.adopt_session(cli_session)
+    # Literal legacy status set: do not let the oracle follow an implementation change.
+    expired = status == 401 or 300 <= status < 400
+    transient = status in {408, 425, 429, 500, 502, 503, 504}
+    expected_type = ws.SessionExpiredError if expired else (
+        ws.TransientAPIError if transient else ValueError
+    )
+    expected_message = "Session expired or invalid" if expired else f"API returned {status}: {text}"
+    try:
+        with pytest.raises(expected_type) as caught:
+            transport._once(method, "/test", None, 17, policy=_CLI_POLICY)
+        assert type(caught.value) is expected_type
+        assert str(caught.value).encode("utf-8") == expected_message.encode("utf-8")
+        if transient:
+            assert caught.value.status == status
+            assert caught.value.retry_after == 7
+        kwargs = {"headers": {}, "timeout": 17, "allow_redirects": False}
+        if method == "POST":
+            kwargs.update(headers={"Content-Type": "application/json"}, json={})
+        assert calls == [("https://example.test/test", kwargs)]
+    finally:
+        transport.close()
+
+
+def test_shared_dispatch_cli_policy_preserves_non_json_error(monkeypatch, cli_session):
+    from inspire.platform.web.transport import _CLI_POLICY, _NonJSONResponse
+
+    failure = ValueError("Invalid JSON: 平台\n" + "x" * 600)
+    monkeypatch.setattr(
+        ws, "pooled_requests_session",
+        lambda *args: SimpleNamespace(get=lambda *a, **k: response(payload=failure)),
+    )
+    transport = Transport("chosen", cli_session.base_url, username="", cli_compat=True)
+    transport.adopt_session(cli_session)
+    try:
+        with pytest.raises(_NonJSONResponse) as caught:
+            transport._once("GET", "/test", None, 17, policy=_CLI_POLICY)
+        assert str(caught.value).encode("utf-8") == str(failure).encode("utf-8")
+        assert caught.value.__cause__ is failure
+    finally:
+        transport.close()

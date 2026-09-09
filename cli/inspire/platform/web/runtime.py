@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from inspire.platform.web.session.models import WebSession
-    from inspire.sdk.transport import Transport
+    from inspire.platform.web.transport import Transport
 
 active_transport: ContextVar[Transport | None] = ContextVar("inspire_transport", default=None)
 # Installed by the CLI for its Click lifetime; the platform never imports Click.
@@ -22,7 +22,7 @@ _default_lock = threading.RLock()
 
 
 def new_default_transport(account: str | None, base_url: str) -> Transport:
-    from inspire.sdk.transport import Transport
+    from inspire.platform.web.transport import Transport
 
     return Transport(account, base_url, username="", allow_browser=True, cli_compat=True)
 

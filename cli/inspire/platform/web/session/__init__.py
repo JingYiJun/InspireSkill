@@ -47,6 +47,13 @@ from inspire.platform.web.session.retry import (
 )
 
 __all__ = [
+    "refresh_session_in_place",
+    "raise_browser_runtime_error",
+    "acquire_web_session",
+    "renew_web_session_without_credentials",
+    "close_browser_client",
+    "get_browser_client",
+    "create_browser_client",
     "AuthenticationError",
     "DEFAULT_WORKSPACE_ID",
     "SESSION_TTL",
@@ -74,7 +81,7 @@ logger = logging.getLogger(__name__)
 atexit.register(_close_browser_client)
 
 
-def _raise_browser_runtime_error(exc: BaseException) -> None:
+def raise_browser_runtime_error(exc: BaseException) -> None:
     raise RuntimeError(
         "Playwright Chromium could not start for Inspire web requests. Prepare "
         "the standard CLI runtime with:\n"
@@ -83,7 +90,7 @@ def _raise_browser_runtime_error(exc: BaseException) -> None:
     ) from exc
 
 
-def _refresh_session_in_place(current: "WebSession", refreshed: "WebSession") -> None:
+def refresh_session_in_place(current: "WebSession", refreshed: "WebSession") -> None:
     """Replace an existing session object's fields with refreshed credentials/state."""
     current.storage_state = refreshed.storage_state
     current.cookies = refreshed.cookies
@@ -95,6 +102,38 @@ def _refresh_session_in_place(current: "WebSession", refreshed: "WebSession") ->
     current.all_workspace_names = refreshed.all_workspace_names
     current.all_workspace_fair_scheduling = refreshed.all_workspace_fair_scheduling
     current.created_at = refreshed.created_at
+
+
+# Resolve legacy patch hooks at call time; transport callers use public names.
+def create_browser_client(session: WebSession) -> _BrowserRequestClient:
+    return _BrowserRequestClient(session)
+
+
+def get_browser_client(session: WebSession) -> _BrowserRequestClient:
+    return _get_browser_client(session)
+
+
+def close_browser_client() -> None:
+    _close_browser_client()
+
+
+def renew_web_session_without_credentials(session: WebSession) -> WebSession | None:
+    return _renew_web_session_without_credentials(session)
+
+
+def acquire_web_session(
+    force_refresh: bool = False,
+    require_workspace: bool = False,
+    account: Optional[str] = None,
+) -> WebSession:
+    """Acquire without the outer refresh lock or front-end adoption callback.
+
+    A transport rebuilding its existing session already owns the refresh lock
+    and must update that object in place before exposing it to the caller.
+    """
+    return _get_web_session(
+        force_refresh=force_refresh, require_workspace=require_workspace, account=account
+    )
 
 
 def get_credentials() -> tuple[str, str]:
