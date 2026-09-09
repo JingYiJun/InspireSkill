@@ -9,6 +9,7 @@ import builtins
 from .models import Page, WorkspaceRef, ComputeGroupRef
 import math
 import time
+from inspire.platform.web.flow import call, perform_sync
 import uuid
 from datetime import datetime, timezone
 from dataclasses import asdict
@@ -537,7 +538,7 @@ class Jobs(Service):
                     if raise_on_failure and job.status != "SUCCEEDED":
                         raise JobFailedError(job)
                     return job
-                time.sleep(min(poll_interval, self.client._transport.remaining()))
+                perform_sync(call(time.sleep, min(poll_interval, self.client._transport.remaining())))
 
     @operation
     def stop(self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None) -> None:
@@ -664,7 +665,7 @@ class Jobs(Service):
                 yield EventResult(tuple(rows), result.truncated)
             if self.get(ref).status in TERMINAL_STATUSES:
                 return
-            time.sleep(interval)
+            perform_sync(call(time.sleep, interval))
 
     @operation
     def metrics(
@@ -816,4 +817,4 @@ class Jobs(Service):
             if draining:
                 return
             draining = self.get(ref).status in TERMINAL_STATUSES
-            time.sleep(interval)
+            perform_sync(call(time.sleep, interval))

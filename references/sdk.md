@@ -2,7 +2,7 @@
 
 ## 接入
 
-同一个 `inspire-skill` 包提供两个受支持的实验性入口：`InspireClient` 用于同步脚本和同步 worker；`InspireAsyncClient` 用于 asyncio 应用、Agent runtime 和异步 Web 服务，将阻塞操作放到专用线程，避免占住事件循环。两者均可从 `inspire` 或 `inspire.sdk` 导入，使用相同的资源模型、引用、异常和平台能力；异步入口的线程池与取消边界见下文。
+同一个 `inspire-skill` 包提供两个受支持的实验性入口：`InspireClient` 用于同步脚本和同步 worker；`InspireAsyncClient` 用于 asyncio 应用、Agent runtime 和异步 Web 服务，在调用方事件循环执行原生异步 I/O。两者均可从 `inspire` 或 `inspire.sdk` 导入，使用相同的资源模型、引用、异常和平台能力；异步入口的并发与取消边界见下文。
 
 SDK 与 CLI 复用 browser_api、共享 services 和 `inspire.platform.web.transport.Transport`；安装依赖和 CLI 默认行为不变。源码安装可在 `cli/` 运行 `uv pip install -e .`，应用项目可用 `uv add /path/to/InspireSkill/cli`。
 
@@ -33,7 +33,7 @@ import sys
 from inspire import InspireAsyncClient
 
 async def main(account: str, workspace: str) -> None:
-    async with InspireAsyncClient(account=account, concurrency=2) as client:
+    async with InspireAsyncClient(account=account) as client:
         await client.login()
         jobs, notebooks = await asyncio.gather(
             client.jobs.list(workspace, limit=5),
@@ -97,20 +97,20 @@ client = InspireClient.from_credentials("login-name", "password", account="resea
 client.close()
 ```
 
-同步构造签名为 `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60)`。异步构造签名为 `InspireAsyncClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, concurrency=1)`；同步构造时进行的本地配置工作，在异步客户端进入上下文或首次调用时才执行。不传凭据时使用现有账号，省略 account 使用当前账号。username/password 必须成对传入；提供凭据且省略 account 时，以 username 作为本地别名（须符合账号名称规则，邮箱等应显式提供合法 account）。缺失账号会创建；已有账号仅更新显式提供且不同的 auth/api/proxy 字段，保留其他配置。在凭据构造路径中，`proxy=None` 保留原代理，空字符串清空四个代理字段。不传 username/password 时，`base_url` 和 `proxy` 参数不覆盖现有账号配置，应先配置账号或使用凭据构造路径。构造客户端始终不改变默认账号指针，包括创建首个账号时。
+同步构造签名为 `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60)`。异步构造签名为 `InspireAsyncClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, concurrency=None)`；同步构造时进行的本地配置工作，在异步客户端进入上下文或首次调用时才执行。不传凭据时使用现有账号，省略 account 使用当前账号。username/password 必须成对传入；提供凭据且省略 account 时，以 username 作为本地别名（须符合账号名称规则，邮箱等应显式提供合法 account）。缺失账号会创建；已有账号仅更新显式提供且不同的 auth/api/proxy 字段，保留其他配置。在凭据构造路径中，`proxy=None` 保留原代理，空字符串清空四个代理字段。不传 username/password 时，`base_url` 和 `proxy` 参数不覆盖现有账号配置，应先配置账号或使用凭据构造路径。构造客户端始终不改变默认账号指针，包括创建首个账号时。
 
 `client.login(*, force=False) -> AccountInfo` 立即建立并验证会话：缓存未过期时复用它并查询当前用户，缺失或过期时调用现有 Transport 续期流程；`force=True` 主动进入续期流程。代码按会话创建时间和缓存 TTL 判断有效期（`SESSION_TTL=3600`，即 1 小时），不会因普通请求而延长本地有效期；这不证明服务器当前强制使用相同的失效时间。续期在账号刷新锁内先重读更新的磁盘缓存，再尝试 SSO Cookie 续期，最后执行受账号登录 guard 保护的 `login_without_browser`（requests CAS 凭据登录）。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道。验证码要求保留原提示并抛 `AuthenticationError`，不会转入浏览器重试；冷却通过 `AuthenticationCooldownError.retry_at` 暴露。
 
 `client.init(*, force=False) -> InitResult` 先登录，要求会话含真实可访问 workspace ID，然后按需原子写入账号配置，补齐平台地址和缺失的凭据；用户名可取会话中的登录身份。默认 `force=False` 仅合并这些配置字段，保留所有其他键值（包括未知节和旧表），仅在解析后的字典变化时写回；`force=True` 从账号模板和发现值重新构建，像 `inspire init --force` 一样丢弃旧表，并舍弃自定义节。返回 `config_path: Path`、按解析后字典比较的 `changed: bool` 和 `warnings: tuple[str, ...]`（当前实现为空元组）。它不写入仓库配置。**交互提示、Playwright 安装和 ssh-keygen 仍只由 CLI 提供**；SDK init 不执行这些步骤。CLI 的非交互 init 仍要求已有配置时显式指定 `--force`，其原有刷新语义保留。
 
-导入 SDK 不加载 Click、Rich 或 Playwright。同步客户端在构造时固定账号、平台来源和配置，后续切换默认账号不影响它；异步客户端在初始化池时固定账号。一个 `InspireClient` 只在创建它的进程和线程中使用；线程 worker 或 fork 子进程各自创建同步客户端，使用 `with` 或 `close()` 释放连接。`InspireAsyncClient` 在同一进程、同一事件循环的多个任务间共享，使用 `async with` 或 `await close()`。磁盘会话、刷新锁和登录冷却与 CLI 共用。`account_info` 查询平台信息；`api_keys.plaintext(ref)` 显式返回密钥值，其他密钥视图只包含元数据。
+导入 SDK 不加载 Click、Rich 或 Playwright。同步客户端在构造时固定账号、平台来源和配置，后续切换默认账号不影响它；异步客户端在首次初始化时固定账号。一个 `InspireClient` 只在创建它的进程和线程中使用；线程 worker 或 fork 子进程各自创建同步客户端，使用 `with` 或 `close()` 释放连接。`InspireAsyncClient` 在同一进程、同一事件循环的多个任务间共享，使用 `async with` 或 `await close()`。磁盘会话、刷新锁和登录冷却与 CLI 共用。`account_info` 查询平台信息；`api_keys.plaintext(ref)` 显式返回密钥值，其他密钥视图只包含元数据。
 
 异步登录和初始化分别为 `await client.login(force=False) -> AccountInfo` 与 `await client.init(force=False) -> InitResult`，返回类型和行为与同步形式相同。`InspireAsyncClient.from_credentials(...)` 和构造函数均为同步工厂，无需 await；`Accounts` 会做本地文件操作，事件循环敏感的应用可在启动阶段调用它。
 
 ```python
 # 放在 async def 内；也可以用 async with InspireAsyncClient(...)。
 client = InspireAsyncClient.from_credentials(
-    "login-name", "password", account="research", concurrency=2,
+    "login-name", "password", account="research",
 )
 try:
     identity = await client.login()
@@ -122,31 +122,27 @@ finally:
 
 ## 并发、取消与生命周期
 
-**并发模型。** `concurrency` 必须是正整数，默认为 1。每个池成员都是普通 `InspireClient`，在自己的专用线程创建，所有调用、生成器推进和关闭也回到该线程，遵守 Transport 的进程／线程亲和性规则。底层继续使用同步传输，单次发送、续期、错误分类和时间预算沿用原实现。每个成员各自持有 WebSession、HTTP／浏览器／广场连接及目录缓存（磁盘认证状态共用）；`concurrency=1` 时同一异步客户端的调用串行，增大后 `asyncio.gather` 可占用不同成员并行执行。它不是单会话内的并发请求，也不会绕过账号级认证锁、平台配额或限流。异步客户端只能在同一进程和同一事件循环中使用。
+**并发模型。** 一个 `InspireAsyncClient` 可在同一进程、同一事件循环内被多个任务共享。直接 `asyncio.gather(client.jobs.get(a), client.jobs.get(b))` 即可重叠执行原生异步请求，无需设置并发参数，也不使用专用工作线程或同步客户端池。HTTP、CAS 认证、浏览器请求与 PTY／Jupyter websocket 使用原生异步 I/O；轮询等待使用 `asyncio.sleep`。业务校验、解析、错误分类和生成器逻辑复用同步实现，通过同一线程上的栈切换在 I/O 边界挂起。同步 `InspireClient` 的进程／线程亲和性规则不变。
 
-构造函数不做 I/O，也不启动线程；进入 `async with` 或首次调用时才在工作线程初始化池，并固定解析后的账号。账号、超时和缓存配置错误在此时抛出；非法 `concurrency` 在构造时立即报错。`account` 和 `base_url` 属性在初始化完成后可读。提供用户名／密码时只由首个成员保存凭据，其余成员使用该账号配置。`Accounts` 仍是共享的同步账号管理 API。`await client.cache.clear()` 清空全部成员的缓存，`await client.cache.stats()` 返回各成员计数的合计。
+`concurrency` 已弃用：缺省为 `None`；显式传入正整数会发出 `DeprecationWarning`，参数不产生任何效果。保留它是为了让原有代码迁移时不立即失败；它既不是池大小，也不限制在途请求，原有 `concurrency=1` 不再使调用串行。非正整数仍在构造时抛 `ValidationError`。需要限制应用整体并发时，请由调用方使用 `asyncio.Semaphore`；账号认证锁、平台配额和限流继续生效。
 
-这一模型来自底层同步栈：JSON API 和 CAS 登录使用 `requests`，PTY websocket 使用阻塞 socket，允许浏览器回退时使用 Playwright 的同步 API。专用线程保证会话及浏览器对象的创建、使用、生成器推进和关闭发生在同一线程；它是 asyncio 接口上的线程池适配，并未把这些底层协议改成原生异步 I/O。调用方自己的 CPU 密集代码、同步 `Accounts` 调用或同步文件消费仍可能阻塞事件循环。
+构造函数不做 I/O；进入 `async with` 或首次调用时，在事件循环线程读取本地配置、固定账号，并仅保存一次显式凭据。账号、超时和缓存配置错误在此时抛出，完成后可读 `account` 和 `base_url`。每次操作使用独立的预算、写入状态和名称解析上下文，异步连接按请求／操作生命周期关闭；客户端共享目录缓存和已获取的认证快照。`await client.cache.clear()` 清空该缓存并保留计数，`await client.cache.stats()` 返回其 hits／misses／entries。`Accounts` 仍是同步账号管理 API。
 
-按同时进行的操作数设置 `concurrency`：只有短请求时从 1 开始，需要并行才增加；有 S 条长期流且希望同时执行 R 个普通请求时，至少准备 S + R 个成员。`wait()` 也会在整个轮询期间占住成员。增加成员会增加线程、连接和独立缓存的数量，不保证等比例吞吐，账号认证锁与平台限流仍然生效。
+Notebook SSH 桥接可用性检查与 exec 子进程、显式允许的浏览器登录回退，以及同步 `output_to` 文件写入仍通过每次调用的 `asyncio.to_thread` 卸载；没有持久的 SDK 工作线程池。调用方的同步输出回调、CPU 密集处理、`Accounts` 调用及本地配置文件处理仍可能阻塞事件循环。
 
-`iter`、`follow_events`、`follow_logs` 和 `exec_stream` 从首次推进到关闭，全程占用一个成员，包括调用方处理项目的时间。同步生成器的状态与后续请求、exec 的活动连接仍属于该线程，不能每产出一项就把成员交给任意其他操作。队列最多暂存一项并施加背压，但分页当前页、去重集合以及 exec 捕获仍会占内存；这不是整条流内存恒定的保证。尤其长时间 follow 的去重集合随观察历史增长。
+`iter`、`follow_events`、`follow_logs`、`exec_stream` 和 `wait()` 不占用池成员。可以在流循环体内 await 同一客户端的普通请求或缓存操作，无需为它们预留成员。流的交付队列最多暂存一项并施加背压；分页当前页、去重集合和 exec 捕获仍会占内存，尤其 follow 的去重集合可能随观察历史增长。提前退出流使用 `contextlib.aclosing`，单独 `break` 不保证立即关闭生成器和活动连接。
 
-不要在流循环体内 await 一个需要该流所占成员才能完成的操作。可给普通请求预留额外成员、用另一个客户端承载长期流，或显式 `await list(..., cursor=...)` 按页读取，在处理每页前归还成员；持续观察也可自行重复调用 `events()`／`logs()` 并在调用之间 `await asyncio.sleep(...)`。提前退出流使用 `contextlib.aclosing`，单独 `break` 不保证立即释放成员。`cache.clear()`／`cache.stats()` 会等待所有成员，因此即使还有空闲成员，也应先关闭活跃流再 await 这两个方法。
+`operation_timeout` 从操作开始时计算，不包含首次本地初始化；并发操作各自持有预算。Ray／Serving 的一次 `status()` 共用一个操作截止时间，并最多同时读取 **8** 个引用，以免数百个引用同时打开数百条连接。结果及重复引用按输入顺序返回；多个引用失败时，按输入顺序抛出第一个错误，保留同步路径的错误类型和消息，并取消剩余读取。此限制只适用于单次 `status()`；同步客户端继续串行读取。
 
-排队等待成员及首次初始化池的时间不计入底层 `operation_timeout`；该预算从工作线程开始操作时计算。需要约束调用方整体等待可使用 `asyncio.wait_for`，但取消后仍要等待已经开始的同步调用结束，所以它也不是硬时限。
+**取消与关闭。** 取消普通调用或等待下一项的任务，会取消正在等待的原生 HTTP／websocket I/O 和轮询等待，并执行原有 finally 清理，不必等阻塞线程返回或等完轮询间隔。可用 `asyncio.wait_for` 限制调用方等待。已经卸载到线程的 SSH 子进程或浏览器登录无法由 asyncio 强制终止；SSH 流会在后续输出回调停止交付，静默子进程仍可能运行到自身超时。同步文件写入会完成当前写入和关闭后再传播取消。
 
-**取消与关闭。** 取消等待下一项的任务会通知工作线程停止 follow；其轮询等待可立即唤醒，不必等完 `interval`。适配器只为本次 follow 绑定私有的可中断等待，不修改同步客户端或全局 `time.sleep`，原有去重、终态判断和日志收尾逻辑仍执行同步函数代码。生成器关闭也在所属工作线程进行。
-
-已经进入的同步网络调用不能被强制抢占。取消普通调用会等待当前调用完成；取消流或关闭客户端也可能等待正在执行的请求，受既有 timeout／operation_timeout 及同步底层限制约束。exec 的流取消可在下一输出回调中停止本地读取；静默命令可能要等传输返回或超时。取消不证明远端命令已停止，也不撤销已发送写入，更不会重放请求。SDK 异常的类型、消息和异常实例原样送到等待方。
-
-`async with` 退出及 `await client.close()` 会停止活跃流、关闭所有同步客户端并 join 全部专用线程；即使关闭任务被取消，清理仍会完成。遗漏关闭的客户端使用 daemon 线程，不会阻止解释器退出，但应用仍应显式管理上下文以回收连接。关闭后再次调用会抛 `ClientClosedError`。
+取消不证明远端命令已停止，也不撤销已发送写入，更不会重放请求。SDK 异常的类型、消息和异常实例仍原样传播。`async with` 退出及 `await client.close()` 会取消活跃的原生操作与流并关闭连接；关闭任务被多次取消时，清理仍会完成。应显式管理客户端生命周期；尚未完成的线程卸载任务可能延迟事件循环默认执行器退出。关闭后再次调用抛 `ClientClosedError`。
 
 ## 资源引用与分页
 
 集合接口为 `list(workspace, *, ...filters, limit=20, cursor=None)`、`iter(workspace, *, ...filters, max_items=None)` 和 `quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)`；无工作区的目录保留其首个选择参数或无参数。以工作区为主要操作对象的方法（包括 `resources.availability/policy/usage`、`account_info.permissions` 和 `servings.configs`）将 `workspace` 作为首参数，接受位置或关键字传入，其余参数仅接受关键字；`account_info.permissions(workspace=None)` 的工作区可省略。其他方法中的工作区筛选参数仅接受关键字。读取或变更已有单资源时通常以 `ref` 为首参数；创建以 `spec`、注册以 `name` 为首参数，数据集申请与验证分别使用 `name` 和 `specs`，完整签名见方法表。批量 `status(refs, *, workspace=None)` 接受名称或类型化引用的序列，按输入顺序返回元组，空序列返回空元组。
 
-训练 Jobs 和 HPC 的 `status()` 在解析引用后通过平台批量 Action 查询，按工作区分组，每 20 个引用一次请求（重复 ID 在分块前去重）。Ray、Serving、Notebook 仍逐个引用读取。两种路径返回的资源对象与 `get()` 完全相同，包括 `raw` 和 `view`；输入顺序和重复引用均保留。名称选择仍需先进行名称解析。
+训练 Jobs 和 HPC 的 `status()` 在解析引用后通过平台批量 Action 查询，按工作区分组，每 20 个引用一次请求（重复 ID 在分块前去重）。同步 Ray、Serving 和 Notebook 逐个引用读取；异步 Ray／Serving 按最多 8 个在途读取并发执行，Notebook 保持逐个读取。两种路径返回的资源对象与 `get()` 完全相同，包括 `raw` 和 `view`；输入顺序和重复引用均保留。名称选择仍需先进行名称解析。
 
 `Page` 提供 `items`、`next_cursor`、`total`，通过相同过滤条件与 `cursor=page.next_cursor` 继续。Jobs、Notebook、HPC、Ray、Serving 的列表采用服务端分页，按需取页直到收集到 `limit` 项或目录结束；游标记录平台行偏移，并绑定账号、门面及查询条件，不是平台快照。迭代器沿游标继续并对身份去重，`max_items` 控制产出数。Notebook、HPC、Ray、Serving 列表未应用本地过滤时，`total` 使用平台报告的总数；应用本地状态或关键词过滤时为 `None`，平台未提供可靠总数时也为 `None`。其他目录（包括 TensorBoard）仍可能先有界枚举再做本地分页。
 
@@ -187,7 +183,7 @@ with InspireClient(catalog_ttl=60) as client:
 
 镜像注册、删除、可见性修改和 Notebook 保存镜像会清理执行该操作的同步客户端内受影响的镜像目录；会话续期不清理目录。指定 `ImageSelector(name=..., source=...)` 只读取该来源，`ImageRef` 直接读取详情，registry URL 不枚举镜像目录。长时间运行且必须立即看到外部目录变更的进程，应设置 `catalog_ttl=0`，或在需要最新目录时先调用 `client.cache.clear()`。
 
-异步缓存的构造参数仍为 `catalog_ttl`；`await client.cache.clear()` 清空所有成员的目录并保留计数，`await client.cache.stats()` 合计各成员的 hits／misses／entries。不同成员不共享缓存，镜像写入自动失效只作用于执行该写入的成员；需要所有成员立即看到变更时，关闭活跃流后显式 clear，或设置 `catalog_ttl=0`。
+异步缓存的构造参数仍为 `catalog_ttl`；同一异步客户端的并发调用共享目录缓存，镜像写入失效对后续调用可见。`await client.cache.clear()` 清空缓存并保留计数，`await client.cache.stats()` 返回 hits／misses／entries；这两个方法可在流仍打开时调用。
 
 ## 观察结果类型
 
@@ -571,7 +567,7 @@ PTY／Jupyter 执行等待超时或连接在完成 marker 出现前结束时，�
 
 此前的无界内存捕获和反复扫描完整历史输出属于 SDK 实现问题，现已用默认 4 MiB 头尾捕获、固定窗口增量 marker 扫描和摊销线性的缓冲写入修复。`max_output_bytes=None` 仍可显式恢复无限捕获；`capture=False` 配合 `output_to`／回调／异步块流适合长输出。平台 PTY 限制与这些已修复的实现问题应分别理解。
 
-Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的 `exec` 和 `exec_stream` 的 `on_output` 回调均在所属工作线程按顺序运行（同步 exec 在调用线程运行），必须是同步回调；异步应用可直接使用 `exec_stream` 消费块，无须自己桥接线程。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
+Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的原生 PTY／Jupyter `exec` 和 `exec_stream` 的 `on_output` 回调在事件循环线程按顺序运行；SSH 回调在本次卸载的线程运行（同步 exec 在调用线程运行）。公开回调必须是同步函数，应避免耗时操作；异步应用可直接使用 `exec_stream` 消费块，无须自己桥接线程。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
 
 ```python
 from contextlib import aclosing
@@ -592,7 +588,7 @@ async def check_notebook(client: InspireAsyncClient, notebook_ref) -> None:
 
 ### tensorboards
 
-TensorBoard 资源的创建、状态和生命周期查询走共享控制台传输；`tags`／`scalars` 的运行目录、标签和标量数据来自 TensorBoard 应用自身的 HTTP 接口。应用读取通过共享 `build_requests_session` 构造临时会话并同步 GET，不经过 `Transport.request()`；该临时会话不属于 Transport 持有的连接池。当前每次应用 GET 默认超时为 60 秒，不继承客户端 `timeout` 或剩余 `operation_timeout`，也没有该 dispatcher 的续期／重试保证。异步形式仍在所属池线程执行。`points` 只裁剪结果中的尾部点集，底层会读取相应系列再汇总。
+TensorBoard 资源的创建、状态和生命周期查询走共享控制台传输；`tags`／`scalars` 的运行目录、标签和标量数据来自 TensorBoard 应用自身的 HTTP 接口。同步应用读取通过共享 `build_requests_session` 构造临时会话并执行 GET，不经过 `Transport.request()`；该临时会话不属于 Transport 持有的连接池。同步路径每次应用 GET 默认超时为 60 秒，不继承客户端 `timeout` 或剩余 `operation_timeout`，也没有该 dispatcher 的续期／重试保证。异步形式通过原生 HTTP 驱动执行，并将请求超时限制在剩余操作预算内。`points` 只裁剪结果中的尾部点集，底层会读取相应系列再汇总。
 
 同步用 `client.tensorboards.方法(...)`；异步用 `await client.tensorboards.方法(...)`，本节全部参数、默认值与返回模型相同。
 
@@ -828,7 +824,7 @@ metrics = await client.jobs.metrics(handle.ref, metric="gpu,cpu", window="2h")
 async with aclosing(client.jobs.follow_logs(handle.ref, interval=2)) as updates:
     async for update in updates:
         print(update.text)
-        break  # aclosing 确保提前退出时关闭生成器并归还成员。
+        break  # aclosing 确保提前退出时关闭生成器和活动连接。
 ```
 
 训练 Jobs 日志的 window 与 CLI 共用解析器，接受 `30m`、`2h`、`1d` 等正整数窗口。显式 window 以当前时间为终点；默认 None 使用任务创建 / 完成时间并前后各留 10 分钟，缺少创建时间时回看 24 小时。也可传 datetime start/end 指定绝对窗口。

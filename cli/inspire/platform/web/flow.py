@@ -7,6 +7,7 @@ this description; interpreters supply the I/O.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, Generator, ParamSpec, TypeVar
@@ -32,9 +33,15 @@ def http_call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Call:
     return Call(function, args, kwargs, http=True)
 
 
+async_call: ContextVar[Callable[[Call], Any] | None] = ContextVar("inspire_async_call", default=None)
+
+
 def workflow(function: Callable[P, Program[T]]) -> Callable[P, T]:
     @wraps(function)
     def execute(*args: P.args, **kwargs: P.kwargs) -> T:
+        bridge = async_call.get()
+        if bridge is not None:
+            return bridge(call(execute, *args, **kwargs))
         program = function(*args, **kwargs)
         try:
             action = next(program)
@@ -73,6 +80,9 @@ def exit_context(context: Any, *error: Any) -> Any:
 
 
 def perform_sync(action: Call) -> Any:
+    bridge = async_call.get()
+    if bridge is not None:
+        return bridge(action)
     if not action.http:
         return action.function(*action.args, **action.kwargs)
     from inspire.platform.web.runtime import active_transport

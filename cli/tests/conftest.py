@@ -238,9 +238,13 @@ def _block_real_web_requests(monkeypatch):
     """All transport tests must supply their own HTTP/browser boundary."""
     import requests
     import playwright.sync_api
+    import playwright.async_api
+    import httpx
 
     def blocked(*args, **kwargs):
         pytest.fail("Real HTTP/Playwright is forbidden in the offline test suite")
 
     monkeypatch.setattr(requests.Session, "send", blocked)
     monkeypatch.setattr(playwright.sync_api, "sync_playwright", blocked)
+    monkeypatch.setattr(playwright.async_api, "async_playwright", blocked)
+    monkeypatch.setattr(httpx.AsyncClient, "send", blocked)

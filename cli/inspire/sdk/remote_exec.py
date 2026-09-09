@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import replace
+from inspire.platform.web.flow import call, perform_sync
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget, validate_capture
 from typing import Callable, Any
 from inspire.config.env import build_env_exports
@@ -44,17 +45,17 @@ def authenticated_exec(
     output_received = False
     callback = kwargs.get("on_output")
 
-    def observe(chunk: str) -> None:
+    def observe(chunk: str) -> Any:
         nonlocal output_received
         output_received = True
         if callback is not None:
-            callback(chunk)
+            return callback(chunk)
 
     kwargs["on_output"] = observe
     for attempt in range(2):
         session = service.session
         try:
-            return run(session=session, timeout=min(timeout, transport.remaining()), **kwargs)
+            return perform_sync(call(run, session=session, timeout=min(timeout, transport.remaining()), **kwargs))
         except SessionExpiredError as error:
             if attempt or output_received:
                 raise AuthenticationError(str(error)) from error

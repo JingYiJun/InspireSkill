@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.services.async_output import deliver_output
+
 import asyncio
 import codecs
 import re
@@ -389,7 +391,7 @@ async def exec_over_pty_websocket_async(
     command: str,
     timeout: float,
     marker: str | None = None,
-    on_output: Callable[[str], None] | None = None,
+    on_output: Callable[[str], Any] | None = None,
     max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
     output_to: OutputTarget = None,
     capture: bool = True,
@@ -445,7 +447,7 @@ async def exec_over_pty_websocket_async(
                 if writer is not None:
                     await writer.write(chunk)
                 if on_output is not None and chunk:
-                    on_output(chunk)
+                    await deliver_output(on_output, chunk)
                 if not sent and output.scanner.prompt:
                     await ws.send_text(
                         build_jupyter_exec_command(command, marker=marker).rstrip("\r") + "\r"
@@ -464,7 +466,7 @@ async def exec_over_pty_websocket_async(
             if writer is not None:
                 await writer.write(final)
             if on_output is not None:
-                on_output(final)
+                await deliver_output(on_output, final)
         result = output.result()
         return ExecResult(
             result.returncode,
@@ -485,7 +487,7 @@ async def exec_in_notebook_jupyter_async(
     command: str,
     timeout: float,
     marker: str | None = None,
-    on_output: Callable[[str], None] | None = None,
+    on_output: Callable[[str], Any] | None = None,
     max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
     output_to: OutputTarget = None,
     capture: bool = True,
@@ -496,12 +498,12 @@ async def exec_in_notebook_jupyter_async(
     partial = OutputBuffer(max_output_bytes, capture=capture)
     callback_failed = False
 
-    def observe(chunk: str) -> None:
+    async def observe(chunk: str) -> None:
         nonlocal callback_failed
         partial.feed(chunk)
         if on_output is not None:
             try:
-                on_output(chunk)
+                await deliver_output(on_output, chunk)
             except BaseException:
                 callback_failed = True
                 raise

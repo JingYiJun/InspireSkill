@@ -5,6 +5,7 @@ from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.remote_exec import ExecResult
 import time
+from inspire.platform.web.flow import call, perform_sync
 from dataclasses import replace
 from uuid import uuid4
 from datetime import datetime
@@ -435,7 +436,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                     if raise_on_failure:
                         raise ServingFailedError(row)
                     return row
-                time.sleep(min(poll_interval, self.client._transport.remaining()))
+                perform_sync(call(time.sleep, min(poll_interval, self.client._transport.remaining())))
 
     @operation
     def versions(

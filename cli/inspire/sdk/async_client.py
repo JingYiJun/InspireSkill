@@ -2223,7 +2223,7 @@ class AsyncResources(AsyncFacade):
 
 class InspireAsyncClient(AsyncRuntime):
 
-    """Async SDK with lazy, dedicated daemon workers."""
+    """Async SDK with native I/O on the caller event loop."""
 
     accounts = Accounts
 
@@ -2249,7 +2249,7 @@ class InspireAsyncClient(AsyncRuntime):
 
         catalog_ttl: float = 60,
 
-        concurrency: int = 1,
+        concurrency: int | None = None,
     ) -> None:
 
         super().__init__({

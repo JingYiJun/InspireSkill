@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import math
 import time
+from inspire.platform.web.flow import call, perform_sync
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Callable, Generic, Iterator, Protocol, Sequence, TypeVar
@@ -292,7 +293,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
                     if raise_on_failure and job.status not in self._binding.success_statuses:
                         raise self._failure(job)
                     return job
-                time.sleep(min(poll_interval, self.client._transport.remaining()))
+                perform_sync(call(time.sleep, min(poll_interval, self.client._transport.remaining())))
 
     def _mutate(self, ref, action: Callable[..., object], workspace):
         resolved = self._resolve(ref, workspace)
@@ -325,7 +326,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
                     rows.append(row)
             if rows:
                 yield EventResult(tuple(rows), result.truncated)
-            time.sleep(interval)
+            perform_sync(call(time.sleep, interval))
 
     def _groups(self, ws):
         return self._catalog(

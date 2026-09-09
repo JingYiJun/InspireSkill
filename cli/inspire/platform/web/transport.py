@@ -371,6 +371,11 @@ class Transport:
     def request(
         self, method: str, path: str, *, body=None, timeout: float = 30, referer=None
     ) -> dict:
+        from inspire.platform.web.flow import async_call
+
+        bridge = async_call.get()
+        if bridge is not None:
+            return bridge(call(self.request_async, method, path, body=body, timeout=timeout, referer=referer))
         program = self._core().run(method, path, body, timeout, referer)
         try:
             action = next(program)
@@ -391,7 +396,7 @@ class Transport:
     async def request_async(
         self, method: str, path: str, *, body=None, timeout: float = 30, referer=None
     ) -> dict:
-        """Internal native JSON path; not yet wired to InspireAsyncClient."""
+        """Native JSON path used by InspireAsyncClient."""
         from inspire.platform.web.transport_async import AsyncDriver
 
         self.check()

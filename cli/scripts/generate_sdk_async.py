@@ -101,7 +101,7 @@ def generate() -> str:
                 body.append(wrapper(cls, facade, name, output=True))
         body.append("\n")
     body.append("class InspireAsyncClient(AsyncRuntime):\n")
-    body.append('    """Async SDK with lazy, dedicated daemon workers."""\n')
+    body.append('    """Async SDK with native I/O on the caller event loop."""\n')
     body.append("    accounts = Accounts\n\n")
     body.append("    def __init__(\n        self,\n        account: str | None = None,\n        *,\n")
     sig = inspect.signature(InspireClient)
@@ -109,7 +109,7 @@ def generate() -> str:
     for param in list(sig.parameters.values())[1:]:
         body.append(f"        {param.name}: {param.annotation} = {param.default!r},\n")
         options.append(param.name)
-    body.append("        concurrency: int = 1,\n    ) -> None:\n")
+    body.append("        concurrency: int | None = None,\n    ) -> None:\n")
     body.append("        super().__init__({\n" + "".join(
         f"            {name!r}: {name},\n" for name in options) + "        }, concurrency)\n")
     for facade, cls in facades.items():

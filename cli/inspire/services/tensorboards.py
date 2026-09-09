@@ -1,5 +1,6 @@
 from __future__ import annotations
 import time
+from inspire.platform.web.flow import call, perform_sync
 from typing import Any
 from inspire.config import ConfigError
 from inspire.platform.web import browser_api as browser_api_module
@@ -108,7 +109,7 @@ def find_created_board(
     board = None
     for attempt in range(_CREATE_LOOKUP_ATTEMPTS):
         if attempt:
-            time.sleep(_CREATE_LOOKUP_INTERVAL_SECONDS)
+            perform_sync(call(time.sleep, _CREATE_LOOKUP_INTERVAL_SECONDS))
         matches = [
             candidate
             for candidate in fetch_boards(
@@ -140,7 +141,7 @@ def await_status(
     status = ""
     for attempt in range(attempts):
         if attempt:
-            time.sleep(interval)
+            perform_sync(call(time.sleep, interval))
         status = browser_api_module.get_tensorboard(tb_id, session=session).status
         if reaching and status == reaching:
             return status

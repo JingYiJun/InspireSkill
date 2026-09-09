@@ -11,7 +11,6 @@ import runpy
 import subprocess
 import sys
 import threading
-import time
 import types
 from typing import TypeVar, Union, get_args, get_origin, get_type_hints
 
@@ -23,6 +22,8 @@ from inspire.sdk import (
 )
 from inspire.sdk import _async_runtime
 from inspire.sdk.resources import Workspaces
+from inspire.platform.web.flow import call, perform_sync
+import httpx
 from test_sdk import client as client
 from test_sdk_signatures import facade_methods
 
@@ -69,7 +70,7 @@ def test_every_facade_and_signature_has_typed_async_mirror(client):
         assert inspect.iscoroutinefunction(mirror) or inspect.isasyncgenfunction(mirror), key
     sync_constructor = inspect.signature(InspireClient).parameters
     async_constructor = dict(inspect.signature(InspireAsyncClient).parameters)
-    assert async_constructor.pop("concurrency").default == 1
+    assert async_constructor.pop("concurrency").default is None
     assert sync_constructor == async_constructor
     root_methods = {name for name, _ in inspect.getmembers(InspireClient, inspect.isroutine)
                     if not name.startswith("_")}
@@ -98,6 +99,8 @@ def tracked(client, monkeypatch):
     class TrackedClient(InspireClient):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self._transport._session = client._transport._session
+            self._transport._last_success = client._transport._last_success
             self.owner = threading.get_ident()
             self.touches = []
             self.closed = False
@@ -121,27 +124,31 @@ def tracked(client, monkeypatch):
 
 
 def test_returns_sync_value_without_blocking_loop(client, tracked, monkeypatch):
-    entered = threading.Event()
-    release = threading.Event()
+    entered = asyncio.Event()
+    release = asyncio.Event()
     rows = [Resource("workspace", WorkspaceRef("workspace", "alpha", client.base_url, "ws", "ws"))]
 
-    def slow(self):
+    async def read():
         entered.set()
-        assert release.wait(3), "event loop was blocked"
+        await release.wait()
         return rows
+
+    def slow(self):
+        return perform_sync(call(read))
 
     monkeypatch.setattr(Workspaces, "_all", slow)
 
     async def run():
         async with InspireAsyncClient("alpha") as c:
             task = asyncio.create_task(c.workspaces.list())
-            while not entered.is_set():
-                await asyncio.sleep(0.001)
+            await entered.wait()
             release.set()
             result = await task
-            assert result == client.workspaces.list()
+            with monkeypatch.context() as patch:
+                patch.setattr(Workspaces, "_all", lambda self: rows)
+                assert result == client.workspaces.list()
             assert c.account == "alpha" and c.base_url == client.base_url
-        assert all(not w.thread.is_alive() for w in c._workers)
+        assert not c._active
         await c.close()
         with pytest.raises(ClientClosedError):
             await c.workspaces.list()
@@ -149,37 +156,52 @@ def test_returns_sync_value_without_blocking_loop(client, tracked, monkeypatch):
     asyncio.run(run())
     assert len(tracked) == 1
     assert tracked[0].closed and tracked[0].touches
-    assert set(tracked[0].touches) == {tracked[0].owner}
-    assert tracked[0].owner != threading.get_ident()
+    assert set(tracked[0].touches) == {threading.get_ident()}
 
 
-@pytest.mark.parametrize("concurrency, overlap", [(1, 1), (2, 2)])
-def test_pool_concurrency_and_affinity(tracked, monkeypatch, concurrency, overlap):
+
+@pytest.mark.parametrize("concurrency", [None, 1, 2])
+def test_native_concurrency_without_workers(tracked, monkeypatch, concurrency):
     active = maximum = 0
-    lock = threading.Lock()
+    both = asyncio.Event()
+    threads = []
 
-    def slow(self):
+    async def send(http, request, **kwargs):
         nonlocal active, maximum
-        with lock:
-            active += 1
-            maximum = max(maximum, active)
-        time.sleep(0.08)
-        with lock:
-            active -= 1
+        threads.append(threading.get_ident())
+        active += 1
+        maximum = max(maximum, active)
+        if active == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 1)
+        active -= 1
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    def rows(self):
+        assert self.client._transport.request("GET", "/fake")["ok"]
         return []
 
-    monkeypatch.setattr(Workspaces, "_all", slow)
+    monkeypatch.setattr(Workspaces, "_all", rows)
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    monkeypatch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("worker offload"))
+    monkeypatch.setattr(threading.Thread, "start", lambda *a: pytest.fail("worker started"))
 
     async def run():
-        async with InspireAsyncClient("alpha", concurrency=concurrency) as c:
-            await asyncio.gather(*(c.workspaces.list() for _ in range(6)))
-        assert all(not w.thread.is_alive() for w in c._workers)
+        options = {} if concurrency is None else {"concurrency": concurrency}
+        if concurrency is None:
+            c = InspireAsyncClient("alpha", **options)
+        else:
+            with pytest.warns(DeprecationWarning, match="has no effect"):
+                c = InspireAsyncClient("alpha", **options)
+        async with c:
+            await asyncio.gather(c.workspaces.list(), c.workspaces.list())
+        assert not c._active and not hasattr(c, "_workers")
 
     asyncio.run(run())
-    assert maximum == overlap
-    assert len(tracked) == concurrency
-    assert len({c.owner for c in tracked}) == concurrency
-    assert all(c.closed and set(c.touches) == {c.owner} for c in tracked)
+    assert maximum == 2
+    assert len(tracked) == 1 and tracked[0].closed
+    assert threads == [threading.get_ident()] * 2
+
 
 
 def test_exceptions_preserve_instance_type_and_message(tracked, monkeypatch):
@@ -200,7 +222,7 @@ def test_exceptions_preserve_instance_type_and_message(tracked, monkeypatch):
 
 
 @pytest.mark.parametrize("facade", ["jobs", "notebooks", "hpc", "ray", "servings"])
-def test_follow_cancel_interrupts_real_sleep_and_closes_workers(tracked, monkeypatch, facade):
+def test_follow_cancel_interrupts_native_sleep_and_closes_client(tracked, monkeypatch, facade):
     from inspire.sdk.jobs import Jobs
     from inspire.sdk.notebooks import Notebooks
     from inspire.sdk.hpc import HPC
@@ -238,14 +260,14 @@ def test_follow_cancel_interrupts_real_sleep_and_closes_workers(tracked, monkeyp
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 1)
             await stream.aclose()
-        assert all(not worker.thread.is_alive() for worker in c._workers)
+        assert not c._active
 
     asyncio.run(run())
     assert polls == [1]
     assert all(c.closed for c in tracked)
 
 
-def test_iterator_runs_next_and_close_on_owner_thread(tracked, monkeypatch):
+def test_iterator_runs_next_and_close_on_event_loop(tracked, monkeypatch):
     from inspire.sdk.jobs import Jobs
     closed = threading.Event()
 
@@ -317,7 +339,7 @@ def test_process_and_loop_affinity(tracked, monkeypatch):
         asyncio.run(c.close())
 
 
-def test_unclosed_worker_does_not_hold_interpreter_open():
+def test_unclosed_native_client_does_not_hold_interpreter_open():
     script = """
 import asyncio
 from unittest.mock import patch
@@ -357,9 +379,9 @@ def test_follow_logs_cancel_and_finite_iterator(tracked, monkeypatch):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 1)
-            # Pool remains usable after iteration cancellation.
+            # Client remains usable after iteration cancellation.
             assert (await c.cache.stats())["entries"] == 0
-        assert all(not w.thread.is_alive() for w in c._workers)
+        assert not c._active
 
     asyncio.run(run())
 
@@ -399,84 +421,98 @@ def test_stream_error_and_early_exec_close(tracked, monkeypatch):
     asyncio.run(run())
 
 
-def test_partial_initialization_failure_closes_created_workers(tracked, monkeypatch):
+def test_partial_initialization_failure_closes_native_client(tracked, monkeypatch):
     factory = _async_runtime.InspireClient
-    error = ValidationError("second worker failed")
 
     def create(**options):
-        if tracked:
-            raise error
-        return factory(**options)
+        result = factory(**options)
+        del result._account
+        return result
 
     monkeypatch.setattr(_async_runtime, "InspireClient", create)
 
     async def run():
-        c = InspireAsyncClient("alpha", concurrency=2)
-        with pytest.raises(ValidationError) as caught:
+        c = InspireAsyncClient("alpha")
+        with pytest.raises(AttributeError):
             await c.__aenter__()
-        assert caught.value is error
-        assert tracked[0].closed
-        assert all(not w.thread.is_alive() for w in c._workers)
+        assert tracked[0].closed and c._options == {}
         await c.close()
+        with pytest.raises(ClientClosedError):
+            await c.cache.stats()
 
     asyncio.run(run())
 
 
-def test_close_cancels_active_follow_and_rejects_queued_call(tracked, monkeypatch):
+
+def test_close_cancels_active_follow_and_request(tracked, monkeypatch):
     from inspire.sdk.notebooks import Notebooks
-    polled = threading.Event()
+    polled, entered = asyncio.Event(), asyncio.Event()
+    stopped = asyncio.Event()
 
     def events(self, *args, **kwargs):
         polled.set()
         return EventResult(())
 
+    async def send(http, request, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
     monkeypatch.setattr(Notebooks, "_resolve", lambda self, ref, ws: ref)
     monkeypatch.setattr(Notebooks, "events", events)
+    monkeypatch.setattr(Workspaces, "_all", lambda self: self.client._transport.request("GET", "/fake"))
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
 
     async def run():
         c = InspireAsyncClient("alpha")
         follow = asyncio.create_task(anext(c.notebooks.follow_events("fake", interval=60)))
-        while not polled.is_set():
-            await asyncio.sleep(0.001)
-        queued = asyncio.create_task(c.workspaces.list())
-        await asyncio.sleep(0)
+        await polled.wait()
+        request = asyncio.create_task(c.workspaces.list())
+        await entered.wait()
         await asyncio.wait_for(c.close(), 1)
-        with pytest.raises(StopAsyncIteration):
-            await follow
+        for task in (follow, request):
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert stopped.is_set() and not c._active
         with pytest.raises(ClientClosedError):
-            await queued
-        assert all(not w.thread.is_alive() for w in c._workers)
+            await c.workspaces.list()
 
     asyncio.run(run())
 
 
-def test_cancelled_close_still_joins_workers(tracked, monkeypatch):
-    original = InspireClient.close
 
-    def slow_close(self):
-        time.sleep(0.05)
-        original(self)
+def test_cancelled_close_still_finishes_native_cleanup(tracked, monkeypatch):
+    original = _async_runtime.AsyncRuntime._shutdown
+    entered, release = asyncio.Event(), asyncio.Event()
 
-    monkeypatch.setattr(InspireClient, "close", slow_close)
+    async def slow_close(self):
+        entered.set()
+        await release.wait()
+        await original(self)
+
+    monkeypatch.setattr(_async_runtime.AsyncRuntime, "_shutdown", slow_close)
 
     async def run():
-        c = InspireAsyncClient("alpha", concurrency=2)
+        c = InspireAsyncClient("alpha")
         await c.__aenter__()
         closing = asyncio.create_task(c.close())
-        await asyncio.sleep(0.005)
+        await entered.wait()
         closing.cancel()
-        await asyncio.sleep(0.005)
+        await asyncio.sleep(0)
         closing.cancel()
+        release.set()
         with pytest.raises(asyncio.CancelledError):
             await closing
-        assert all(not w.thread.is_alive() for w in c._workers)
-        assert all(c.closed for c in tracked)
+        assert not c._active and tracked[0].closed
         await c.close()
 
     asyncio.run(run())
 
 
-def test_cache_controls_cover_all_sessions(tracked, monkeypatch):
+
+def test_cache_controls_cover_concurrent_calls(tracked, monkeypatch):
     def rows(self):
         self.client.cache._get(("fake",), lambda: "snapshot")
         return []
@@ -484,16 +520,16 @@ def test_cache_controls_cover_all_sessions(tracked, monkeypatch):
     monkeypatch.setattr(Workspaces, "_all", rows)
 
     async def run():
-        async with InspireAsyncClient("alpha", concurrency=2) as c:
+        async with InspireAsyncClient("alpha", concurrency=None) as c:
             await asyncio.gather(c.workspaces.list(), c.workspaces.list())
-            assert (await c.cache.stats())["entries"] == 2
+            assert (await c.cache.stats())["entries"] == 1
             await c.cache.clear()
             assert (await c.cache.stats())["entries"] == 0
 
     asyncio.run(run())
 
 
-def test_credentials_factory_initializes_once_on_worker(tracked, monkeypatch):
+def test_credentials_factory_initializes_once_on_event_loop(tracked, monkeypatch):
     calls = []
 
     def credentials(account, **options):
@@ -503,7 +539,7 @@ def test_credentials_factory_initializes_once_on_worker(tracked, monkeypatch):
     monkeypatch.setattr("inspire.sdk.client.ensure_credentials", credentials)
 
     async def run():
-        c = InspireAsyncClient.from_credentials("fake", "unused", concurrency=2)
+        c = InspireAsyncClient.from_credentials("fake", "unused", concurrency=None)
         assert calls == [] and tracked == []
         async with c:
             assert c.account == "alpha"
@@ -512,30 +548,33 @@ def test_credentials_factory_initializes_once_on_worker(tracked, monkeypatch):
     asyncio.run(run())
 
 
-def test_cancelled_initialization_cleans_up(tracked, monkeypatch):
-    factory = _async_runtime.InspireClient
-    entered = threading.Event()
+def test_cancelled_first_request_cleans_up(tracked, monkeypatch):
+    entered, stopped = asyncio.Event(), asyncio.Event()
 
-    def create(**options):
+    async def send(http, request, **kwargs):
         entered.set()
-        time.sleep(0.05)
-        return factory(**options)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
 
-    monkeypatch.setattr(_async_runtime, "InspireClient", create)
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    monkeypatch.setattr(Workspaces, "_all", lambda self: self.client._transport.request("GET", "/fake"))
 
     async def run():
-        c = InspireAsyncClient("alpha", concurrency=2)
-        task = asyncio.create_task(c.__aenter__())
-        while not entered.is_set():
-            await asyncio.sleep(0.001)
+        c = InspireAsyncClient("alpha")
+        task = asyncio.create_task(c.workspaces.list())
+        await entered.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
-        assert all(not w.thread.is_alive() for w in c._workers)
-        assert tracked[0].closed
+            await asyncio.wait_for(task, 1)
+        assert stopped.is_set() and not c._active
+        assert (await c.cache.stats())["entries"] == 0
         await c.close()
+        assert tracked[0].closed
 
     asyncio.run(run())
+
 
 
 def test_exec_stream_close_interrupts_blocked_producer(tracked, monkeypatch):
@@ -558,6 +597,278 @@ def test_exec_stream_close_interrupts_blocked_producer(tracked, monkeypatch):
                 assert await anext(stream) == "chunk"
             assert exited.is_set()
             assert (await c.cache.stats())["entries"] == 0
-        assert all(not worker.thread.is_alive() for worker in c._workers)
+        assert not c._active
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("facade", ["ray", "servings"])
+def test_status_native_reads_preserve_models_order_and_duplicates(client, tracked, monkeypatch, facade):
+    service = getattr(client, facade)
+    cls = type(service)
+    refs = [service._make_ref(service._ref_type, key, key, "ws") for key in ("slow", "fast", "slow")]
+    rows = {key: {"id": key, "name": key, "status": "RUNNING", "workspace_id": "ws"}
+            for key in ("slow", "fast")}
+    with monkeypatch.context() as patch:
+        patch.setattr(cls, "_detail", lambda self, key: rows[key])
+        expected = service.status(refs)
+    started, completed = [], []
+    all_started = asyncio.Event()
+
+    async def read(key):
+        started.append(key)
+        if len(started) == 3:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), 1)
+        if key == "slow":
+            await asyncio.sleep(0.02)
+        completed.append(key)
+        return rows[key]
+
+    monkeypatch.setattr(cls, "_detail", lambda self, key: perform_sync(call(read, key)))
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            result = await getattr(c, facade).status(refs)
+            assert result == expected
+            assert [item.ref.key for item in result] == ["slow", "fast", "slow"]
+            assert await getattr(c, facade).status([]) == ()
+
+    asyncio.run(run())
+    assert started == ["slow", "fast", "slow"]
+    assert completed[0] == "fast"
+
+
+@pytest.mark.parametrize("facade", ["ray", "servings"])
+def test_status_first_error_is_in_input_order(client, tracked, monkeypatch, facade):
+    from inspire.sdk import ResourceNotFoundError
+    service = getattr(client, facade)
+    cls = type(service)
+    refs = [service._make_ref(service._ref_type, key, key, "ws") for key in ("missing", "later")]
+    with monkeypatch.context() as patch:
+        patch.setattr(cls, "_detail", lambda self, key: {})
+        with pytest.raises(ResourceNotFoundError) as expected:
+            service.status(refs)
+    later_failed = asyncio.Event()
+
+    async def read(key):
+        if key == "missing":
+            await asyncio.wait_for(later_failed.wait(), 1)
+            return {}
+        later_failed.set()
+        raise ValidationError("later fast error")
+
+    monkeypatch.setattr(cls, "_detail", lambda self, key: perform_sync(call(read, key)))
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            with pytest.raises(type(expected.value)) as caught:
+                await getattr(c, facade).status(refs)
+            assert str(caught.value) == str(expected.value)
+            assert not c._active
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("facade", ["ray", "servings"])
+def test_status_bounds_reads_and_cancels_all_io(client, tracked, monkeypatch, facade):
+    service = getattr(client, facade)
+    refs = [service._make_ref(service._ref_type, str(i), str(i), "ws") for i in range(100)]
+    started, stopped = [], []
+    full = asyncio.Event()
+
+    async def read(key):
+        started.append(key)
+        if len(started) == _async_runtime.STATUS_CONCURRENCY:
+            full.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.append(key)
+
+    monkeypatch.setattr(type(service), "_detail", lambda self, key: perform_sync(call(read, key)))
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            task = asyncio.create_task(getattr(c, facade).status(refs))
+            await asyncio.wait_for(full.wait(), 1)
+            await asyncio.sleep(0)
+            assert len(started) == 8
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+            assert sorted(stopped) == sorted(started)
+
+    asyncio.run(run())
+
+
+def test_iteration_cancellation_stops_underlying_http(tracked, monkeypatch):
+    from inspire.sdk.jobs import Jobs
+    entered, stopped = asyncio.Event(), asyncio.Event()
+
+    async def send(http, request, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    def rows(self, **kwargs):
+        self.client._transport.request("GET", "/fake")
+        yield "unreachable"
+
+    monkeypatch.setattr(Jobs, "iter", rows)
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            async with aclosing(c.jobs.iter("fake")) as stream:
+                task = asyncio.create_task(anext(stream))
+                await entered.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 1)
+                assert stopped.is_set()
+
+    asyncio.run(run())
+
+
+def test_open_stream_allows_calls_and_cache_access(tracked, monkeypatch):
+    from inspire.sdk.jobs import Jobs
+
+    def rows(self, **kwargs):
+        yield "one"
+        yield "two"
+
+    monkeypatch.setattr(Jobs, "iter", rows)
+    monkeypatch.setattr(Workspaces, "_all", lambda self: [])
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            async with aclosing(c.jobs.iter("fake")) as stream:
+                assert await anext(stream) == "one"
+                assert (await asyncio.wait_for(c.workspaces.list(), 1)).items == ()
+                await asyncio.wait_for(c.cache.clear(), 1)
+                assert (await asyncio.wait_for(c.cache.stats(), 1))["entries"] == 0
+                assert await anext(stream) == "two"
+
+    asyncio.run(run())
+
+
+def test_concurrent_writes_have_separate_single_send_and_deadline_state(tracked, monkeypatch):
+    from inspire.sdk.jobs import Jobs
+    from inspire.sdk.resources import operation
+    entered = asyncio.Event()
+    writes = []
+
+    async def send(http, request, **kwargs):
+        writes.append(str(request.url))
+        if len(writes) == 2:
+            entered.set()
+        await asyncio.wait_for(entered.wait(), 1)
+        return httpx.Response(200, json={}, request=request)
+
+    @operation
+    def stop(self, ref, **kwargs):
+        owner = self.client._transport
+        with owner.single_send(ref):
+            deadline = owner.deadline
+            owner.request("POST", "/" + ref)
+            assert owner._write["operation_id"] == ref
+            assert owner.deadline == deadline
+
+    monkeypatch.setattr(Jobs, "stop", stop)
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            await asyncio.gather(c.jobs.stop("first"), c.jobs.stop("second"))
+
+    asyncio.run(run())
+    assert len(writes) == 2
+
+
+@pytest.mark.parametrize("transport", ["jupyter", "ssh"])
+def test_notebook_exec_uses_native_adapter_or_per_call_offload(tracked, monkeypatch, transport):
+    from inspire.sdk.notebooks import Notebooks
+    from inspire.services import remote_exec as core
+    from inspire.services.async_output import deliver_output
+    threads = []
+    closed = asyncio.Event()
+    result = core.ExecResult(0, "onetwo", "onetwo", "", True, transport)
+
+    def resolve(self, ref, workspace):
+        return types.SimpleNamespace(key="fake", workspace_id="ws", name="fake")
+
+    def execute(*, on_output, **kwargs):
+        threads.append(threading.get_ident())
+        on_output("one")
+        on_output("two")
+        return result
+
+    async def native(*, on_output, **kwargs):
+        threads.append(threading.get_ident())
+        try:
+            await deliver_output(on_output, "one")
+            await deliver_output(on_output, "two")
+            return result
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(Notebooks, "_resolve", resolve)
+    monkeypatch.setattr(core, "cached_notebook_bridge", lambda **kw: "bridge")
+    monkeypatch.setattr(core, "exec_in_notebook_ssh", execute)
+    monkeypatch.setattr(core, "exec_in_notebook_jupyter_async", native)
+    if transport == "jupyter":
+        monkeypatch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("native exec offloaded"))
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            chunks = []
+            assert await c.notebooks.exec("fake", command="fake", transport=transport,
+                                          on_output=chunks.append) is result
+            assert chunks == ["one", "two"]
+            chunks = [chunk async for chunk in c.notebooks.exec_stream(
+                "fake", command="fake", transport=transport,
+            )]
+            assert chunks == ["one", "two"]
+            if transport == "jupyter":
+                closed.clear()
+                async with aclosing(c.notebooks.exec_stream(
+                    "fake", command="fake", transport=transport,
+                )) as stream:
+                    assert await anext(stream) == "one"
+                assert closed.is_set()
+
+    asyncio.run(run())
+    assert all((thread == threading.get_ident()) == (transport == "jupyter") for thread in threads)
+
+
+def test_first_call_acquires_session_through_native_driver(client, tracked, monkeypatch):
+    from inspire.platform.web.session.models import WebSession
+    loads = []
+
+    def cached(**kwargs):
+        loads.append(threading.get_ident())
+        return client._transport._session
+
+    async def send(http, request, **kwargs):
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    def rows(self):
+        assert self.client._transport.request("GET", "/fake")["ok"]
+        return []
+
+    monkeypatch.setattr(WebSession, "load", cached)
+    monkeypatch.setattr(Workspaces, "_all", rows)
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    monkeypatch.setattr(asyncio, "to_thread", lambda *a, **k: pytest.fail("native auth offloaded"))
+
+    async def run():
+        async with InspireAsyncClient("alpha") as c:
+            c._client._transport._session = None
+            await c.workspaces.list()
+            assert c._client._transport._session is client._transport._session
+
+    asyncio.run(run())
+    assert loads and set(loads) == {threading.get_ident()}

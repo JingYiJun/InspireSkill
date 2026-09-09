@@ -8,6 +8,7 @@ the rest of the notebook lifecycle.
 from __future__ import annotations
 
 import time
+from inspire.platform.web.flow import call, perform_sync
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -362,7 +363,7 @@ def wait_for_image_ready(
                 f"within {timeout}s (last status: {last_status or 'unknown'})"
             )
 
-        time.sleep(poll_interval)
+        perform_sync(call(time.sleep, poll_interval))
 
 
 __all__ = [

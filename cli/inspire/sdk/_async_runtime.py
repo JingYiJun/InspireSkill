@@ -1,54 +1,25 @@
-"""Thread-affine execution of the existing synchronous SDK (no async transport)."""
-
+"""Run shared SDK business logic on the caller loop, suspending at native I/O."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from concurrent.futures import Future
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Callable
+from contextvars import copy_context
+from copy import copy
 import os
-from functools import partial
-from queue import Queue
 import threading
-from types import FunctionType, SimpleNamespace
-from typing import Any
+import time
+from typing import Any, TYPE_CHECKING
+import warnings
 
+from greenlet import greenlet, getcurrent
+
+from inspire.platform.web.flow import async_call, call
+if TYPE_CHECKING:
+    from inspire.platform.web.transport_async import AsyncDriver
 from .client import InspireClient
 from .exceptions import ClientClosedError, ClientThreadError, ValidationError
 
-
-class _Stopped(BaseException):
-    """Internal cooperative cancellation; never converted into an SDK error."""
-
-
-class _Worker:
-    def __init__(self) -> None:
-        self.queue: Queue[tuple[Callable[[], Any], Future[Any]] | None] = Queue()
-        self.thread = threading.Thread(target=self._run, name="inspire-sdk", daemon=True)
-        self.thread.start()
-        self.client: InspireClient
-
-    def _run(self) -> None:
-        while (item := self.queue.get()) is not None:
-            fn, future = item
-            try:
-                future.set_result(fn())
-            except BaseException as error:
-                future.set_exception(error)
-
-    def submit(self, fn: Callable[[], Any]) -> Future[Any]:
-        future: Future[Any] = Future()
-        self.queue.put((fn, future))
-        return future
-
-    def create(self, options: dict[str, Any]) -> tuple[str, str]:
-        self.client = InspireClient(**options)
-        return self.client.account, self.client.base_url
-
-    def invoke(self, facade: str, method: str, args: tuple[Any, ...],
-               kwargs: dict[str, Any]) -> Any:
-        target = getattr(self.client, facade) if facade else self.client
-        return getattr(target, method)(*args, **kwargs)
+STATUS_CONCURRENCY = 8
 
 
 async def _finish(future: asyncio.Future[Any]) -> Any:
@@ -60,48 +31,58 @@ async def _finish(future: asyncio.Future[Any]) -> Any:
         except asyncio.CancelledError:
             cancelled = True
     if cancelled:
-        # Retrieve failures too, so no unobserved task exception is left behind.
         future.exception()
         raise asyncio.CancelledError
     return future.result()
 
 
-def _interruptible_follow(method: Any, stop: threading.Event) -> Any:
-    """Give only this generator a private time namespace with interruptible sleep.
+async def _run_sync(driver: AsyncDriver, function: Callable[[], Any]) -> Any:
+    """A stack switch is not a thread: all SDK code stays on this event loop.
 
-    The function code, validation, deduplication and terminal/draining logic remain
-    the sync implementation. Neither its module nor process-wide time is patched.
-    Scope this adapter to follow methods: ordinary writes must finish classification.
+    Each suspended stack keeps its own ContextVars. The I/O interpreter inherits
+    those values, but disables the bridge while interpreting native workflows.
+    Cancellation is thrown back through the original synchronous finally blocks.
     """
-    fn = method.__func__
+    parent = getcurrent()
 
-    def sleep(seconds: float) -> None:
-        if stop.wait(seconds):
-            raise _Stopped
+    def invoke() -> Any:
+        token = async_call.set(parent.switch)
+        try:
+            return function()
+        finally:
+            async_call.reset(token)
 
-    namespace = dict(fn.__globals__)
-    clock = namespace.get("time")
-    if clock is not None:
-        namespace["time"] = SimpleNamespace(**{**vars(clock), "sleep": sleep})
-    clone = FunctionType(fn.__code__, namespace, fn.__name__, fn.__defaults__, fn.__closure__)
-    clone.__kwdefaults__ = fn.__kwdefaults__
-    return clone.__get__(method.__self__, type(method.__self__))
+    child = greenlet(invoke)
+    child.gr_context = copy_context()
+    action = child.switch()
+    while not child.dead:
+        context = child.gr_context.copy()
+        context.run(async_call.set, None)
+        task = context.run(asyncio.create_task, driver.execute(action))
+        try:
+            result = await task
+        except BaseException as error:
+            action = child.throw(error)
+        else:
+            action = child.switch(result)
+    return action
 
 
 class AsyncRuntime:
-    def __init__(self, options: dict[str, Any], concurrency: int) -> None:
-        if type(concurrency) is not int or concurrency < 1:
-            raise ValidationError("concurrency must be a positive integer.")
+    def __init__(self, options: dict[str, Any], concurrency: int | None) -> None:
+        if concurrency is not None:
+            if type(concurrency) is not int or concurrency < 1:
+                raise ValidationError("concurrency must be a positive integer.")
+            warnings.warn(
+                "concurrency is deprecated and has no effect; async requests run natively.",
+                DeprecationWarning, stacklevel=3,
+            )
         self._options = options
-        self._concurrency = concurrency
         self._pid = os.getpid()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._lock = asyncio.Lock()
-        self._workers: list[_Worker] = []
-        self._available: asyncio.Queue[_Worker] = asyncio.Queue()
-        self._stops: set[threading.Event] = set()
+        self._client: InspireClient | None = None
+        self._active: set[asyncio.Task[Any]] = set()
         self._closed = False
-        self._started = False
         self._closing: asyncio.Task[None] | None = None
         self._account: str | None = None
         self._base_url: str | None = None
@@ -114,184 +95,185 @@ class AsyncRuntime:
 
     async def _start(self) -> None:
         self._check()
-        async with self._lock:
-            if self._closed:
-                raise ClientClosedError("Client is closed.")
-            if self._started:
-                return
+        if self._closed:
+            raise ClientClosedError("Client is closed.")
+        if self._client is None:
             try:
-                options = dict(self._options)
-                for _ in range(self._concurrency):
-                    worker = _Worker()
-                    self._workers.append(worker)
-                    self._account, self._base_url = await _finish(asyncio.wrap_future(
-                        worker.submit(lambda: worker.create(options))
-                    ))
-                    # Resolve the default and persist explicit credentials just once.
-                    options = {k: v for k, v in options.items() if k not in ("username", "password")}
-                    options["account"] = self._account
-                    self._available.put_nowait(worker)
-                self._started = True
+                # Local configuration only; construction never authenticates.
+                self._client = InspireClient(**self._options)
+                self._account, self._base_url = self._client.account, self._client.base_url
             except BaseException:
                 self._closed = True
-                self._closing = asyncio.create_task(self._shutdown())
-                await _finish(self._closing)
+                if self._client is not None:
+                    self._client.close()
                 raise
             finally:
                 self._options = {}
 
-    @asynccontextmanager
-    async def _lease(self) -> AsyncIterator[_Worker]:
-        await self._start()
-        # Poll only the async availability queue so close also wakes queued callers.
-        while True:
-            if self._closed:
-                raise ClientClosedError("Client is closed.")
-            try:
-                worker = await asyncio.wait_for(self._available.get(), 0.05)
-                break
-            except asyncio.TimeoutError:
-                pass
+    def _operation_client(self) -> InspireClient:
+        assert self._client is not None
+        # Lightweight call-local state, never a pool/lease or another account read.
+        # Facade callbacks must bind to this view; the catalog cache is shared.
+        client = copy(self._client)
+        client._transport = copy(self._client._transport)
+        client._transport._decisions = copy(self._client._transport._decisions)
+        client._catalog_context = None
+        for name, value in vars(self._client).items():
+            if not name.startswith("_") and name != "cache" and hasattr(value, "client"):
+                setattr(client, name, type(value)(client))
+        return client
+
+    async def _invoke(self, facade: str, method: str, args: tuple[Any, ...],
+                      kwargs: dict[str, Any], producer: Callable[[Any], Any] | None = None,
+                      deadline: float | None = None) -> Any:
+        from inspire.platform.web.transport_async import AsyncDriver
+
+        client = self._operation_client()
+        client._transport.deadline = deadline
         try:
-            if self._closed:
-                raise ClientClosedError("Client is closed.")
-            yield worker
+            async with AsyncDriver(client._transport) as driver:
+                target = getattr(client, facade) if facade else client
+                bound = getattr(target, method)
+                return await _run_sync(driver, lambda: producer(bound) if producer else bound(*args, **kwargs))
         finally:
-            self._available.put_nowait(worker)
+            assert self._client is not None
+            owner, current = self._client._transport, client._transport
+            if current._last_success is not None:
+                owner._last_success = max(owner._last_success or 0, current._last_success)
+            if current._session is not None and (
+                owner._session is None or current._session.created_at >= owner._session.created_at
+            ):
+                owner._session = current._session
+            client.close()
+
+    async def _tracked(self, coroutine: Any) -> Any:
+        task = asyncio.create_task(coroutine)
+        self._active.add(task)
+        try:
+            return await task
+        finally:
+            self._active.discard(task)
+
+    async def _status(self, facade: str, refs: Any, workspace: Any) -> tuple[Any, ...]:
+        # A rolling window bounds both sockets and tasks. Await input order so a
+        # later fast failure cannot replace the first reference's exception.
+        pending: list[asyncio.Task[Any]] = []
+        iterator = iter(refs)
+        assert self._client is not None
+        deadline = time.monotonic() + self._client.operation_timeout
+
+        def schedule() -> None:
+            for ref in iterator:
+                pending.append(asyncio.create_task(self._invoke(
+                    facade, "get", (), {"ref": ref, "workspace": workspace}, deadline=deadline,
+                )))
+                break
+
+        results = []
+        try:
+            for _ in range(STATUS_CONCURRENCY):
+                schedule()
+            while pending:
+                results.append(await pending[0])
+                pending.pop(0)
+                schedule()
+            return tuple(results)
+        finally:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _call(self, facade: str, method: str, *args: Any, **kwargs: Any) -> Any:
-        if facade == "cache":
-            await self._start()
-            futures = [asyncio.wrap_future(worker.submit(
-                partial(worker.invoke, facade, method, args, kwargs)
-            )) for worker in self._workers]
-            results = await _finish(asyncio.gather(*futures))
-            if method == "stats":
-                return {key: sum(row[key] for row in results) for key in results[0]}
-            return None
-        async with self._lease() as worker:
-            future = asyncio.wrap_future(worker.submit(
-                lambda: worker.invoke(facade, method, args, kwargs)
+        await self._start()
+        if facade in {"ray", "servings"} and method == "status":
+            return await self._tracked(self._status(
+                facade, kwargs["refs"], kwargs.get("workspace"),
             ))
-            try:
-                return await asyncio.shield(future)
-            finally:
-                # Never reuse a session while a cancelled call is still executing.
-                await _finish(future)
+        return await self._tracked(self._invoke(facade, method, args, kwargs))
 
     async def _stream(self, facade: str, method: str, *args: Any,
                       output: bool = False, **kwargs: Any) -> AsyncGenerator[Any, None]:
-        async with self._lease() as worker:
-            loop = asyncio.get_running_loop()
-            queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
-            stop = threading.Event()
-            self._stops.add(stop)
-            end = object()
+        await self._start()
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+        loop = asyncio.get_running_loop()
+        thread = threading.get_ident()
+        stopped = threading.Event()
 
-            def emit(value: Any) -> None:
-                if stop.is_set():
-                    raise _Stopped
+        def emit(value: Any) -> Any:
+            if stopped.is_set():
+                raise asyncio.CancelledError
+            bridge = async_call.get()
+            if threading.get_ident() != thread:
                 pending = asyncio.run_coroutine_threadsafe(queue.put(value), loop)
                 try:
-                    while True:
+                    while not stopped.is_set():
                         try:
-                            pending.result(timeout=0.05)
-                            return
+                            return pending.result(timeout=0.05)
                         except TimeoutError:
-                            if stop.is_set():
-                                raise _Stopped
+                            pass
+                    raise asyncio.CancelledError
                 finally:
-                    if not pending.done():
-                        pending.cancel()
+                    pending.cancel()
+            if bridge is not None:
+                return bridge(call(queue.put, value))
+            return queue.put(value)
 
-            def produce() -> None:
-                iterator = None
+        def produce(bound: Any) -> None:
+            if output:
+                callback = kwargs.get("on_output")
+
+                def on_output(chunk: str) -> Any:
+                    if callback is not None:
+                        callback(chunk)
+                    return emit(chunk)
+
+                bound(*args, **dict(kwargs, on_output=on_output))
+            else:
+                iterator = bound(*args, **kwargs)
                 try:
-                    target = getattr(worker.client, facade)
-                    bound = getattr(target, method)
-                    if output:
-                        callback = kwargs.get("on_output")
+                    for value in iterator:
+                        emit(value)
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if close is not None:
+                        close()
 
-                        def on_output(chunk: str) -> None:
-                            if callback is not None:
-                                callback(chunk)
-                            emit(chunk)
-
-                        bound(*args, **dict(kwargs, on_output=on_output))
+        task = asyncio.create_task(self._invoke(facade, method, args, kwargs, produce))
+        self._active.add(task)
+        try:
+            while True:
+                read = asyncio.create_task(queue.get())
+                try:
+                    done, _ = await asyncio.wait((read, task), return_when=asyncio.FIRST_COMPLETED)
+                    if read in done:
+                        yield read.result()
                     else:
-                        if method.startswith("follow_"):
-                            bound = _interruptible_follow(bound, stop)
-                        iterator = bound(*args, **kwargs)
-                        while not stop.is_set():
-                            try:
-                                value = next(iterator)
-                            except StopIteration:
-                                break
-                            emit(value)
-                    emit(end)
-                except _Stopped:
-                    pass
+                        task.result()
+                        break
                 finally:
-                    if iterator is not None:
-                        close = getattr(iterator, "close", None)
-                        if close is not None:
-                            close()
-
-            future = asyncio.wrap_future(worker.submit(produce))
+                    read.cancel()
+                    await asyncio.gather(read, return_exceptions=True)
+        finally:
+            stopped.set()
+            task.cancel()
             try:
-                while True:
-                    read = asyncio.create_task(queue.get())
-                    try:
-                        done, _ = await asyncio.wait((read, future), return_when=asyncio.FIRST_COMPLETED)
-                        if read in done:
-                            value = read.result()
-                            if value is end:
-                                break
-                            yield value
-                        elif future.done():
-                            future.result()
-                            if queue.empty():
-                                break
-                    finally:
-                        read.cancel()
-                        await asyncio.gather(read, return_exceptions=True)
-                await asyncio.shield(future)
+                await _finish(asyncio.gather(task, return_exceptions=True))
             finally:
-                stop.set()
-                try:
-                    await _finish(future)
-                finally:
-                    self._stops.discard(stop)
+                self._active.discard(task)
 
     async def _shutdown(self) -> None:
-        for stop in self._stops:
-            stop.set()
-        errors = []
-        for worker in self._workers:
-            try:
-                def close(w: _Worker = worker) -> None:
-                    if hasattr(w, "client"):
-                        w.client.close()
-
-                await asyncio.wrap_future(worker.submit(close))
-            except BaseException as error:
-                errors.append(error)
-            finally:
-                worker.queue.put(None)
-        # Joining in small async steps needs no executor (whose threads block exit).
-        while any(worker.thread.is_alive() for worker in self._workers):
-            await asyncio.sleep(0.001)
-        for worker in self._workers:
-            worker.thread.join()
-        if errors:
-            raise errors[0]
+        tasks = list(self._active)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self._client is not None:
+            self._client.close()
 
     async def close(self) -> None:
         self._check()
-        async with self._lock:
-            if self._closing is None:
-                self._closed = True
-                self._closing = asyncio.create_task(self._shutdown())
+        if self._closing is None:
+            self._closed = True
+            self._closing = asyncio.create_task(self._shutdown())
         await _finish(self._closing)
 
 

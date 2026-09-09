@@ -7,6 +7,7 @@ from inspire.services.remote_exec import ExecResult
 import builtins
 import math
 import time
+from inspire.platform.web.flow import call, perform_sync
 import uuid
 from dataclasses import replace
 from datetime import datetime
@@ -109,13 +110,13 @@ class Notebooks(Service):
         resolved = self._resolve(ref, workspace)
         bridge = None
         if transport != "jupyter":
-            bridge = core.cached_notebook_bridge(
+            bridge = perform_sync(call(core.cached_notebook_bridge,
                 notebook_id=resolved.key,
                 workspace_id=resolved.workspace_id,
                 account=self.client.account,
-            )
+            ))
         if bridge is not None:
-            return core.exec_in_notebook_ssh(
+            return perform_sync(call(core.exec_in_notebook_ssh,
                 bridge_name=bridge,
                 account=self.client.account,
                 command=command,
@@ -124,7 +125,7 @@ class Notebooks(Service):
                 max_output_bytes=max_output_bytes,
                 output_to=output_to,
                 capture=capture,
-            )
+            ))
         if transport == "ssh":
             raise ValidationError(
                 "No reachable cached SSH bridge. Run "
@@ -587,7 +588,7 @@ class Notebooks(Service):
                     if raise_on_failure:
                         raise NotebookFailedError(notebook)
                     return notebook
-                time.sleep(min(poll_interval, self.client._transport.remaining()))
+                perform_sync(call(time.sleep, min(poll_interval, self.client._transport.remaining())))
 
     def _mutate(self, ref, action, workspace=None):
         resolved = self._resolve(ref, workspace)
@@ -645,7 +646,7 @@ class Notebooks(Service):
                     rows.append(row)
             if rows:
                 yield EventResult(tuple(rows), result.truncated)
-            time.sleep(interval)
+            perform_sync(call(time.sleep, interval))
 
     @operation
     def lifecycle(

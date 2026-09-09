@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import time
+from inspire.platform.web.flow import call, perform_sync
 from typing import Sequence
 from uuid import uuid4
 from inspire.services import tensorboards as core
@@ -236,7 +237,7 @@ class Tensorboards(Service):
                         raise TensorboardFailedError(board)
                     return board
 
-                time.sleep(min(poll_interval, self.client._transport.remaining()))
+                perform_sync(call(time.sleep, min(poll_interval, self.client._transport.remaining())))
 
     def _live(self, ref, workspace):
         board = self.get(ref, workspace=workspace)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from contextlib import AsyncExitStack
 from typing import Any, TYPE_CHECKING
@@ -140,6 +141,10 @@ class AsyncDriver:
             remote_exec.exec_in_notebook_jupyter: remote_exec.exec_in_notebook_jupyter_async,
             jupyter_terminal.run_command_capture_in_notebook: jupyter_terminal.run_command_capture_in_notebook_async,
         }
+        if action.function in {remote_exec.exec_in_notebook_ssh, remote_exec.cached_notebook_bridge}:
+            return await asyncio.to_thread(action.function, *action.args, **action.kwargs)
+        if inspect.iscoroutinefunction(action.function):
+            return await action.function(*action.args, **action.kwargs)
         adapter = adapters.get(action.function)
         if adapter is not None:
             return await adapter(*action.args, **action.kwargs)

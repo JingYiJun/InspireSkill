@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from inspire.services.async_output import deliver_output
+
 from inspire.exec_output import (
     DEFAULT_MAX_OUTPUT_BYTES,
     OutputTarget,
@@ -484,7 +486,7 @@ async def _capture_terminal_output_async(
     stdin_data: str,
     timeout_ms: int,
     marker: str,
-    on_output: Callable[[str], None] | None = None,
+    on_output: Callable[[str], Any] | None = None,
     max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
     output_to: OutputTarget = None,
     capture: bool = True,
@@ -558,7 +560,7 @@ async def _capture_terminal_output_async(
                         if writer is not None:
                             await writer.write(text)
                         if on_output is not None:
-                            on_output(text)
+                            await deliver_output(on_output, text)
                     except BaseException:
                         callback_failed = True
                         raise
@@ -593,7 +595,7 @@ async def _capture_terminal_output_async(
 async def run_command_capture_in_notebook_async(
     *, notebook_id: str, command: str, session: WebSession,
     timeout: float = 60, marker: str | None = None,
-    on_output: Callable[[str], None] | None = None,
+    on_output: Callable[[str], Any] | None = None,
     max_output_bytes: int | None = DEFAULT_MAX_OUTPUT_BYTES,
     output_to: OutputTarget = None, capture: bool = True,
 ) -> JupyterCommandResult:

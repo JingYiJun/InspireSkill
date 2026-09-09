@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable
 
@@ -39,3 +40,10 @@ async def _finish_io(function: Callable[..., Any], *args: Any) -> Any:
         task.exception()
         raise asyncio.CancelledError
     return task.result()
+
+
+async def deliver_output(callback: Callable[[str], Any], chunk: str) -> None:
+    """Internal streaming callbacks may await bounded-queue backpressure."""
+    result = callback(chunk)
+    if inspect.isawaitable(result):
+        await result

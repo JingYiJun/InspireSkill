@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from inspire.platform.web.flow import call, perform_sync
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -1103,7 +1104,7 @@ def wait_for_notebook_running(
                 f"(last status: {last_status or 'unknown'})"
             )
 
-        time.sleep(poll_interval)
+        perform_sync(call(time.sleep, poll_interval))
 
 
 __all__ = [
