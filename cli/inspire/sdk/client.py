@@ -30,10 +30,13 @@ class InspireClient:
         timeout: float = 30,
         operation_timeout: float = 120,
         catalog_ttl: float = 60,
+        catalog_disk_cache: bool = False,
     ):
         from inspire.accounts import current_account, account_exists, validate_name
         from inspire.config import Config
 
+        if type(catalog_disk_cache) is not bool:
+            raise ValidationError("catalog_disk_cache must be a boolean.")
         self.cache = CatalogCache(catalog_ttl)
         self._catalog_context: dict[str, bool] | None = None
         for value in (timeout, operation_timeout):
@@ -58,6 +61,14 @@ class InspireClient:
             raise ConfigurationError("Select an initialized Inspire account.") from None
         self._account = selected
         self._base_url = config.base_url.rstrip("/")
+        from .catalog_store import CatalogStore
+
+        catalog_store = CatalogStore(self.account, self.base_url)
+        if catalog_disk_cache:
+            self.cache = CatalogCache(catalog_ttl, store=catalog_store)
+        # Even readers that opt out must invalidate an existing shared catalog
+        # when they mutate images; do not create a disk cache for these clients.
+        self.cache._invalidation_store = catalog_store
         self.operation_timeout = operation_timeout
         self._config = config
         self._transport = Transport(

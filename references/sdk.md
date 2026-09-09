@@ -172,18 +172,31 @@ statuses = await client.jobs.status([job.ref for job in page.items])
 
 ### 缓存
 
-每个 `InspireClient` 有独立的进程内目录缓存，默认 TTL 为 60 秒，通过 `catalog_ttl` 设置（单位：秒；`0` 禁用）。缓存覆盖工作区路由、项目目录、计算组、各来源的镜像目录、配额价格与优先级、工作区公平调度标记和当前用户；按账号、平台地址及工作区／来源／调度类型等范围隔离。任务列表、资源详情、日志、事件、指标和实时用量不缓存。名称消歧仍检查全部候选，不缓存失败或不完整的目录结果。
+每个 `InspireClient` 默认使用独立的进程内目录缓存，`catalog_ttl=60`（秒），`catalog_ttl=0` 禁用两层读取和填充。设置 `catalog_disk_cache=True` 可选择跨进程共享目录；默认关闭，避免调用方不知情地持久化目录、引入本地文件锁等待或改变已有缓存行为。每个子进程仍须自行创建 Client。
+
+缓存仅覆盖工作区路由、项目目录、计算组、各来源的镜像目录、配额价格表、优先级菜单、公平调度标记和当前用户。工作负载列表、资源详情、运行状态、日志、事件、指标和实时用量继续实时读取；目录快照不能作为资源当前可用性或镜像构建就绪的证明。名称消歧检查全部候选；抛出 `ResolutionIncompleteError` 的条目既不进内存，也不写磁盘。各镜像来源独立缓存，单一来源失败不会清除其他已完整枚举的来源。
 
 ```python
-with InspireClient(catalog_ttl=60) as client:
-    # 重复的名称解析和 plan() 在 TTL 内复用目录。
-    print(client.cache.stats())  # {"hits": ..., "misses": ..., "entries": ...}
-    client.cache.clear()         # 清空目录；命中／未命中计数保留
+with InspireClient("my-account", catalog_ttl=60, catalog_disk_cache=True) as client:
+    client.workspaces.get("Workspace")
+    print(client.cache.stats())
+    # {"hits": ..., "shared_hits": ..., "misses": ..., "entries": ...}
+    client.cache.clear()
 ```
 
-镜像注册、删除、可见性修改和 Notebook 保存镜像会清理执行该操作的同步客户端内受影响的镜像目录；会话续期不清理目录。指定 `ImageSelector(name=..., source=...)` 只读取该来源，`ImageRef` 直接读取详情，registry URL 不枚举镜像目录。长时间运行且必须立即看到外部目录变更的进程，应设置 `catalog_ttl=0`，或在需要最新目录时先调用 `client.cache.clear()`。
+`hits` 为内存命中，`shared_hits` 为磁盘命中，`misses` 为需要调用目录加载器的次数（包括加载失败），`entries` 为本客户端尚未过期的内存条目数。默认未开启共享时保留原来的 hits／misses／entries 三键统计；开启共享才增加 `shared_hits`。`clear()` 保留累计计数，开启共享时同时清除本账号、服务器的磁盘目录，并让其他进程在下次读取时丢弃旧内存条目。
 
-异步缓存的构造参数仍为 `catalog_ttl`；同一异步客户端的并发调用共享目录缓存，镜像写入失效对后续调用可见。`await client.cache.clear()` 清空缓存并保留计数，`await client.cache.stats()` 返回 hits／misses／entries；这两个方法可在流仍打开时调用。
+共享文件通过账号存储路径助手定位为 `~/.inspire/accounts/<alias>/sdk-catalog-v1.json`，采用版本化 JSON 和固定类型白名单，不使用 pickle。键完整保留目录种类、账号、平台地址，以及工作区、来源、计算组、调度类型等范围参数；不同账号使用独立文件，读文件时也校验账号。一个账号的所有服务器合计最多 256 个共享条目、8 MiB；共享模式下内存也最多 256 项。超限按写入顺序淘汰最旧条目；过大单项不持久化。每次访问清理过期或格式无效的条目，损坏、截断或不兼容文件按未命中修复。TTL 使用写入时的 Unix 时间；读者有效期取写者到期时间与读者 TTL 的较早者，命中不续期，时钟回拨到写入时间之前视为未命中。
+
+所有共享读写均使用现有 `exclusive_cache_lock` 的固定兄弟锁文件，单次锁等待上限 5 秒；临时文件与目标同目录，fsync 后原子替换，文件权限为 0600。文件数量固定，临时文件在下次写入时复用。网络枚举不持锁，因此并发冷启动可能重复请求；回填前核对失效代次，枚举期间发生写入失效或清空时不保存该旧结果。共享文件无法读取时回退到目录加载器，不返回未经校验的旧内存缓存。
+
+SDK 镜像注册、删除、可见性／范围修改和 Notebook 保存镜像均在写入前和操作结束后（包括异常路径）使本账号、服务器的所有镜像来源目录失效；工作区可能共享镜像仓库，因此失效跨工作区。未开启共享读取的 SDK 客户端也会失效已存在的共享文件，但不会为此新建共享缓存。每次目录读取先校验共享条目的标识，再判断内存命中，其他进程的旧内存快照不会绕过失效。失效写入失败会向调用方抛出错误，不静默宣告成功；此时平台写操作可能已经完成，不能因此重放平台写入。会话续期保留目录。
+
+指定 `ImageSelector(name=..., source=...)` 只读取该来源，`ImageRef` 直接读取实时详情，registry URL 不枚举镜像目录。CLI、网页或其他机器上的变更不参与这个 SDK 失效协议；需要立即读取这些变更时设置 `catalog_ttl=0`，或先清空共享缓存。
+
+CLI 的资源索引及配额目录仍由 `resource-index.sqlite3` 和现有 CLI 刷新流程管理；SDK 不读取、不写入或改变其格式、TTL、`cache refresh`／`cache clear` 行为，也不复用 Notebook 目标缓存文件。两套缓存各自维护，没有第二个 CLI 缓存写者。
+
+`InspireAsyncClient` 同样接受 `catalog_ttl` 和 `catalog_disk_cache`，同一异步客户端的并发调用共享缓存。`await client.cache.clear()` 和 `await client.cache.stats()` 遵循上述语义，可在流仍打开时调用。
 
 ## 观察结果类型
 
@@ -859,7 +872,7 @@ SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_sen
 
 ## CLI-only 范围
 
-- 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、CLI 的磁盘资源缓存命令 `cache *`（SDK 的 `client.cache` 是独立的进程内目录缓存）；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。
+- 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、CLI 的磁盘资源缓存命令 `cache *`（SDK 的 `client.cache` 是独立的目录缓存，可选择跨进程共享）；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。
 - `api-key export` 的文件格式、权限和 stdout 渲染，以及 `api-key run` 的子进程和环境处理；平台密钥读写由 `client.api_keys` 提供。
 - 所有工作负载的 JSON/TOML `batch`；SDK 应用自行循环或编排。
 - Notebook 的 exec 由 SDK 提供；`ssh/shell/scp/ssh-config/ssh-proxy/connection */install-deps/proxy-url` 仍为 CLI-only，创建后的 `--post-start/--post-start-script` 及 `job/hpc/ray/serving shell` 也仅保留在 CLI。

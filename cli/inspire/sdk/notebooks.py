@@ -1,6 +1,8 @@
 """Notebook discovery, submission, lifecycle and image snapshots."""
 
 from __future__ import annotations
+
+from .resources import image_mutation
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.remote_exec import ExecResult
@@ -747,6 +749,7 @@ class Notebooks(Service):
         )
 
     @operation
+    @image_mutation
     def save_image(
         self,
         ref: str | NotebookRef,
@@ -774,7 +777,6 @@ class Notebooks(Service):
                 f"Notebook {resolved.name} is not running, so there is nothing to snapshot."
             )
         session = self.session
-        self._invalidate_images(resolved.workspace_id)
         with self.client._transport.single_send():
             result = browser_api.save_notebook_as_image(
                 notebook_id=resolved.key,

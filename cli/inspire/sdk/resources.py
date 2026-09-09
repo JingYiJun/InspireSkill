@@ -61,6 +61,26 @@ def operation(fn: F) -> F:
     return cast(F, wrapped)
 
 
+def image_mutation(fn: F) -> F:
+    """Fence readers both before a write and after its outcome, including errors."""
+    @wraps(fn)
+    def wrapped(self, *args, **kwargs):
+        self._invalidate_images()
+        try:
+            result = fn(self, *args, **kwargs)
+        except BaseException as error:
+            try:
+                self._invalidate_images()
+            except Exception as cache_error:
+                # Preserve submission uncertainty if disk invalidation also fails.
+                raise error from cache_error
+            raise
+        self._invalidate_images()
+        return result
+
+    return cast(F, wrapped)
+
+
 def positive(value, name="limit", maximum=10000):
     if type(value) is not int or not 1 <= value <= maximum:
         raise ValidationError(f"{name} must be an integer between 1 and {maximum}.")
@@ -608,6 +628,7 @@ class Images(Service):
         return self.get(ref, workspace=workspace).ref
 
     @operation
+    @image_mutation
     def register(
         self,
         name: str,
@@ -633,7 +654,6 @@ class Images(Service):
         session = self.session
         visibility_value = parse_visibility_value(visibility or "private")
         assert visibility_value is not None
-        self._invalidate_images()
         with self.client._transport.single_send(identifier, create=True):
             result = browser_api.create_image(
                 name=name,
@@ -685,6 +705,7 @@ class Images(Service):
                 raise ValidationError(str(exc)) from exc
 
     @operation
+    @image_mutation
     def delete(
         self, ref: str | ImageRef | ImageSelector, *, workspace: str | WorkspaceRef | None = None
     ) -> None:
@@ -692,11 +713,11 @@ class Images(Service):
 
         resolved = self._write_ref(ref, workspace)
         session = self.session
-        self._invalidate_images()
         with self.client._transport.single_send():
             browser_api.delete_image(image_id=resolved.key, session=session)
 
     @operation
+    @image_mutation
     def set_visibility(
         self,
         ref: str | ImageRef | ImageSelector,
@@ -710,6 +731,5 @@ class Images(Service):
         resolved = self._write_ref(ref, workspace)
         value = parse_visibility_value(visibility)
         session = self.session
-        self._invalidate_images()
         with self.client._transport.single_send():
             browser_api.update_image(image_id=resolved.key, visibility=value, session=session)

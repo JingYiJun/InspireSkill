@@ -2249,6 +2249,8 @@ class InspireAsyncClient(AsyncRuntime):
 
         catalog_ttl: float = 60,
 
+        catalog_disk_cache: bool = False,
+
         concurrency: int | None = None,
     ) -> None:
 
@@ -2262,6 +2264,7 @@ class InspireAsyncClient(AsyncRuntime):
             'timeout': timeout,
             'operation_timeout': operation_timeout,
             'catalog_ttl': catalog_ttl,
+            'catalog_disk_cache': catalog_disk_cache,
         }, concurrency)
 
         self.cache = AsyncCatalogCache(self)
