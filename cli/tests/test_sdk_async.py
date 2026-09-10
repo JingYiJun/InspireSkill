@@ -1092,7 +1092,7 @@ def test_handle_cancellation_interrupts_polling_without_stop(client, tracked, mo
 def test_failed_workload_handles_follow_facade_policy(client, tracked, monkeypatch, case):
     facade, _, _, ref_name, _, _ = case
     cls = type(getattr(client, facade))
-    failed = types.SimpleNamespace(name="fake", status="failed" if facade == "tensorboards" else "FAILED")
+    failed = types.SimpleNamespace(name="fake", status="FAILED")
     monkeypatch.setattr(cls, "_resolve", lambda self, ref, ws: ref)
     monkeypatch.setattr(cls, "get", lambda *a, **kw: failed)
 

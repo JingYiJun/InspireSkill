@@ -1,6 +1,8 @@
 """Inference serving creation, lifecycle, observations and invocation metadata."""
 
 from __future__ import annotations
+from .models import Instance
+from .instances import sdk_instances, label_selectors
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.execution.remote_exec import ExecResult
@@ -64,6 +66,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         output_to: OutputTarget = None,
         capture: bool = True,
     ) -> ExecResult:
+        """Execute on one running instance; instance matches label or handle."""
         from .remote_exec import shaped_command, workload_exec
 
         command = shaped_command(
@@ -353,7 +356,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
                 ),
             ),
             Quota(quota.gpu_count, quota.cpu_count, quota.memory_gib),
-            image_id,
+            image,
             priority,
             kwargs,
             payload,
@@ -424,9 +427,15 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         workspace: str | WorkspaceRef | None = None,
         target: str = "RUNNING",
     ) -> Serving:
+        """Wait for a lifecycle target; strip whitespace and ignore case.
+
+        Unknown targets raise ValidationError listing accepted values before polling."""
         duration(timeout, "timeout")
         duration(poll_interval, "poll_interval")
         target = statuses.normalize_status(target)
+        accepted = statuses.TERMINAL_STATUSES | {"RUNNING", "CREATING", "PENDING", "UPDATING", "STOPPING"}
+        if target not in accepted:
+            raise ValidationError(f"target must be one of: {', '.join(sorted(accepted))}.")
         with self.client._transport.scope(timeout=timeout):
             resolved = self._resolve(ref, workspace)
             while True:
@@ -537,10 +546,16 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
     @operation
     def instances(
         self, ref: str | ServingRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> tuple[ServingInstanceView, ...]:
+    ) -> tuple[Instance, ...]:
         resolved = self._resolve(ref, workspace)
         rows, _ = fetch_serving_instances(resolved.key, session=self.session)
-        return tuple(serving_instance_views(rows))
+        return sdk_instances("serving", rows)
+
+    def instance_names(
+        self, ref: str | ServingRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> tuple[str, ...]:
+        """Return the public labels accepted by exec and logs."""
+        return tuple(row.label for row in self.instances(ref, workspace=workspace))
 
     @operation
     def events(
@@ -574,6 +589,9 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         start: datetime | None = None, end: datetime | None = None,
         tail: int | None = None, head: int | None = None, limit: int | None = None,
     ) -> LogResult:
+        """Read logs by instance label or handle, singly or as a sequence.
+
+        None and "all" select every instance. Print labels, never handles."""
         from datetime import datetime, timezone
         from inspire.services.job.job_logs import window_to_minutes, select_job_logs, format_log_line
 
@@ -589,18 +607,24 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             start_ms, end_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
         else:
             start_ms, end_ms = logs_core.log_window(window_to_minutes(window) if window else None)
-        rows, total, pods = logs_core.fetch_logs(
-            resolved.key,
-            session=self.session,
-            selectors=(instance,) if isinstance(instance, str) else tuple(instance or ()),
-            start_ms=start_ms,
-            end_ms=end_ms,
-            fetch_size=max(limit or 100, tail or 0, head or 0),
+        available = self.instances(resolved)
+        selectors = label_selectors(available, instance)
+        views = select_serving_instance_views(
+            serving_instance_views([view.raw for view in available]), selectors
         )
+        pods = [view.handle for view in views]
         if not pods:
             from .exceptions import ResourceNotFoundError
 
             raise ResourceNotFoundError(f"No instances found for serving {resolved.name}.")
+        rows, total = api.list_serving_logs(
+            inference_serving_id=resolved.key,
+            session=self.session,
+            pod_names=pods,
+            start_timestamp_ms=start_ms,
+            end_timestamp_ms=end_ms,
+            page_size=max(limit or 100, tail or 0, head or 0),
+        )
         selected = select_job_logs(
             rows, total=total, tail=tail, head=head, record_limit=limit or 100, all_output=False
         )

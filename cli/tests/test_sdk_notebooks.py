@@ -166,6 +166,8 @@ def test_create_kwargs_equal_cli(client, catalog, monkeypatch, advanced):
     assert plan.project.ref.key == "p"
     assert plan.group.ref.key == "g"
     assert plan.image.ref.key == "i"
+    assert plan.to_dict()["image"] == plan.image.name
+    assert plan.to_dict()["workspace"] == plan.workspace.name
 
 
 @pytest.mark.parametrize(

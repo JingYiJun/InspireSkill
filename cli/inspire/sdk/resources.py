@@ -8,6 +8,7 @@ from functools import wraps
 from typing import Callable, TypeVar, cast, Any
 from inspire.platform.web.browser_api.images import CustomImageInfo
 from .models_serving import ImageRegisterHandle
+from .models_notebooks import ImageSaveHandle
 from .models_resources import ProjectInfo, ProjectDetail, ProjectOwner, ProjectOwnerRef, ImageDetail
 from .exceptions import (
     InspireError,
@@ -765,18 +766,30 @@ class Images(Service):
 
     def wait_ready(
         self,
-        ref: str | ImageRef | ImageSelector,
+        ref: str | ImageRef | ImageSelector | ImageSaveHandle,
         *,
         timeout: float = 600,
         poll_interval: float = 5,
         workspace: str | WorkspaceRef | None = None,
     ) -> CustomImageInfo:
+        """Wait for an image, also accepting notebook ImageSaveHandle with a ref.
+
+        This is the same contract as notebooks.wait_image_ready. Names and
+        ImageSelector require workspace; bound refs may omit it. An explicit
+        workspace is validated against the ref, including a save handle's ref.
+        """
         from inspire.platform.web import browser_api
         from .compute_jobs import duration
         from .exceptions import WaitTimeoutError
 
         duration(timeout, "timeout")
         duration(poll_interval, "poll_interval")
+        if isinstance(ref, ImageSaveHandle):
+            if ref.ref is None:
+                raise ValidationError(
+                    "Image identity is not available yet; resolve it in the image catalog first."
+                )
+            ref = ref.ref
         with self.client._transport.scope(timeout=timeout):
             resolved = self._write_ref(ref, workspace)
             try:

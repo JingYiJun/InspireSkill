@@ -160,7 +160,7 @@ def list_tensorboards(
     if status:
         status = str(status).strip()
         body["status"] = (
-            status if status.startswith(_STATUS_PREFIX) else f"{_STATUS_PREFIX}{status}"
+            f"{_STATUS_PREFIX}{status.strip().lower().removeprefix(_STATUS_PREFIX)}"
         )
     if keyword:
         body["keyword"] = keyword

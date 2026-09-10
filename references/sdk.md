@@ -4,10 +4,11 @@
 
 The shared workload output projections now scrub status text **before** applying
 that workload's own `normalize_status`. This affects JSON and human output from
-`job`, `hpc`, `ray`, `serving`, and `notebook` `list` / `status`, including
-Job/HPC batch status and `job list --watch`. The final detail from `job wait`
-and the status field in `serving api` reuse these projections too. Mixed case (`Running`, `rUnNiNg`)
-becomes `RUNNING`, and blank or fully scrubbed status becomes `UNKNOWN`.
+`job`, `hpc`, `ray`, `serving`, `notebook`, and `tensorboard` `list` / `status`,
+including Job/HPC batch status and `job list --watch`. The final detail from
+`job wait` and the status field in `serving api` reuse these projections too.
+Mixed case (`Running`, `rUnNiNg`) becomes `RUNNING`, and blank or fully
+scrubbed status becomes `UNKNOWN`.
 
 | Workload | Previous blank JSON (list / status) | Previous blank human output (list / status) | New blank value |
 | --- | --- | --- | --- |
@@ -15,16 +16,20 @@ becomes `RUNNING`, and blank or fully scrubbed status becomes `UNKNOWN`.
 | HPC, Ray | `N/A` / `N/A` | `N/A` / `N/A` | `UNKNOWN` |
 | Serving | empty string / field omitted | `-` / `N/A` | `UNKNOWN` |
 | Notebook | empty string / field omitted | `Unknown` / `N/A` | `UNKNOWN` |
+| TensorBoard | empty string / empty string | empty / field omitted | `UNKNOWN` |
 
 Job retains its specific vocabulary: `job_running` → `RUNNING`,
 `CREATING` / `job_creating` → `PENDING`, `STOPPED` / `job_stopped` → `CANCELLED`,
-and unrecognised values → `UNKNOWN`. The other four workloads uppercase
+and unrecognised values → `UNKNOWN`. The other five workloads uppercase
 unrecognised scrubbed values and retain `STOPPED`. They do not acquire Job's
-`JOB_` prefix mapping. URLs, paths and raw IDs must not reach public status
-output; normalising first would leave unknown sensitive strings intact in four
-of the five normalisers. Operation acknowledgements such as `created` and
-`stopped`, instance/node statuses and run-history records are separate fields,
-not workload lifecycle projections covered by this change.
+`JOB_` prefix mapping. TensorBoard strips its own case-insensitive `tb_status_`
+prefix before uppercasing: `tb_status_running` and `running` now both produce
+`RUNNING` in CLI list/status and SDK status models; update lowercase
+comparisons. URLs, paths and raw IDs must not reach public status output;
+normalising before scrubbing can leave unknown sensitive strings intact.
+Operation acknowledgements such as `created` and `stopped`, instance/node
+statuses and run-history records are separate fields, not workload lifecycle
+projections covered by this change.
 
 `serving create --model NAME` (including `--dry-run`) now enumerates all filtered
 model pages before resolving the name. Each request asks for 100 models and
@@ -208,7 +213,7 @@ result = await client.notebooks.exec(notebook_ref, command="hostname", on_output
 
 Jobs、Notebook 的请求页大小固定为 100，HPC、Ray、Serving 分别为 50、20、20；不会按总数扩大请求。上述工作负载列表和名称扫描使用 SDK 的 `page_num × page_size ≤ 5000` 防护，越界请求发出前就抛 `ResolutionIncompleteError`，提示用 `status`/`keyword` 收窄或用 `max_items` 截止。这一代码防护不适用于所有目录，也不证明所有平台端点当前具有同样上限。缺页、重复页或单次扫描超过 100 页时同样抛 `ResolutionIncompleteError`。Serving、Notebook、TensorBoard 名称解析先发送 `keyword` 再精确匹配；当前 HPC/Ray ListJobs 合同不支持关键词过滤，名称解析最多扫描 100 页，无法确认唯一性时抛 `ResolutionIncompleteError`，可使用已有类型化引用直接查询。
 
-名称按完整名称消歧，多个候选抛 `AmbiguousResourceError`，候选引用在 `.candidates`。名称查询工作负载、计算组、镜像和模型时显式给 workspace；已有类型化 Ref 可省略。Ref 校验类型、账号、来源以及显式工作区；`.to_dict()` / `XRef.from_dict()` 可用于保存和恢复，不能跨账号套用。项目目录默认是全局范围；模型 list 和账号 permissions 支持 `workspace="all"`，resources 查询只接受单工作区。
+名称按完整名称消歧，多个候选抛 `AmbiguousResourceError`，`.candidates` 中是资源模型对象，元素类型随门面变化（例如 jobs 为 `Job`、images 为 `Image`、models 为 `ModelInfo`），不是 Ref。选定候选后读取 `candidate.ref` 再交给同一门面；这样可以按工作区、来源或状态选择，而不必把名称再次交给消歧器。名称查询工作负载、计算组、镜像和模型时显式给 workspace；已有类型化 Ref 可省略。Ref 校验类型、账号、来源以及显式工作区；`.to_dict()` / `XRef.from_dict()` 可用于保存和恢复，不能跨账号套用。项目目录默认是全局范围；模型 list 和账号 permissions 支持 `workspace="all"`，resources 查询只接受单工作区。
 
 ```python
 workspace = client.workspaces.get("工作区名称")
@@ -228,7 +233,7 @@ if page.next_cursor:
 statuses = await client.jobs.status([job.ref for job in page.items])
 ```
 
-资源结果通常为 frozen dataclass，嵌套字典并非递归冻结；`MetricGroup` 和 `ServingInstanceView` 是可变 dataclass，`JobEvent` 是 `dict[str, Any]` 类型别名。提供业务视图的对象可用 `.to_dict()` 取得映射，但并非每个导出类型都有此方法（例如 `ExecResult`、`TransferResult`、`MetricGroup`）；Ref 的 `.to_dict()` 则是引用序列化格式。镜像 `ImageSelector(name, source)` 可指定 official/public/project/private，跨来源同名会报歧义。镜像 list 可返回成功来源的目录，名称 get/detail 要求完整候选集。数据集 get 接受 code 或 DatasetRef，validate 接受 `"name:version"` 或 DatasetMount；applications 的单数据集扫描有界，不保证窗口之外的申请历史。
+资源结果通常为 frozen dataclass，嵌套字典并非递归冻结；`MetricGroup` 是可变 dataclass，`JobEvent` 是 `dict[str, Any]` 类型别名。提供业务视图的对象可用 `.to_dict()` 取得映射，但并非每个导出类型都有此方法（例如 `ExecResult`、`TransferResult`、`MetricGroup`）；Ref 的 `.to_dict()` 则是引用序列化格式。镜像 `ImageSelector(name, source)` 可指定 official/public/project/private，跨来源同名会报歧义。镜像 list 可返回成功来源的目录，名称 get/detail 要求完整候选集。数据集 get 接受 code 或 DatasetRef，validate 接受 `"name:version"` 或 DatasetMount；applications 的单数据集扫描有界，不保证窗口之外的申请历史。
 
 创建工作负载返回提交句柄（Handle），其中 `.ref` 是可持久化的纯数据身份。同步客户端返回 `JobHandle` 等原有类型，继续使用 `client.jobs.wait(handle.ref)` 或对应门面的等待方法；直接 await 同步句柄会报错并提示改用 `InspireAsyncClient`。异步客户端返回显式导出的 `AsyncJobHandle` 等子类，保留提交结果字段，并绑定产生它的异步门面：
 
@@ -357,7 +362,7 @@ for series in scalars.series:
 
 ## 各门面方法表
 
-两种客户端均有 15 个资源门面；资源门面共有 151 个同步方法、156 个异步方法（多出的 5 个是 exec_stream）。另有 cache 的 2 个方法，因此全部实例门面合计 153／158 个方法。计数包含继承的公开方法，不包含客户端自身的 login/init/close/from_credentials、属性、上下文协议或共享的 Accounts 类。
+两种客户端均有 15 个资源门面；资源门面共有 155 个同步方法、168 个异步方法（多出的 13 个是 5 个 exec_stream、7 个 bind_ref 和 1 个 bind_image_ref）。另有 cache 的 2 个方法，因此全部实例门面合计 157／170 个方法。计数通过真实客户端的门面类内省取得，包含继承的公开方法与异步引用绑定方法，不包含客户端自身的 login/init/close/from_credentials、属性、上下文协议或共享的 Accounts 类；测试同时核对逐门面表、总数和异步差额，新增方法时必须一起更新说明。
 
 | 门面 | 同步方法数 | 异步方法数 |
 |---|---:|---:|
@@ -365,17 +370,17 @@ for series in scalars.series:
 | `workspaces` | 2 | 2 |
 | `projects` | 4 | 4 |
 | `compute_groups` | 2 | 2 |
-| `images` | 7 | 7 |
-| `jobs` | 19 | 20 |
-| `hpc` | 16 | 17 |
-| `ray` | 18 | 19 |
-| `servings` | 24 | 25 |
-| `tensorboards` | 11 | 11 |
-| `notebooks` | 21 | 22 |
+| `images` | 7 | 8 |
+| `jobs` | 19 | 21 |
+| `hpc` | 17 | 19 |
+| `ray` | 19 | 21 |
+| `servings` | 25 | 27 |
+| `tensorboards` | 11 | 12 |
+| `notebooks` | 23 | 26 |
 | `account_info` | 4 | 4 |
 | `api_keys` | 5 | 5 |
 | `datasets` | 5 | 5 |
-| `models` | 7 | 7 |
+| `models` | 8 | 8 |
 | `resources` | 4 | 4 |
 
 以下参数签名省略类型注解，返回类型单列；`*` 后参数必须以关键字传入。CLI 栏表示对应平台能力，名称解析、迭代及等待可以组合一个 CLI 子命令的能力；不会启动 CLI 子进程。
@@ -446,7 +451,8 @@ for series in scalars.series:
 | `models.get(ref, *, workspace=None, project=None)` | `ModelInfo` | `model list（名称选择）` |
 | `models.list(workspace, *, project=None, keyword=None, limit=20, cursor=None)` | `Page[ModelInfo]` | `model list` |
 | `models.register(name, *, source_path, workspace, project, type=None, tag=None, description=None, operation_id=None)` | `ModelRegisterHandle` | `model register` |
-| `models.status(refs, *, workspace=None, project=None)` | `tuple[ModelStatus, ...]` | `model status` |
+| `models.status(refs, *, workspace=None, project=None)` | `tuple[ModelInfo, ...]` | `model list（逐引用状态）` |
+| `models.detail(ref, *, workspace=None, project=None)` | `ModelStatus` | `model status` |
 | `models.versions(ref, *, workspace=None, project=None)` | `tuple[ModelVersion, ...]` | `model versions` |
 
 ### resources
@@ -478,7 +484,7 @@ for series in scalars.series:
 | 方法（同步调用／异步 await） | 返回值／await 结果 | CLI 子命令 |
 |---|---|---|
 | `api_keys.create(name)` | `APIKeyInfo` | `account api-key create` |
-| `api_keys.delete(ref)` | `APIKeyInfo` | `account api-key delete` |
+| `api_keys.delete(ref)` | `None` | `account api-key delete` |
 | `api_keys.get(ref)` | `APIKeyInfo` | `account api-key list（名称选择）` |
 | `api_keys.list(*, limit=20, cursor=None)` | `Page[APIKeyInfo]` | `account api-key list` |
 | `api_keys.plaintext(ref)` | `str` | `account api-key export（只返回明文，不导出文件）` |
@@ -498,10 +504,10 @@ for series in scalars.series:
 | `jobs.follow_logs(ref, *, interval=2, **filters)` | `Iterator[LogResult]／AsyncIterator[LogResult]` | `job logs --follow` |
 | `jobs.get(ref, *, workspace=None)` | `Job` | `job status` |
 | `jobs.instance_names(ref, *, workspace=None)` | `tuple[str, ...]` | `job instances` |
-| `jobs.instances(ref, *, workspace=None)` | `tuple[JobInstance, ...]` | `job instances` |
+| `jobs.instances(ref, *, workspace=None)` | `tuple[Instance, ...]` | `job instances` |
 | `jobs.iter(workspace, *, status=None, keyword=None, max_items=None)` | `Iterator[Job]／AsyncIterator[Job]` | `job list --all` |
 | `jobs.list(workspace, *, status=None, keyword=None, limit=20, cursor=None)` | `Page[Job]` | `job list` |
-| `jobs.logs(ref, *, workspace=None, instances='all', window=None, start=None, end=None, tail=None, head=None, limit=100, max_chars=None)` | `LogResult` | `job logs` |
+| `jobs.logs(ref, *, workspace=None, instance=None, window=None, start=None, end=None, tail=None, head=None, limit=100, max_chars=None)` | `LogResult` | `job logs` |
 | `jobs.metrics(ref, *, workspace=None, metric='core', window='1h', start=None, end=None, interval='1m', group=None)` | `tuple[MetricGroup, ...]` | `job metrics` |
 | `jobs.plan(spec)` | `JobPlan` | `job create --dry-run` |
 | `jobs.quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)` | `Page[QuotaOption]` | `job quota` |
@@ -510,6 +516,8 @@ for series in scalars.series:
 | `jobs.wait(ref, *, workspace=None, timeout=3600, poll_interval=10, raise_on_failure=False)` | `Job` | `job wait` |
 
 与 HPC、Ray、Serving 一样，训练任务 `Job.raw` 保留平台载荷，`Job.view` 是稳定的公开投影，`Job.to_dict()` 返回 `view` 的浅拷贝。`jobs.get()` 的 `view` 与同一详情载荷的 `inspire job status --json` 业务字段一致；`list()` / `iter()` 和批量 `status()` 也提供 `raw` / `view`，字段取决于平台记录。计算组、资源、节点与优先级等公开字段可从 `view` 读取；镜像等未进入公开投影的详情字段可从 `raw` 读取。
+
+四个门面的 `instances()` 都返回 SDK 自己的冻结 `Instance`；CLI 的服务层视图保持独立。`label` 是 CLI 实例表里的可读名称／角色加 Rank，`instance_names()` 在四处都返回这些 label。`handle` 是平台需要的 namespaced 身份，清洗原始 ID 会把它变成噪声，因此只用于调用，绝不能打印；`repr` 也隐藏 handle、pod 和 raw。视图还保留各类实例实际具有的 status、node、role、rank、kind、pod，以及未经投影的 raw 行；缺少的文本字段为空串，rank 沿用服务层或列表位置，raw 字典与其他 SDK 原始载荷一样不递归冻结。四处 `exec(instance=...)` 与 `logs(instance=...)` 均可直接接收 label 或 handle，建议应用传 label，这样人读到的实例和程序选中的实例是同一个；exec 还要求选中唯一的运行中实例，logs 可选多实例。角色等 CLI 选择别名仍可用。
 
 `jobs.logs()` 的默认时间范围及显式 `window` 最长为 30 天：保留结束时间并向后移动开始时间；CLI `job logs` 复用同一截断逻辑。
 
@@ -541,7 +549,7 @@ for series in scalars.series:
 | `notebooks.status(refs, *, workspace=None)` | `tuple[Notebook, ...]` | `notebook status` |
 | `notebooks.stop(ref, *, workspace=None)` | `None` | `notebook stop` |
 | `notebooks.wait(ref, *, timeout=600, poll_interval=5, target='RUNNING', raise_on_failure=False, workspace=None)` | `Notebook` | `notebook create --wait / status（轮询）` |
-| `notebooks.wait_image_ready(ref, *, timeout=600, poll_interval=5)` | `CustomImageInfo` | `notebook save-image --wait` |
+| `notebooks.wait_image_ready(ref, *, timeout=600, poll_interval=5, workspace=None)` | `CustomImageInfo` | `notebook save-image --wait` |
 
 ### hpc
 
@@ -555,7 +563,8 @@ for series in scalars.series:
 | `hpc.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None, max_output_bytes=4194304, output_to=None, capture=True)` | `ExecResult` | `hpc shell（非交互执行）` |
 | `hpc.follow_events(ref, *, interval=5, **filters)` | `Iterator[EventResult]／AsyncIterator[EventResult]` | `hpc events --follow` |
 | `hpc.get(ref, *, workspace=None)` | `HPCJob` | `hpc status` |
-| `hpc.instances(ref, *, workspace=None)` | `tuple[HPCInstanceView, ...]` | `hpc instances` |
+| `hpc.instance_names(ref, *, workspace=None)` | `tuple[str, ...]` | `hpc instances` |
+| `hpc.instances(ref, *, workspace=None)` | `tuple[Instance, ...]` | `hpc instances` |
 | `hpc.iter(workspace, *, status=None, keyword=None, max_items=None)` | `Iterator[HPCJob]／AsyncIterator[HPCJob]` | `hpc list --all` |
 | `hpc.list(workspace, *, status=None, keyword=None, limit=20, cursor=None)` | `Page[HPCJob]` | `hpc list` |
 | `hpc.logs(ref, *, workspace=None, instance=None, window=None, start=None, end=None, tail=None, head=None, limit=None)` | `LogResult` | `hpc logs` |
@@ -578,7 +587,8 @@ for series in scalars.series:
 | `ray.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None, max_output_bytes=4194304, output_to=None, capture=True)` | `ExecResult` | `ray shell（非交互执行）` |
 | `ray.follow_events(ref, *, interval=5, **filters)` | `Iterator[EventResult]／AsyncIterator[EventResult]` | `ray events --follow` |
 | `ray.get(ref, *, workspace=None)` | `RayJob` | `ray status` |
-| `ray.instances(ref, *, workspace=None)` | `tuple[RayInstanceView, ...]` | `ray instances` |
+| `ray.instance_names(ref, *, workspace=None)` | `tuple[str, ...]` | `ray instances` |
+| `ray.instances(ref, *, workspace=None)` | `tuple[Instance, ...]` | `ray instances` |
 | `ray.iter(workspace, *, status=None, keyword=None, max_items=None)` | `Iterator[RayJob]／AsyncIterator[RayJob]` | `ray list --all` |
 | `ray.list(workspace, *, status=None, keyword=None, limit=20, cursor=None)` | `Page[RayJob]` | `ray list` |
 | `ray.logs(ref, *, workspace=None, instance=None, window=None, start=None, end=None, tail=None, head=None, limit=None)` | `LogResult` | `ray logs` |
@@ -606,7 +616,8 @@ for series in scalars.series:
 | `servings.exec(ref, *, command, workspace=None, instance=None, cwd=None, env=None, timeout=120, on_output=None, max_output_bytes=4194304, output_to=None, capture=True)` | `ExecResult` | `serving shell（非交互执行）` |
 | `servings.follow_events(ref, *, interval=5, **filters)` | `Iterator[EventResult]／AsyncIterator[EventResult]` | `serving events --follow` |
 | `servings.get(ref, *, workspace=None)` | `Serving` | `serving status` |
-| `servings.instances(ref, *, workspace=None)` | `tuple[ServingInstanceView, ...]` | `serving instances` |
+| `servings.instance_names(ref, *, workspace=None)` | `tuple[str, ...]` | `serving instances` |
+| `servings.instances(ref, *, workspace=None)` | `tuple[Instance, ...]` | `serving instances` |
 | `servings.iter(workspace, *, project=None, status=None, keyword=None, max_items=None)` | `Iterator[Serving]／AsyncIterator[Serving]` | `serving list --all` |
 | `servings.list(workspace, *, project=None, status=None, keyword=None, limit=20, cursor=None)` | `Page[Serving]` | `serving list` |
 | `servings.logs(ref, *, workspace=None, instance=None, window=None, start=None, end=None, tail=None, head=None, limit=None)` | `LogResult` | `serving logs` |
@@ -701,7 +712,7 @@ PTY／Jupyter 执行等待超时或连接在完成 marker 出现前结束时，�
 
 此前的无界内存捕获和反复扫描完整历史输出属于 SDK 实现问题，现已用默认 4 MiB 头尾捕获、固定窗口增量 marker 扫描和摊销线性的缓冲写入修复。`max_output_bytes=None` 仍可显式恢复无限捕获；`capture=False` 配合 `output_to`／回调／异步块流适合长输出。平台 PTY 限制与这些已修复的实现问题应分别理解。
 
-Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的 PTY／Jupyter／SSH `exec` 和 `exec_stream` 的 `on_output` 回调均在事件循环线程按顺序运行，接受同步函数或异步函数；同步 exec 的回调在调用线程运行。同步回调应避免耗时操作，异步应用也可直接使用 `exec_stream` 消费块。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
+Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的 PTY／Jupyter／SSH `exec` 和 `exec_stream` 的 `on_output` 类型均为 `Callable[[str], None | Awaitable[None]] | None`，接受同步函数或 `async def`，都在调用方事件循环线程运行；异步回调逐块按顺序 await 并施加背压，回调异常原样传播。同步 exec 只接受 `Callable[[str], None]`，在调用线程直接执行；这与前文并发章节的合同相同。同步回调应避免耗时操作，异步应用也可直接使用 `exec_stream` 消费块。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
 
 ```python
 from contextlib import aclosing
@@ -820,20 +831,20 @@ TensorBoard 资源的创建、状态和生命周期查询走共享控制台传�
 | `tensorboards.stop(ref, *, workspace=None)` | `None` | `tensorboard stop` |
 | `tensorboards.tags(ref, *, workspace=None)` | `TensorboardTags` | `tensorboard tags` |
 | `tensorboards.url(ref, *, workspace=None)` | `str` | `tensorboard status（应用 URL）` |
-| `tensorboards.wait(ref, *, target='running', raise_on_failure=False, timeout=60, poll_interval=3, workspace=None)` | `Tensorboard` | `tensorboard start / stop（状态等待）` |
+| `tensorboards.wait(ref, *, target='RUNNING', raise_on_failure=False, timeout=60, poll_interval=3, workspace=None)` | `Tensorboard` | `tensorboard start / stop（状态等待）` |
 
 ## 公共导出与类型清单
 
-`inspire.sdk.__all__` 当前包含 **134 个名称**；`from inspire import X` 对这些名称返回同一个对象。以下按导出名内省分组，不包含内部 facade 类。`inspire` 使用懒加载属性，并未定义同等的 `__all__`；使用显式导入，不依赖 `from inspire import *`。
+`inspire.sdk.__all__` 当前包含 **131 个名称**；`from inspire import X` 对这些名称返回同一个对象。以下按导出名内省分组，不包含内部 facade 类。`inspire` 使用懒加载属性，并未定义同等的 `__all__`；使用显式导入，不依赖 `from inspire import *`。
 
 - 入口与账号工具（3）：`Accounts`、`InspireAsyncClient`、`InspireClient`。
 - 引用类型（19）：`APIKeyRef`、`ComputeGroupRef`、`DatasetApplicationRef`、`DatasetRef`、`DatasetTagRef`、`DatasetVersionRef`、`HPCJobRef`、`ImageRef`、`JobRef`、`ModelRef`、`NotebookRef`、`ProjectOwnerRef`、`ProjectRef`、`QuotaRef`、`RayJobRef`、`ResourceRef`、`ServingRef`、`TensorboardRef`、`WorkspaceRef`。
 - 创建规格（6）：`HPCJobCreateSpec`、`JobCreateSpec`、`NotebookCreateSpec`、`RayJobCreateSpec`、`ServingCreateSpec`、`TensorboardCreateSpec`。
-- 结果、资源与值模型（84）：`AsyncJobHandle`、`AsyncHPCJobHandle`、`AsyncRayJobHandle`、`AsyncServingHandle`、`AsyncTensorboardHandle`、`AsyncNotebookHandle`、`AsyncImageSaveHandle`、`AsyncImageRegisterHandle`、`APIKeyInfo`、`AccountCheck`、`AccountContext`、`AccountInfo`、`DatasetApplication`、`DatasetDetail`、`DatasetInfo`、`DatasetMount`、`DatasetTag`、`DatasetValidation`、`DatasetVersion`、`EventResult`、`ExecResult`、`TransferResult`、`HPCInstanceView`、`HPCJob`、`HPCJobHandle`、`HPCJobPlan`、`Image`、`ImageDetail`、`ImageRegisterHandle`、`ImageSaveHandle`、`ImageSelector`、`InitResult`、`Job`、`JobHandle`、`JobInstance`、`JobPlan`、`LogResult`、`MetricGroup`、`ModelDeployConfig`、`ModelInfo`、`ModelRegisterHandle`、`ModelStatus`、`ModelVersion`、`Notebook`、`NotebookHandle`、`NotebookImageSizeEstimate`、`NotebookPlan`、`NotebookResourceSnapshot`、`NotebookRun`、`Page`、`Permission`、`ProjectDetail`、`ProjectInfo`、`ProjectOwner`、`Quota`、`QuotaOption`、`RayInstanceView`、`RayJob`、`RayJobHandle`、`RayJobPlan`、`RayScalingEvent`、`Resource`、`ResourceAvailability`、`ResourceUsage`、`Serving`、`ServingAPIMetricSeries`、`ServingAPIMetricTimeRange`、`ServingAPIMetrics`、`ServingConfigItem`、`ServingConfigs`、`ServingHandle`、`ServingInstanceView`、`ServingInvocationCredentials`、`ServingInvocationInfo`、`ServingPlan`、`ServingScaleHistoryEntry`、`ServingVersion`、`Tensorboard`、`TensorboardHandle`、`TensorboardScalarPoint`、`TensorboardScalarSeries`、`TensorboardScalars`、`TensorboardTags`、`WorkloadSchedulePolicy`。
+- 结果、资源与值模型（81）：`AsyncJobHandle`、`AsyncHPCJobHandle`、`AsyncRayJobHandle`、`AsyncServingHandle`、`AsyncTensorboardHandle`、`AsyncNotebookHandle`、`AsyncImageSaveHandle`、`AsyncImageRegisterHandle`、`APIKeyInfo`、`AccountCheck`、`AccountContext`、`AccountInfo`、`DatasetApplication`、`DatasetDetail`、`DatasetInfo`、`DatasetMount`、`DatasetTag`、`DatasetValidation`、`DatasetVersion`、`EventResult`、`ExecResult`、`TransferResult`、`HPCJob`、`HPCJobHandle`、`HPCJobPlan`、`Image`、`ImageDetail`、`ImageRegisterHandle`、`ImageSaveHandle`、`ImageSelector`、`InitResult`、`Job`、`JobHandle`、`Instance`、`JobPlan`、`LogResult`、`MetricGroup`、`ModelDeployConfig`、`ModelInfo`、`ModelRegisterHandle`、`ModelStatus`、`ModelVersion`、`Notebook`、`NotebookHandle`、`NotebookImageSizeEstimate`、`NotebookPlan`、`NotebookResourceSnapshot`、`NotebookRun`、`Page`、`Permission`、`ProjectDetail`、`ProjectInfo`、`ProjectOwner`、`Quota`、`QuotaOption`、`RayJob`、`RayJobHandle`、`RayJobPlan`、`RayScalingEvent`、`Resource`、`ResourceAvailability`、`ResourceUsage`、`Serving`、`ServingAPIMetricSeries`、`ServingAPIMetricTimeRange`、`ServingAPIMetrics`、`ServingConfigItem`、`ServingConfigs`、`ServingHandle`、`ServingInvocationCredentials`、`ServingInvocationInfo`、`ServingPlan`、`ServingScaleHistoryEntry`、`ServingVersion`、`Tensorboard`、`TensorboardHandle`、`TensorboardScalarPoint`、`TensorboardScalarSeries`、`TensorboardScalars`、`TensorboardTags`、`WorkloadSchedulePolicy`。
 - 异常（20）：`AmbiguousResourceError`、`AuthenticationCooldownError`、`AuthenticationError`、`ClientClosedError`、`ClientThreadError`、`ConfigurationError`、`HPCJobFailedError`、`InspireError`、`JobFailedError`、`MutationUncertainError`、`NotebookFailedError`、`RayJobFailedError`、`ResolutionIncompleteError`、`ResourceNotFoundError`、`ServingFailedError`、`SubmissionUncertainError`、`TensorboardFailedError`、`TransportError`、`ValidationError`、`WaitTimeoutError`。
 - 函数与类型别名（2）：`JobEvent`、`iter_output_file`。
 
-其中 109 个导出对象满足 `dataclasses.is_dataclass`（包括继承 dataclass 的引用类），107 个 frozen；不能把“类型化”理解为所有返回值均不可变或均有 to_dict。`CustomImageInfo` 是两处镜像等待方法的返回类，可从 `inspire.platform.web.browser_api.images` 导入，不在上述顶层导出清单中。
+其中 106 个导出对象满足 `dataclasses.is_dataclass`（包括继承 dataclass 的引用类），105 个 frozen；不能把“类型化”理解为所有返回值均不可变或均有 to_dict。`CustomImageInfo` 是两处镜像等待方法的返回类，可从 `inspire.platform.web.browser_api.images` 导入，不在上述顶层导出清单中。
 
 ## 创建规格字段
 
@@ -966,7 +977,7 @@ TensorBoard 资源的创建、状态和生命周期查询走共享控制台传�
 | `job` | `str \| JobRef \| None` | `None` |
 | `auto_stop_hours` | `float \| None` | `None` |
 
-Quota 内存与 shm_gib 单位为 GiB，时限与保留时间字段以名称中的单位为准。Job 共享 `build_training_job_plan`，优先级按工作区／项目策略解析，部分 None 字段使用账号配置。Plan 的 summary 不含命令或环境变量值；完整 create_kwargs 用于审阅载荷，应由调用方妥善处理。
+Quota 内存与 shm_gib 单位为 GiB，时限与保留时间字段以名称中的单位为准。Job 共享 `build_training_job_plan`，优先级按工作区／项目策略解析，部分 None 字段使用账号配置。五种 Plan 的 `image` 均为 `Image`，用 `.name` 展示、`.url` 读取仓库地址、`.ref` 保留镜像身份；直接传入 registry URL 时也返回 Image，但不意味着平台已有镜像记录。Plan 都提供 `summary`、`create_kwargs` 与 `to_dict()`：summary 不含命令或环境变量值，to_dict 是工作负载各自的公开审阅映射，字段并不相同，也不能拿来重建提交请求；完整 create_kwargs 保留平台创建载荷（Job 对应 create_training_job 的 payload 内容），可能含命令、环境变量值和内部身份，应由调用方妥善处理。HPC 的 URL、Ray／Serving 的镜像 ID 仍在 create_kwargs 中，统一 image 类型不会改变提交能力。
 
 HPC entrypoint 是 Slurm 执行正文，与 CLI 一样拒绝完整 shebang / SBATCH 脚本；CPU 布局参数按配额推导并验证。HPC 镜像解析为 URL，Ray 镜像解析为平台 ID。Ray workers 使用 CLI 语法，例如 `name=decode;image=镜像名称;group=完整组名;quota=0,8,32;min=1;max=4`；创建至少需要一个 worker 组，image-type 和 shm-size 可选。
 
@@ -1015,12 +1026,12 @@ SDK 的资源 JSON 变更请求显式进入 `single_send`（不包括认证握�
 
 Job/HPC/Ray/Serving 创建响应缺少 ID 直接报不确定。Notebook 和 TensorBoard 复用 CLI 创建后的只读确认，确认失败不会重新创建。API key 创建成功响应没有 ID，因此返回 `ref=None`，之后可显式 `get(name)`。已发送写入的确认读取位于 single_send 外，不能触发重提。
 
-Notebook 保存镜像先尽力估算大小，估算失败不阻止保存；镜像 ID 暂不可查时返回 `ref=None`。可见性是确认镜像 ID 后的独立单次写入，其失败通过 handle.warning 保留；`wait_image_ready` 需要已确认引用，不会重复保存；与 `images.wait_ready` 一样返回 browser_api 的 `CustomImageInfo`。Models.delete 默认检查所有版本引用和 pending 部署，force=True 跳过同一预检。
+Notebook 保存镜像先尽力估算大小，估算失败不阻止保存；镜像 ID 暂不可查时返回 `ref=None`。可见性是确认镜像 ID 后的独立单次写入，其失败通过 handle.warning 保留；`notebooks.wait_image_ready` 委托 `images.wait_ready`，两者都接受 `str | ImageRef | ImageSelector | ImageSaveHandle`，返回 browser_api 的 `CustomImageInfo`，不会重复保存。名称和 ImageSelector 需要 workspace；已有引用可省略，但显式 workspace 必须与引用一致。保存句柄来自 Notebook 流程，两处都接受；句柄尚无 ref 时立即抛 `ValidationError`，应先从镜像目录取得身份。Models.delete 默认检查所有版本引用和 pending 部署，force=True 跳过同一预检。
 
 ## 日志/事件/指标
 
 ```python
-logs = client.jobs.logs(handle.ref, window="30m", instances="all", tail=50)
+logs = client.jobs.logs(handle.ref, window="30m", instance="all", tail=50)
 print(logs.text)
 events = client.jobs.events(handle.ref, type="Warning", reason="sched", limit=20)
 metrics = client.jobs.metrics(handle.ref, metric="gpu,cpu", window="2h")
@@ -1034,7 +1045,7 @@ for update in client.jobs.follow_logs(handle.ref, interval=2):
 from contextlib import aclosing
 
 # 放在 async def 内。
-logs = await client.jobs.logs(handle.ref, window="30m", instances="all", tail=50)
+logs = await client.jobs.logs(handle.ref, window="30m", instance="all", tail=50)
 events = await client.jobs.events(handle.ref, type="Warning", reason="sched", limit=20)
 metrics = await client.jobs.metrics(handle.ref, metric="gpu,cpu", window="2h")
 async with aclosing(client.jobs.follow_logs(handle.ref, interval=2)) as updates:
@@ -1045,21 +1056,21 @@ async with aclosing(client.jobs.follow_logs(handle.ref, interval=2)) as updates:
 
 训练 Jobs 日志的 window 与 CLI 共用解析器，接受 `30m`、`2h`、`1d` 等正整数窗口。显式 window 以当前时间为终点；默认 None 使用任务创建 / 完成时间并前后各留 10 分钟，缺少创建时间时回看 24 小时。也可传 datetime start/end 指定绝对窗口。
 
-Jobs 的 `instances="all"` 发现实例；显式列表直接用于平台调用，不先校验它是否在发现结果中。tail/head 互斥，与 CLI 共用日志拉取与排序选择逻辑：请求条数为 `max(limit, tail, head)`，按时间排序后取头部或尾部；省略 tail/head 时取 limit 条尾部记录。平台返回有限样本，这不额外保证全局最后 N 条或无损续读。`max_chars=None` 默认不做字符截断；指定时裁剪格式化文本并设置 truncated。items 保留按条数选择的结构化记录。
+四种实例门面的 `logs(instance=...)` 都接受 `Instance.label` 或 `Instance.handle`，可以传单个字符串或字符串序列；省略、`None` 和 `"all"` 均发现并选择全部实例。显式选择也先发现实例，不匹配时抛 `ValidationError`，避免平台把未知句柄回答为空日志而掩盖选择错误。Jobs 的旧参数 `instances` 已改为 `instance`，字符串始终作为一个选择器处理。tail/head 互斥，与 CLI 共用日志拉取与排序选择逻辑：请求条数为 `max(limit, tail, head)`，按时间排序后取头部或尾部；省略 tail/head 时取 limit 条尾部记录。平台返回有限样本，这不额外保证全局最后 N 条或无损续读。`max_chars=None` 默认不做字符截断；指定时裁剪格式化文本并设置 truncated。items 保留按条数选择的结构化记录。
 
-训练 Jobs、HPC、Ray、Serving 的事件默认合并任务级与实例级事件；type 精确匹配 Normal/Warning（大小写不敏感），reason 做子串匹配。instance 接受单个标签或标签列表，按工作负载选择实例（Jobs 支持 `rank=0`、`0` 和角色名称）；workload_level 与 instance 互斥。limit 选择过滤后的最近事件。follow 按事件内容或日志标识去重，是轮询观察接口，不是平台持久订阅或无损游标。Jobs 的事件 follow 到终态停止，日志 follow 在检测终态后再拉取一轮；Notebooks、HPC、Ray、Servings 的事件 follow 持续轮询，需调用方关闭。
+训练 Jobs、HPC、Ray、Serving 的事件默认合并任务级与实例级事件；Jobs、Ray、Serving 的 type 精确匹配 Normal/Warning（大小写不敏感），四者的 reason 都做子串匹配。HPC 不提供 type 参数：当前 HPC 平台事件行没有 `type` 字段，不支持 Normal/Warning 分类过滤，不能把别的工作负载词表强加给它，否则会把缺少该字段的真实事件过滤成空结果；可用 reason 收窄。instance 接受单个标签或标签列表，按工作负载选择实例（Jobs 支持 `rank=0`、`0` 和角色名称）；workload_level 与 instance 互斥。limit 选择过滤后的最近事件。follow 按事件内容或日志标识去重，是轮询观察接口，不是平台持久订阅或无损游标。Jobs 的事件 follow 到终态停止，日志 follow 在检测终态后再拉取一轮；Notebooks、HPC、Ray、Servings 的事件 follow 持续轮询，需调用方关闭。
 
 指标与 CLI 共用参数解析和平台样本提取：metric 支持 core/all、逗号分隔别名和原始指标名；start/end 支持 CLI 时间字符串，SDK 也接受 datetime。start 优先于 window。group 可覆盖从详情推断的计算组。
 
 HPC 默认日志窗口取实例时间，Ray 取任务详情时间，窗口长度均最多 30 天，保留窗口结束时间。HPC 对 tail 或默认查询在 total 超过返回记录数时扩大一次请求，head 不扩大；Ray 在返回样本中选择。Serving 默认读取 24 小时／100 条，实例发现和日志使用 CLI 的共享核心。均不承诺全局最后 N 条或无损续读。
 
-SDK 的 notebooks 门面不提供平台程序日志接口；`metrics` 返回 `tuple[MetricGroup, ...]`，实时资源快照由 `realtime_metrics` 单独返回。TensorBoard tags/scalars 要求 running；标量按 step 汇总首末值、min/max，points 缺省只返回摘要，指定正整数可获取尾部点集，`points=0` 与省略参数一样只返回摘要。Serving api 返回结构化调用信息，不发送推理请求；端点存在不证明服务已就绪，api_metrics 另提供 QPS／成功率／延迟序列摘要。
+SDK 的 notebooks 门面不提供平台程序日志接口；`metrics` 返回 `tuple[MetricGroup, ...]`，实时资源快照由 `realtime_metrics` 单独返回。TensorBoard tags/scalars 要求 `RUNNING`；标量按 step 汇总首末值、min/max，points 缺省只返回摘要，指定正整数可获取尾部点集，`points=0` 与省略参数一样只返回摘要。Serving api 返回结构化调用信息，不发送推理请求；端点存在不证明服务已就绪，api_metrics 另提供 QPS／成功率／延迟序列摘要。
 
 ## 错误与时间预算
 
 进入 SDK JSON 写入块时，若该 Transport 尚无返回响应记录，或距上次记录已满 60 秒，SDK 先通过普通 READ 路径执行一次 `GetUserDetail` 探测，必要时先续期再发送写入；60 秒内已有返回响应则省略探测；此时间戳不代表业务操作一定成功：控制台／应用请求到达 `_finish` 时更新，广场成功解包后也调用 `_finish` 更新它。探测共享时间预算，其刷新与重试不计入写请求的单次发送。探测失败时不发送写入；写入发出后即使收到 401 也绝不重放，创建抛 `SubmissionUncertainError`，其他变更抛 `MutationUncertainError`。
 
-SDK 定义的异常（包括 `NotebookFailedError`）均从 `InspireError` 派生。参数提示使用 Python 参数名；时间校验指出实际被拒绝的 `timeout`、`poll_interval` 或 `interval`，不统一称为 wait。`iter_output_file` 的分块参数错误为 `ValidationError`，文件读取／UTF-8 解码失败为 `TransportError`；SSH 文件传输超时为 `WaitTimeoutError`。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
+SDK 定义的异常（包括 `NotebookFailedError`）均从 `InspireError` 派生。参数提示使用 Python 参数名；时间校验指出实际被拒绝的 `timeout`、`poll_interval` 或 `interval`，不统一称为 wait。`iter_output_file` 的分块参数错误为 `ValidationError`，文件读取／UTF-8 解码失败为 `TransportError`；SSH 文件传输超时为 `WaitTimeoutError`。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回该门面的资源模型候选，选定后用 `error.candidates[index].ref` 取得引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
 
 `timeout` 控制单次请求预算，`operation_timeout` 控制普通操作的协作式总预算，`wait(timeout=...)` 设置整个等待预算；嵌套调用使用更早截止时间。控制台 Transport 的请求、退避和账号刷新锁等待共享剩余预算；TensorBoard 应用 GET 与 Jupyter Contents 请求也使用该预算。同步网络库的底层调用和已有浏览器登录流程不能被强制抢占，显式允许浏览器时登录可能超出总预算；这些参数不是硬实时取消保证。需要硬隔离的编排器应使用独立进程，并在超时后核查任何可能已发送的写请求。
 
@@ -1067,7 +1078,7 @@ SDK 定义的异常（包括 `NotebookFailedError`）均从 `InspireError` 派�
 
 SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_send(operation_id, create=True, inspect="对应资源目录")` 或 `transport.single_send()` 中。一个 block 最多允许一次 request，第二次调用抛 RuntimeError；create 参数显式区分创建与其他变更。发送后不刷新、不重试、不换通道；明确拒绝映射为 ValidationError，明确限流／拒绝执行映射为可重试的 TransportError，HTTP 403 保留 AuthenticationError，仅未知结果映射为 SubmissionUncertainError / MutationUncertainError。Transport 不按 URL、Action 或 HTTP 动词猜测幂等性。`request()` 不自动解包 v2 信封，解析后的 JSON 交给 browser_api；只读路径会先识别其中的暂时错误。`plaza_request()` 则使用广场专用的信封解包器返回 data。READ 的一般 HTTP 4xx 返回包含状态码和最多约 500 字符正文的 ValidationError，业务错误保留原消息。
 
-工作负载 wait 的 raise_on_failure=True 抛对应 SDK 失败异常，携带最终资源快照：Job/HPC/Ray 使用 `.job`，Notebook 使用 `.notebook`，Serving 使用 `.serving`，TensorBoard 使用 `.tensorboard`。Job/HPC/Ray 等待终态；Notebook、Serving、TensorBoard 等待目标状态，具体默认目标见方法表。超时统一抛 WaitTimeoutError。
+工作负载 wait 的 raise_on_failure=True 抛对应 SDK 失败异常，携带最终资源快照：Job/HPC/Ray 使用 `.job`，Notebook 使用 `.notebook`，Serving 使用 `.serving`，TensorBoard 使用 `.tensorboard`。Job/HPC/Ray 等待终态；Notebook、Serving、TensorBoard 等待目标状态，具体默认目标见方法表。Notebook、Serving、TensorBoard 的 target 均先去首尾空白、按各自词表归一化并转大写，再校验；TensorBoard 另去掉大小写不敏感的 `tb_status_` 前缀。未知 target 在名称解析和轮询前抛 `ValidationError`，消息列出接受值，避免把拼写错误伪装为平台超时。Notebook 接受 RUNNING／STOPPED；Serving 接受 CREATING／PENDING／RUNNING／UPDATING／STOPPING／STOPPED／FAILED／ERROR／DELETED；TensorBoard 接受 CREATING／RUNNING／STOPPED／FAILED／ERROR／DELETED。超时统一抛 WaitTimeoutError。
 
 ## 维护接口
 

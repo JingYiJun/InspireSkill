@@ -544,8 +544,11 @@ class ComputeJobs(Service, Generic[R, J, V]):
         rows, _ = self._binding.fetch_instances(
             resolved.key, limit=500, show_all=True, session=self.session
         )
-        selectors = (instance,) if isinstance(instance, str) else instance or ()
-        views = self._binding.select_instance_views(self._binding.instance_views(rows), selectors)
+        from .instances import label_selectors
+
+        available = self._binding.instance_views(rows)
+        selectors = label_selectors(available, instance)
+        views = self._binding.select_instance_views(available, selectors)
         if not views:
             raise ResourceNotFoundError(f"No instances found for {self._kind} job {resolved.name}")
         if start is not None or end is not None:

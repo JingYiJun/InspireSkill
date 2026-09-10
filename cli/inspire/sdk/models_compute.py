@@ -6,6 +6,7 @@ from ._sync_handle import SyncHandle
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 from .models import (
+    Image,
     ResourceRef,
     WorkspaceRef,
     ProjectRef,
@@ -104,7 +105,7 @@ class WorkloadPlan:
     project: Resource[ProjectRef]
     group: Resource[ComputeGroupRef]
     quota: Quota
-    image: str
+    image: Image
     priority: int
     create_kwargs: dict[str, Any] = field(repr=False)
     payload: dict[str, Any] = field(repr=False)
@@ -116,7 +117,7 @@ class WorkloadPlan:
     def summary(self) -> str:
         return (
             f"{self.name}: {self.workspace.name}; project={self.project.name}; "
-            f"group={self.group.name}; quota={self.quota}; image={self.image}; "
+            f"group={self.group.name}; quota={self.quota}; image={self.image.name}; "
             f"priority={self.priority}; no resources reserved."
         )
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from inspire.services.tensorboard.tensorboard_status import normalize_status
 import time
 from inspire.platform.web.flow import call, perform_sync
 from typing import Any
@@ -123,7 +124,7 @@ def find_created_board(
         if matches:
             # Newest first is the platform's own list order.
             board = matches[0]
-            if board.status != "creating":
+            if normalize_status(board.status) != "CREATING":
                 return board
     return board
 

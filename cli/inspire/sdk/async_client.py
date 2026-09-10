@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from contextlib import aclosing
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator
 from .accounts import Accounts, InitResult
 from .models_resources import AccountInfo
 from collections.abc import Awaitable, Callable
@@ -34,6 +34,7 @@ class AsyncCatalogCache(AsyncFacade):
     async def clear(
         self,
     ) -> None:
+        'Discard all snapshots; lifetime hit/miss counters are preserved.'
         return await self._client._call('cache', 'clear')
 
     async def stats(
@@ -213,12 +214,13 @@ class AsyncImages(AsyncFacade):
 
     async def wait_ready(
         self,
-        ref: str | _m0.ImageRef | _m0.ImageSelector,
+        ref: str | _m0.ImageRef | _m0.ImageSelector | _m0.ImageSaveHandle,
         *,
         timeout: float = 600,
         poll_interval: float = 5,
         workspace: str | _m0.WorkspaceRef | None = None,
     ) -> _m0.CustomImageInfo:
+        "Wait for an image, also accepting notebook ImageSaveHandle with a ref.\n\nThis is the same contract as notebooks.wait_image_ready. Names and\nImageSelector require workspace; bound refs may omit it. An explicit\nworkspace is validated against the ref, including a save handle's ref."
         return await self._client._call('images', 'wait_ready',
             ref=ref,
             timeout=timeout,
@@ -308,6 +310,7 @@ class AsyncJobs(AsyncFacade):
         output_to: _m1.OutputTarget = None,
         capture: bool = True,
     ) -> _m1.ExecResult:
+        'Execute on one running instance; instance matches label or handle.'
         return await self._client._call('jobs', 'exec',
             ref=ref,
             command=command,
@@ -404,7 +407,7 @@ class AsyncJobs(AsyncFacade):
         ref: str | _m1.JobRef,
         *,
         workspace: str | _m1.WorkspaceRef | None = None,
-    ) -> tuple[_m1.JobInstance, ...]:
+    ) -> tuple[_m1.Instance, ...]:
         return await self._client._call('jobs', 'instances',
             ref=ref,
             workspace=workspace)
@@ -446,7 +449,7 @@ class AsyncJobs(AsyncFacade):
         ref: str | _m1.JobRef,
         *,
         workspace: str | _m1.WorkspaceRef | None = None,
-        instances: str | _m1.Sequence[str] = 'all',
+        instance: str | _m1.Sequence[str] | None = None,
         window: str | None = None,
         start: _m1.datetime | None = None,
         end: _m1.datetime | None = None,
@@ -455,10 +458,11 @@ class AsyncJobs(AsyncFacade):
         limit: int = 100,
         max_chars: int | None = None,
     ) -> _m1.LogResult:
+        'Read logs by instance label or handle, singly or as a sequence.\n\nNone and "all" select every instance. Print labels, never handles.'
         return await self._client._call('jobs', 'logs',
             ref=ref,
             workspace=workspace,
-            instances=instances,
+            instance=instance,
             window=window,
             start=start,
             end=end,
@@ -619,6 +623,7 @@ class AsyncHPC(AsyncFacade):
         output_to: _m4.OutputTarget = None,
         capture: bool = True,
     ) -> _m4.ExecResult:
+        'Execute on one running instance; instance matches label or handle.'
         return await self._client._call('hpc', 'exec',
             ref=ref,
             command=command,
@@ -686,12 +691,23 @@ class AsyncHPC(AsyncFacade):
             ref=ref,
             workspace=workspace)
 
+    async def instance_names(
+        self,
+        ref: str | _m4.HPCJobRef,
+        *,
+        workspace: str | _m4.WorkspaceRef | None = None,
+    ) -> tuple[str, ...]:
+        'Return the public labels accepted by exec and logs.'
+        return await self._client._call('hpc', 'instance_names',
+            ref=ref,
+            workspace=workspace)
+
     async def instances(
         self,
         ref: str | _m4.HPCJobRef,
         *,
         workspace: str | _m4.WorkspaceRef | None = None,
-    ) -> tuple[_m4.HPCInstanceView, ...]:
+    ) -> tuple[_m4.Instance, ...]:
         return await self._client._call('hpc', 'instances',
             ref=ref,
             workspace=workspace)
@@ -741,6 +757,7 @@ class AsyncHPC(AsyncFacade):
         head: int | None = None,
         limit: int | None = None,
     ) -> _m4.LogResult:
+        'Read logs by instance label or handle, singly or as a sequence.\n\nNone and "all" select every instance. Print labels, never handles.'
         return await self._client._call('hpc', 'logs',
             ref=ref,
             workspace=workspace,
@@ -906,6 +923,7 @@ class AsyncRay(AsyncFacade):
         output_to: _m7.OutputTarget = None,
         capture: bool = True,
     ) -> _m7.ExecResult:
+        'Execute on one running instance; instance matches label or handle.'
         return await self._client._call('ray', 'exec',
             ref=ref,
             command=command,
@@ -973,12 +991,23 @@ class AsyncRay(AsyncFacade):
             ref=ref,
             workspace=workspace)
 
+    async def instance_names(
+        self,
+        ref: str | _m7.RayJobRef,
+        *,
+        workspace: str | _m7.WorkspaceRef | None = None,
+    ) -> tuple[str, ...]:
+        'Return the public labels accepted by exec and logs.'
+        return await self._client._call('ray', 'instance_names',
+            ref=ref,
+            workspace=workspace)
+
     async def instances(
         self,
         ref: str | _m7.RayJobRef,
         *,
         workspace: str | _m7.WorkspaceRef | None = None,
-    ) -> tuple[_m7.RayInstanceView, ...]:
+    ) -> tuple[_m7.Instance, ...]:
         return await self._client._call('ray', 'instances',
             ref=ref,
             workspace=workspace)
@@ -1028,6 +1057,7 @@ class AsyncRay(AsyncFacade):
         head: int | None = None,
         limit: int | None = None,
     ) -> _m7.LogResult:
+        'Read logs by instance label or handle, singly or as a sequence.\n\nNone and "all" select every instance. Print labels, never handles.'
         return await self._client._call('ray', 'logs',
             ref=ref,
             workspace=workspace,
@@ -1252,6 +1282,7 @@ class AsyncServings(AsyncFacade):
         output_to: _m10.OutputTarget = None,
         capture: bool = True,
     ) -> _m10.ExecResult:
+        'Execute on one running instance; instance matches label or handle.'
         return await self._client._call('servings', 'exec',
             ref=ref,
             command=command,
@@ -1319,12 +1350,23 @@ class AsyncServings(AsyncFacade):
             ref=ref,
             workspace=workspace)
 
+    async def instance_names(
+        self,
+        ref: str | _m10.ServingRef,
+        *,
+        workspace: str | _m10.WorkspaceRef | None = None,
+    ) -> tuple[str, ...]:
+        'Return the public labels accepted by exec and logs.'
+        return await self._client._call('servings', 'instance_names',
+            ref=ref,
+            workspace=workspace)
+
     async def instances(
         self,
         ref: str | _m10.ServingRef,
         *,
         workspace: str | _m10.WorkspaceRef | None = None,
-    ) -> tuple[_m10.ServingInstanceView, ...]:
+    ) -> tuple[_m10.Instance, ...]:
         return await self._client._call('servings', 'instances',
             ref=ref,
             workspace=workspace)
@@ -1378,6 +1420,7 @@ class AsyncServings(AsyncFacade):
         head: int | None = None,
         limit: int | None = None,
     ) -> _m10.LogResult:
+        'Read logs by instance label or handle, singly or as a sequence.\n\nNone and "all" select every instance. Print labels, never handles.'
         return await self._client._call('servings', 'logs',
             ref=ref,
             workspace=workspace,
@@ -1522,6 +1565,7 @@ class AsyncServings(AsyncFacade):
         workspace: str | _m10.WorkspaceRef | None = None,
         target: str = 'RUNNING',
     ) -> _m10.Serving:
+        'Wait for a lifecycle target; strip whitespace and ignore case.\n\nUnknown targets raise ValidationError listing accepted values before polling.'
         return await self._client._call('servings', 'wait',
             ref=ref,
             timeout=timeout,
@@ -1628,6 +1672,7 @@ class AsyncTensorboards(AsyncFacade):
         *,
         workspace: str | _m11.WorkspaceRef | None = None,
     ) -> tuple[_m11.Tensorboard, ...]:
+        'Return one current snapshot per reference, in input order.'
         return await self._client._call('tensorboards', 'status',
             refs=refs,
             workspace=workspace)
@@ -1666,12 +1711,13 @@ class AsyncTensorboards(AsyncFacade):
         self,
         ref: str | _m11.TensorboardRef,
         *,
-        target: str = 'running',
+        target: str = 'RUNNING',
         raise_on_failure: bool = False,
         timeout: float = 60,
         poll_interval: float = 3,
         workspace: str | _m11.WorkspaceRef | None = None,
     ) -> _m11.Tensorboard:
+        'Wait for a lifecycle target; strip whitespace, ignore case and tb_status_.\n\nUnknown targets raise ValidationError listing accepted values before polling.'
         return await self._client._call('tensorboards', 'wait',
             ref=ref,
             target=target,
@@ -1741,6 +1787,7 @@ class AsyncNotebooks(AsyncFacade):
         timeout: float = 120,
         max_bytes: int = 16777216,
     ) -> _m12.TransferResult:
+        'Download a file, or recursively transfer a directory over cached SSH.\n\nSmall files without a bridge: Jupyter. Large files/directories: SSH.\nAuto prefers reachable cached SSH; it does not choose by file size\nor create a bridge. Jupyter holds the entire base64 JSON body\n(~4/3 file size plus copies), has\nno resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.\nOn both transports, relative remote paths start at the discovered\nJupyter contents root; absolute paths name container files unchanged.\nJupyter cannot reach paths outside its root: use transport="ssh".\nThe synchronous facade caches the root per notebook for its lifetime;\nasync calls use fresh facade views and rediscover it. \'..\' is rejected.\nThe result\'s remote preserves the caller\'s request;\nremote_path is the resolved container-absolute destination (upload)\nor source (download). Exec shares the container, but Jupyter starts\nat its root and SSH at the user\'s home (often /root), so a relative\ncommand path differs from a relative transfer path. Use remote_path\nor set exec\'s cwd explicitly, as shown below.\nDestinations name the exact file/directory, not a containing directory.\n\nBridge a transfer to exec using the resolved path::\n\n    import shlex\n    from pathlib import PurePosixPath\n    result = client.notebooks.download(ref, local="model.bin", remote="model.bin")\n    client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")\n\ntrain.py must be accessible from cwd. If it is beside model.bin::\n\n    client.notebooks.exec(ref, command="python train.py model.bin",\n                          cwd=str(PurePosixPath(result.remote_path).parent))\n\nDownloads and SSH publication replace complete files atomically;\nrecursive directory merges are incremental, not transactional. SSH\nstages a full copy in remote /tmp (and locally for downloads).\nJupyter upload atomicity depends on the server\'s ContentsManager;\na failed/uncertain PUT may have changed the remote file. Writes are\nnever replayed and failures never return a success result. Existing\ndestinations are checked before overwrite=False; Jupyter has no\nconditional create, so callers must exclude concurrent remote writers.\nLocal no-overwrite file publication also checks atomically. Symbolic\nlinks are unsupported by SSH; Jupyter root/symlink confinement is\nenforced by the server. Cancellation may leave SSH staging files.'
         return await self._client._call('notebooks', 'download',
             ref=ref,
             local=local,
@@ -1791,6 +1838,7 @@ class AsyncNotebooks(AsyncFacade):
         output_to: _m12.OutputTarget = None,
         capture: bool = True,
     ) -> _m12.ExecResult:
+        'Execute in the same container through either transport.\n\nJupyter and SSH share a container but start in different directories:\nJupyter normally starts at its contents root, SSH at the user\'s home\n(often /root). Relative command paths use that cwd; relative transfer\npaths always use the Jupyter root. Use the resolved result path::\n\n    import shlex\n    result = client.notebooks.upload(ref, local="model.bin", remote="model.bin")\n    client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")\n\ntrain.py must itself be accessible from the command\'s cwd. To locate\nboth files in the same known directory, set cwd explicitly::\n\n    from pathlib import PurePosixPath\n    client.notebooks.exec(ref, command="python train.py model.bin",\n                          cwd=str(PurePosixPath(result.remote_path).parent))'
         return await self._client._call('notebooks', 'exec',
             ref=ref,
             command=command,
@@ -2022,6 +2070,7 @@ class AsyncNotebooks(AsyncFacade):
         timeout: float = 120,
         max_bytes: int = 16777216,
     ) -> _m12.TransferResult:
+        'Upload a file, or recursively transfer a directory over cached SSH.\n\nSmall files without a bridge: Jupyter. Large files/directories: SSH.\nAuto prefers reachable cached SSH; it does not choose by file size\nor create a bridge. Jupyter holds the entire base64 JSON body\n(~4/3 file size plus copies), has\nno resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.\nOn both transports, relative remote paths start at the discovered\nJupyter contents root; absolute paths name container files unchanged.\nJupyter cannot reach paths outside its root: use transport="ssh".\nThe synchronous facade caches the root per notebook for its lifetime;\nasync calls use fresh facade views and rediscover it. \'..\' is rejected.\nThe result\'s remote preserves the caller\'s request;\nremote_path is the resolved container-absolute destination (upload)\nor source (download). Exec shares the container, but Jupyter starts\nat its root and SSH at the user\'s home (often /root), so a relative\ncommand path differs from a relative transfer path. Use remote_path\nor set exec\'s cwd explicitly, as shown below.\nDestinations name the exact file/directory, not a containing directory.\n\nBridge a transfer to exec using the resolved path::\n\n    import shlex\n    from pathlib import PurePosixPath\n    result = client.notebooks.upload(ref, local="model.bin", remote="model.bin")\n    client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")\n\ntrain.py must be accessible from cwd. If it is beside model.bin::\n\n    client.notebooks.exec(ref, command="python train.py model.bin",\n                          cwd=str(PurePosixPath(result.remote_path).parent))\n\nDownloads and SSH publication replace complete files atomically;\nrecursive directory merges are incremental, not transactional. SSH\nstages a full copy in remote /tmp (and locally for downloads).\nJupyter upload atomicity depends on the server\'s ContentsManager;\na failed/uncertain PUT may have changed the remote file. Writes are\nnever replayed and failures never return a success result. Existing\ndestinations are checked before overwrite=False; Jupyter has no\nconditional create, so callers must exclude concurrent remote writers.\nLocal no-overwrite file publication also checks atomically. Symbolic\nlinks are unsupported by SSH; Jupyter root/symlink confinement is\nenforced by the server. Cancellation may leave SSH staging files.'
         return await self._client._call('notebooks', 'upload',
             ref=ref,
             local=local,
@@ -2039,10 +2088,11 @@ class AsyncNotebooks(AsyncFacade):
         *,
         timeout: float = 600,
         poll_interval: float = 5,
-        target: Literal['RUNNING', 'STOPPED'] = 'RUNNING',
+        target: str = 'RUNNING',
         raise_on_failure: bool = False,
         workspace: str | _m12.WorkspaceRef | None = None,
     ) -> _m12.Notebook:
+        'Wait for RUNNING or STOPPED; target is stripped and case-insensitive.'
         return await self._client._call('notebooks', 'wait',
             ref=ref,
             timeout=timeout,
@@ -2053,15 +2103,18 @@ class AsyncNotebooks(AsyncFacade):
 
     async def wait_image_ready(
         self,
-        ref: _m12.ImageSaveHandle | _m12.ImageRef,
+        ref: str | _m12.ImageRef | _m12.ImageSelector | _m12.ImageSaveHandle,
         *,
         timeout: float = 600,
         poll_interval: float = 5,
+        workspace: str | _m12.WorkspaceRef | None = None,
     ) -> _m12.CustomImageInfo:
+        'Delegate to images.wait_ready with the same refs and workspace validation.\n\nBoth methods also accept a notebook ImageSaveHandle; its ref must exist.\nNames and ImageSelector require workspace, while bound refs may omit it.'
         return await self._client._call('notebooks', 'wait_image_ready',
             ref=ref,
             timeout=timeout,
-            poll_interval=poll_interval)
+            poll_interval=poll_interval,
+            workspace=workspace)
 
     async def bind_ref(self, ref: _refs3.NotebookRef) -> _handles.AsyncNotebookHandle:
 
@@ -2135,7 +2188,7 @@ class AsyncAPIKeys(AsyncFacade):
     async def delete(
         self,
         ref: str | _m13.APIKeyRef,
-    ) -> _m13.APIKeyInfo:
+    ) -> None:
         return await self._client._call('api_keys', 'delete',
             ref=ref)
 
@@ -2251,6 +2304,19 @@ class AsyncModels(AsyncFacade):
             project=project,
             version=version)
 
+    async def detail(
+        self,
+        ref: str | _m15.ModelRef,
+        *,
+        workspace: str | _m15.WorkspaceRef | None = None,
+        project: str | _m15.ProjectRef | None = None,
+    ) -> _m15.ModelStatus:
+        'Return detailed status, version compatibility and serving usage.'
+        return await self._client._call('models', 'detail',
+            ref=ref,
+            workspace=workspace,
+            project=project)
+
     async def get(
         self,
         ref: str | _m15.ModelRef,
@@ -2307,7 +2373,8 @@ class AsyncModels(AsyncFacade):
         *,
         workspace: str | _m15.WorkspaceRef | None = None,
         project: str | _m15.ProjectRef | None = None,
-    ) -> tuple[_m15.ModelStatus, ...]:
+    ) -> tuple[_m15.ModelInfo, ...]:
+        'Return the same model as get for each reference, in input order.'
         return await self._client._call('models', 'status',
             refs=refs,
             workspace=workspace,

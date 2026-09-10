@@ -1,6 +1,8 @@
 """Training-job discovery, submission and observation."""
 
 from __future__ import annotations
+from .models import Instance
+from .instances import sdk_instances, label_selectors
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.execution.remote_exec import ExecResult
@@ -26,7 +28,6 @@ from .models import (
     ProjectRef,
     LogResult,
     EventResult,
-    JobInstance,
     MetricGroup,
     DatasetMount,
     Image,
@@ -62,6 +63,7 @@ class Jobs(Service):
         output_to: OutputTarget = None,
         capture: bool = True,
     ) -> ExecResult:
+        """Execute on one running instance; instance matches label or handle."""
         from .remote_exec import shaped_command, workload_exec
 
         command = shaped_command(
@@ -500,6 +502,7 @@ class Jobs(Service):
             spec.description,
             plan.max_time_ms,
             plan.shm_size_gib,
+            dict(plan.create_kwargs),
         ), plan
 
     @operation
@@ -612,28 +615,16 @@ class Jobs(Service):
     @operation
     def instances(
         self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> tuple[JobInstance, ...]:
+    ) -> tuple[Instance, ...]:
         from inspire.services.job.job_events import list_all_job_instances
 
         resolved = self._resolve(ref, workspace)
-        return tuple(
-            JobInstance(
-                name=str(row.get("name") or row.get("pod_name") or ""),
-                status=str(
-                    row.get("status") or row.get("instance_status") or row.get("phase") or ""
-                ),
-                node=str(row.get("node") or row.get("node_name") or row.get("host_name") or ""),
-                role=str(row.get("role") or row.get("component") or ""),
-                rank=row.get("rank", i),
-                raw=dict(row),
-            )
-            for i, row in enumerate(list_all_job_instances(resolved.key, session=self.session))
-        )
+        return sdk_instances("job", list_all_job_instances(resolved.key, session=self.session))
 
     def instance_names(
         self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
     ) -> tuple[str, ...]:
-        return tuple(row.name for row in self.instances(ref, workspace=workspace))
+        return tuple(row.label for row in self.instances(ref, workspace=workspace))
 
     @operation
     def events(
@@ -741,7 +732,7 @@ class Jobs(Service):
         ref: str | JobRef,
         *,
         workspace: str | WorkspaceRef | None = None,
-        instances: str | Sequence[str] = "all",
+        instance: str | Sequence[str] | None = None,
         window: str | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
@@ -750,6 +741,9 @@ class Jobs(Service):
         limit: int = 100,
         max_chars: int | None = None,
     ) -> LogResult:
+        """Read logs by instance label or handle, singly or as a sequence.
+
+        None and "all" select every instance. Print labels, never handles."""
         from inspire.services.job.job_logs import (
             window_to_minutes,
             web_log_time_range,
@@ -765,11 +759,12 @@ class Jobs(Service):
             if value is not None:
                 positive(value, label, 10000000)
         job = self.get(ref, workspace=workspace)
-        pods = (
-            self.instance_names(job.ref) if instances == "all"
-            else (instances,) if isinstance(instances, str)
-            else tuple(instances)
-        )
+        from inspire.services.job.job_events import job_instance_views, select_job_instance_views
+
+        views = self.instances(job.ref)
+        selectors = label_selectors(views, instance)
+        service_views = job_instance_views([view.raw for view in views])
+        pods = tuple(view.handle for view in select_job_instance_views(service_views, selectors))
         if start is not None or end is not None:
             if start is None or end is None:
                 raise ValidationError("Both start and end are required.")

@@ -126,7 +126,7 @@ class APIKeys(Service):
         return APIKeyInfo.from_view({"name": name})
 
     @operation
-    def delete(self, ref: str | APIKeyRef) -> APIKeyInfo:
+    def delete(self, ref: str | APIKeyRef) -> None:
         if isinstance(ref, APIKeyRef):
             self.client._validate_ref(ref, APIKeyRef)
             key = APIKeyInfo.from_view({"name": ref.name}, ref=ref)
@@ -136,7 +136,6 @@ class APIKeys(Service):
         session = self.session
         with self.client._transport.single_send():
             api_keys.delete_api_key(key.ref.key, session=session)
-        return key
 
     @operation
     def plaintext(self, ref: str | APIKeyRef) -> str:

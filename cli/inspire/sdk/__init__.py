@@ -24,8 +24,6 @@ from .models_compute import (
     RayJobPlan,
     RayJobHandle,
 )
-from inspire.services.hpc.hpc_instances import HPCInstanceView
-from inspire.services.ray.ray_instances import RayInstanceView
 from .exceptions import HPCJobFailedError, RayJobFailedError
 from inspire.platform.web.browser_api.notebooks import (
     NotebookImageSizeEstimate,
@@ -93,7 +91,7 @@ from .models import (
     JobPlan,
     DatasetMount,
     MetricGroup,
-    JobInstance,
+    Instance,
     JobEvent,
     LogResult,
     EventResult,
@@ -129,7 +127,6 @@ from .models_serving import (
     ImageRegisterHandle,
     ModelRegisterHandle,
 )
-from inspire.services.serving.serving_instances import ServingInstanceView
 from .exceptions import ServingFailedError, TensorboardFailedError
 
 
@@ -183,7 +180,6 @@ __all__ = [
     "ExecResult",
     "TransferResult",
     "iter_output_file",
-    "ServingInstanceView",
     "Serving",
     "ServingRef",
     "ServingCreateSpec",
@@ -207,8 +203,6 @@ __all__ = [
     "RayJobCreateSpec",
     "RayJobPlan",
     "RayJobHandle",
-    "HPCInstanceView",
-    "RayInstanceView",
     "HPCJobFailedError",
     "RayJobFailedError",
     "NotebookImageSizeEstimate",
@@ -270,7 +264,7 @@ __all__ = [
     "JobPlan",
     "DatasetMount",
     "MetricGroup",
-    "JobInstance",
+    "Instance",
     "JobEvent",
     "LogResult",
     "EventResult",

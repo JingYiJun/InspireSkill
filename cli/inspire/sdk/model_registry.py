@@ -116,25 +116,30 @@ class Models(Service):
     def status(
         self, refs: Sequence[str | ModelRef], *, workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
-    ) -> tuple[ModelStatus, ...]:
-        """Return detailed model status for each reference, in input order."""
+    ) -> tuple[ModelInfo, ...]:
+        """Return the same model as get for each reference, in input order."""
         if isinstance(refs, str):
             raise ValidationError("refs must be a sequence, not a string.")
-        return tuple(self._status(ref, workspace, project) for ref in refs)
+        return tuple(self.get(ref, workspace=workspace, project=project) for ref in refs)
 
-    def _status(self, selector, workspace, project):
-        ref = self._ref(selector, workspace, project)
-        kwargs = dict(session=self.session, workspace_id=ref.workspace_id)
-        data = browser_api.get_model_detail(ref.key, **kwargs)
-        records = browser_api.list_model_version_records(ref.key, **kwargs)
-        compatibility = browser_api.get_model_vllm_compatibility(ref.key, **kwargs)
-        view = views.model_detail_view(ref.name, data, records, vllm_compatibility=compatibility)
-        pending = browser_api.check_model_inference_serving_pending(model_id=ref.key, **kwargs)
+    @operation
+    def detail(
+        self, ref: str | ModelRef, *, workspace: str | WorkspaceRef | None = None,
+        project: str | ProjectRef | None = None,
+    ) -> ModelStatus:
+        """Return detailed status, version compatibility and serving usage."""
+        resolved = self._ref(ref, workspace, project)
+        kwargs = dict(session=self.session, workspace_id=resolved.workspace_id)
+        data = browser_api.get_model_detail(resolved.key, **kwargs)
+        records = browser_api.list_model_version_records(resolved.key, **kwargs)
+        compatibility = browser_api.get_model_vllm_compatibility(resolved.key, **kwargs)
+        view = views.model_detail_view(resolved.name, data, records, vllm_compatibility=compatibility)
+        pending = browser_api.check_model_inference_serving_pending(model_id=resolved.key, **kwargs)
         view["pending_serving"] = pending.get("has_pending_serving") is True
         reported = views.reported_version(data, records)
         if reported is not None:
             servings, _ = browser_api.list_model_inference_servings(
-                model_id=ref.key,
+                model_id=resolved.key,
                 version=reported,
                 page=1,
                 page_size=views.SERVING_PAGE_SIZE,
@@ -146,7 +151,7 @@ class Models(Service):
         in_use = views.other_versions_in_use(records, reported=reported)
         if in_use:
             view["other_versions_in_use"] = in_use
-        return ModelStatus.from_view(view, ref=ref)
+        return ModelStatus.from_view(view, ref=resolved)
 
     @operation
     def versions(

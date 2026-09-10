@@ -7,6 +7,7 @@ has to look at and become numbers a command can return.
 """
 
 from __future__ import annotations
+from inspire.services.tensorboard.tensorboard_status import normalize_status
 
 from typing import Optional
 import click
@@ -60,11 +61,11 @@ def _live_board(
         ctx, session=session, name=name, workspace_id=workspace_id, pick=pick
     )
     board = browser_api_module.get_tensorboard(tb_id, session=session)
-    if board.status != "running":
+    if normalize_status(board.status) != "RUNNING":
         _handle_error(
             ctx,
             "ValidationError",
-            f"TensorBoard {scrub_raw_ids(name)!r} is {scrub_raw_ids(board.status)}; "
+            f"TensorBoard {scrub_raw_ids(name)!r} is {normalize_status(board.status)}; "
             "only a running board serves data.",
             EXIT_VALIDATION_ERROR,
             hint=(

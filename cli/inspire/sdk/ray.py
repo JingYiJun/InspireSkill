@@ -1,6 +1,8 @@
 """Ray cluster submission and platform observations."""
 
 from __future__ import annotations
+from .models import Instance
+from .instances import sdk_instances
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.execution.remote_exec import ExecResult
@@ -23,8 +25,6 @@ from .models import (
     ComputeGroupRef,
     Quota,
     WorkspaceRef,
-    ImageRef,
-    ImageSelector,
     EventResult,
     LogResult,
 )
@@ -51,6 +51,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         output_to: OutputTarget = None,
         capture: bool = True,
     ) -> ExecResult:
+        """Execute on one running instance; instance matches label or handle."""
         from .remote_exec import shaped_command, workload_exec
 
         command = shaped_command(
@@ -120,12 +121,8 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         ws = self.client.workspaces.get(spec.workspace)
         project = self._project(ws, spec.project)
         head = self._quota(ws, spec.group, spec.quota)
-        image = (
-            self.client.images.get(spec.image, workspace=ws.ref)
-            if isinstance(spec.image, (ImageRef, ImageSelector))
-            else None
-        )
-        image_text = image.name if image else str(spec.image)
+        image = self.client.images.get(spec.image, workspace=ws.ref)
+        image_text = spec.image if isinstance(spec.image, str) else image.name
         quota_text = f"{head.gpu_count},{head.cpu_count},{head.memory_gib}"
 
         def resolve_image(raw):
@@ -180,7 +177,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
                 ),
             ),
             quota=Quota(head.gpu_count, head.cpu_count, head.memory_gib),
-            image=body["head_node"]["mirror_id"],
+            image=image,
             priority=body["task_priority"],
             create_kwargs=body,
             payload=payload,
@@ -212,10 +209,16 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
     @operation
     def instances(
         self, ref: str | RayJobRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> tuple[RayInstanceView, ...]:
+    ) -> tuple[Instance, ...]:
         resolved = self._resolve(ref, workspace)
         rows, _ = fetch_ray_instances(resolved.key, limit=500, show_all=True, session=self.session)
-        return tuple(ray_instance_views(rows))
+        return sdk_instances("ray", rows)
+
+    def instance_names(
+        self, ref: str | RayJobRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> tuple[str, ...]:
+        """Return the public labels accepted by exec and logs."""
+        return tuple(row.label for row in self.instances(ref, workspace=workspace))
 
     @operation
     def events(
@@ -262,6 +265,9 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         head: int | None = None,
         limit: int | None = None,
     ) -> LogResult:
+        """Read logs by instance label or handle, singly or as a sequence.
+
+        None and "all" select every instance. Print labels, never handles."""
         return self._logs(
             ref,
             workspace=workspace,

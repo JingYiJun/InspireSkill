@@ -89,6 +89,17 @@ class NotebookPlan:
     datasets: tuple[DatasetMount, ...]
     create_kwargs: dict[str, Any] = field(repr=False)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return public review fields, keeping the full payload in create_kwargs."""
+        return {
+            "name": self.name, "workspace": self.workspace.name,
+            "project": self.project.name, "compute_group": self.group.name,
+            "image": self.image.name, "quota": str(self.quota), "priority": self.priority,
+            "shm_gib": self.shm_gib, "auto_stop": self.auto_stop,
+            "auto_stop_after": self.auto_stop_after,
+            "datasets": [f"{item.dataset}:{item.version}" for item in self.datasets],
+        }
+
     @property
     def summary(self) -> str:
         return (

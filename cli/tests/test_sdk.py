@@ -292,7 +292,8 @@ def test_log_window_and_global_budget(client, monkeypatch):
         finished_at="1700003600000",
     )
     monkeypatch.setattr(client.jobs, "get", lambda *a, **k: job)
-    monkeypatch.setattr(client.jobs, "instance_names", lambda _: ("worker-0", "worker-1"))
+    monkeypatch.setattr("inspire.services.job.job_events.list_all_job_instances",
+                        lambda *a, **kw: [{"name": "worker-0"}, {"name": "worker-1"}])
     captured = []
 
     def logs(**kwargs):
@@ -518,6 +519,9 @@ def test_create_plan_and_single_dispatch(client, planned, monkeypatch):
     assert preview.quota == Quota(1, 20, 200) and calls == []
     handle = client.jobs.create(planned)
     assert handle.ref.key == "created" and len(calls) == 1
+    assert preview.create_kwargs == calls[0]
+    assert preview.to_dict()["image"] == preview.image.name
+    assert "python train.py" not in repr(preview)
     assert "python train.py" not in repr(planned)
     assert "python train.py" not in preview.summary
 
@@ -697,11 +701,10 @@ def test_sdk_log_selection_matches_cli(client, monkeypatch, selection):
 
     monkeypatch.setattr("inspire.platform.web.browser_api.jobs.list_train_job_logs", fetch)
     monkeypatch.setattr(
-        client.jobs,
-        "instances",
-        lambda *a, **kw: pytest.fail("must pass through supplied instances"),
+        "inspire.services.job.job_events.list_all_job_instances",
+        lambda *a, **kw: [{"name": "worker"}],
     )
-    result = client.jobs.logs(ref, instances=["worker"], window="30m", **selection)
+    result = client.jobs.logs(ref, instance=["worker"], window="30m", **selection)
     cli = select_job_logs(
         rows,
         total=3,
@@ -815,7 +818,7 @@ def test_events_filters_and_structured_instances(client, monkeypatch):
     with pytest.raises(ValidationError):
         client.jobs.events(ref, workload_level=True, instance="worker")
     instance = client.jobs.instances(ref)[0]
-    assert (instance.name, instance.status, instance.node, instance.rank) == (
+    assert (instance.label, instance.status, instance.node, instance.rank) == (
         "worker",
         "Running",
         "node-a",

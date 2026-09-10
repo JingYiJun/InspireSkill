@@ -160,7 +160,7 @@ def test_api_keys_resolution_paging_and_single_dispatch(client, catalog, monkeyp
     monkeypatch.setattr(api_keys, "list_api_keys", lambda **kw: pytest.fail("post-write list"))
     created = client.api_keys.create("new")
     assert created.name == "new" and created.ref is None
-    assert client.api_keys.delete(ref).ref == ref
+    assert client.api_keys.delete(ref) is None
     assert len(calls) == 2 and calls[0][1]["create"] and not calls[1][1]["create"]
     monkeypatch.setattr(api_keys, "get_api_key_plaintext", lambda *a, **kw: "explicit-secret")
     assert client.api_keys.plaintext(ref) == "explicit-secret"
@@ -376,9 +376,10 @@ def test_model_status_versions_deploy_config_and_json(client, catalog, monkeypat
     assert [x.to_dict() for x in client.models.list(catalog.ref).items] == cli_json(
         "model", "list", "--workspace", "Workspace"
     )["items"]
-    status = client.models.status(["MODEL"], workspace=catalog.ref)[0]
+    snapshot = client.models.get("MODEL", workspace=catalog.ref)
     assert client.models.status([]) == ()
-    assert client.models.status([status.ref, status.ref]) == (status, status)
+    assert client.models.status([snapshot.ref, "MODEL"], workspace=catalog.ref) == (snapshot, snapshot)
+    status = client.models.detail(snapshot.ref, workspace=catalog.ref)
     assert status.version == "V2" and status.vllm_ready is True and status.pending_serving
     assert status.servings == [{"name": "live", "status": "RUNNING"}]
     assert status.other_versions_in_use == ["V1"] and "version" not in pending_calls[0]

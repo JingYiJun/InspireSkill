@@ -6,12 +6,22 @@
 
 - **`inspire cache status` 改为按资源身份去重计数。** `cached_names` 原先累加各 scope 的有效行数，现在按服务器／账号主体／资源种类／资源 ID 去重；同一公共镜像出现在多个来源或三个工作区时只计一次。`workspaces` 原先统计带工作区名称的 scope 行数，现在统计不同工作区 ID，包括尚无本地名称的工作区。JSON 新增每种资源的 `scopes` 数量与顶层 `size_bytes`（索引文件及 SQLite sidecar 的磁盘字节数），人类输出也显示多 scope 与索引大小。此变化同样影响仅使用 CLI 的用户；依赖旧计数含义或精确输出的脚本需要更新。
 
-- **五类工作负载的状态输出统一先清洗、再按各自词表归一化。** 影响 `job list/status`（含批量 status 与 `list --watch`）、`hpc list/status`（含批量 status）、`ray list/status`、`serving list/status`、`notebook list/status` 的 `--json` 与人类输出。`Running` / `rUnNiNg` 现在均为 `RUNNING`；空值统一为 `UNKNOWN`。此前 Job/HPC/Ray JSON 为 `N/A`，Serving/Notebook 列表 JSON 为空串、详情 JSON 省略该字段；人类输出此前 Job/HPC/Ray 通常为 `N/A`（Job 表格也可能为空），Serving 列表为 `-`、详情为 `N/A`，Notebook 列表为 `Unknown`、详情为 `N/A`。Job 使用自身词表：`job_running` → `RUNNING`、`CREATING` / `job_creating` → `PENDING`、`STOPPED` / `job_stopped` → `CANCELLED`，不识别的值 → `UNKNOWN`；其他四类保留自身词表，未识别值清洗后转大写，`STOPPED` 仍为 `STOPPED`。URL、路径与原始 ID 在归一化前清洗，清洗后为空也返回 `UNKNOWN`。`job wait` 的最终状态详情、`serving api` 的状态字段也复用该投影。复用这些公共投影的 SDK 工作负载 `.view`（包括批量 Job）也同步改变；依赖旧值的脚本需要更新判断条件。
+- **六类工作负载的状态输出统一先清洗、再按各自词表归一化。** 影响 `job list/status`（含批量 status 与 `list --watch`）、`hpc list/status`（含批量 status）、`ray list/status`、`serving list/status`、`notebook list/status`、`tensorboard list/status` 的 `--json` 与人类输出。`Running` / `rUnNiNg` 现在均为 `RUNNING`；空值统一为 `UNKNOWN`。此前 Job/HPC/Ray JSON 为 `N/A`，Serving/Notebook 列表 JSON 为空串、详情 JSON 省略该字段；人类输出此前 Job/HPC/Ray 通常为 `N/A`（Job 表格也可能为空），Serving 列表为 `-`、详情为 `N/A`，Notebook 列表为 `Unknown`、详情为 `N/A`。Job 使用自身词表：`job_running` → `RUNNING`、`CREATING` / `job_creating` → `PENDING`、`STOPPED` / `job_stopped` → `CANCELLED`，不识别的值 → `UNKNOWN`；其他五类保留自身词表，未识别值清洗后转大写，`STOPPED` 仍为 `STOPPED`。TensorBoard 同时去掉大小写不敏感的 `tb_status_` 前缀，原来的小写 `running`／`stopped`／`creating` 输出改为 `RUNNING`／`STOPPED`／`CREATING`，空值改为 `UNKNOWN`；CLI tags/scalars 和 SDK 的运行状态检查沿用这一规则。URL、路径与原始 ID 在归一化前清洗，清洗后为空也返回 `UNKNOWN`。`job wait` 的最终状态详情、`serving api` 的状态字段也复用该投影。复用这些公共投影的 SDK 工作负载 `.view`（包括批量 Job）也同步改变；依赖旧值的脚本需要更新判断条件。
 - **`serving create --model NAME` 从单页查询改为完整分页名称查询。** 保留名称、工作区与当前用户过滤，每页请求 100 条，最多 100 页；超过首个 100 条的模型现在可以被找到。即使前页精确命中，也继续扫描以保留跨页同名消歧；正常请求数为过滤后目录大小除以 100 向上取整（空目录仍请求一次），最多读取 10,000 行，增加网络往返与内存开销。目录未读完即遇到空页、重复/缺失身份，或达到 100 页上限时，创建前以 `ConfigError`（CLI 退出码 10）失败，而不把不完整结果当作“模型不存在”。错误明确指出分页异常并提示重试/联系平台管理员；达到上限则提示使用更具体的 `--model` 名称或模型更少的工作区。此规则同样适用于 `--dry-run`。
 
 ### 新增
 
 - **新增实验性同步 Python SDK。** `from inspire import InspireClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组，统一资源引用、分页、批量状态与关键字参数合同。CLI 与 SDK 共享创建、配额、状态、日志／事件／指标及业务视图服务；写请求通过 `single_send` 单次分派，发送后不自动重试，结果不确定时返回专用异常。本地账号与配置、缓存、批处理、SSH／Shell／文件传输及终端渲染保持 CLI-only，原包依赖和默认安装行为不变。
+
+  SDK 尚未发布，本次直接统一门面合同：`jobs.logs(instances=...)` 改为 `instance`，单字符串与序列均可用，四种日志接口的 `None`／`"all"` 都选择全部实例；Jobs 显式选择也先发现并校验。Jobs／HPC／Ray／Serving 的 `instances()` 统一返回冻结的 SDK `Instance(label, handle, ...)`，保留实际字段和 raw，隐藏 handle／pod／raw 的 repr；移除 SDK 对旧 `JobInstance` 和三个 CLI 实例视图的导出，服务层类型不变。四者均提供返回 label 的 `instance_names()`，exec／logs 均接受 label 或 handle。
+
+  Notebook／Serving／TensorBoard 的 wait 先归一化 target，再拒绝词表外值并列出可选项，Notebook 接受大小写与首尾空白变体；TensorBoard 的状态及默认目标同步采用上述大写合同。
+
+  `models.status()` 按输入顺序返回与 get 相同的 `ModelInfo`，原详细状态聚合保留为 `models.detail() -> ModelStatus`；`api_keys.delete()` 统一返回 None。
+
+  两处镜像等待统一接受名称、ImageRef、ImageSelector 和 Notebook ImageSaveHandle，并验证同一 workspace 参数，Notebook 入口委托 images。五种 Plan 的 image 统一为 Image，Job 补充 create_kwargs／to_dict，Notebook 补充 to_dict，平台创建载荷保持原语义。
+
+  异步接口从同步门面重新生成并保留方法说明；文档计数由真实类内省测试核对，同时修正歧义候选模型、回调背压、计划载荷和 HPC 事件分类边界的说明。
 
 ## v7.1.8
 

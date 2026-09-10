@@ -188,8 +188,9 @@ def check_cli_payload(kind, client, catalog, monkeypatch):
     assert planned.group.ref.key == "group-test"
     assert planned.quota == Quota(0, 8, 32)
     assert planned.priority == 6
-    assert planned.image == ("registry/image:v1" if kind == "hpc" else "image-test")
-    for text in ("Project", "Group", str(planned.quota), planned.image, "priority=6"):
+    assert planned.image.url == "registry/image:v1"
+    assert planned.image.ref.key == "image-test"
+    for text in ("Project", "Group", str(planned.quota), planned.image.name, "priority=6"):
         assert text in planned.summary
     if kind == "hpc":
         assert (planned.instance_count, planned.number_of_tasks,
@@ -413,7 +414,11 @@ def check_logs(kind, client, monkeypatch, head):
     assert result.items == tuple(expected.logs)
     assert [c["page_size"] for c in calls] == ([2, 4] if kind == "hpc" and not head else [2])
     assert calls[0]["pod_names"] == ["namespace/pod"]
-    assert tuple(views) == service.instances(ref)
+    sdk_views = service.instances(ref)
+    assert [(v.label, v.handle, v.role) for v in views] == [
+        (v.label, v.handle, v.role) for v in sdk_views
+    ]
+    assert [v.raw for v in sdk_views] == instances
     calls.clear()
     service.logs(ref, window="100d")
     assert calls[0]["end_timestamp_ms"] - calls[0]["start_timestamp_ms"] == 30 * 24 * 3600 * 1000

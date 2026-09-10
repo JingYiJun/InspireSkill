@@ -265,7 +265,9 @@ def test_logs_single_instance_is_one_pod(client, monkeypatch):
         return [], 0
 
     monkeypatch.setattr(job_logs, "fetch_job_logs", fetch)
-    client.jobs.logs(ref, instances="worker-0")
+    monkeypatch.setattr("inspire.services.job.job_events.list_all_job_instances",
+                        lambda *a, **kw: [{"name": "worker-0"}])
+    client.jobs.logs(ref, instance="worker-0")
     assert captured == [["worker-0"]]
 
 

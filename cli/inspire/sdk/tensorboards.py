@@ -17,6 +17,7 @@ from .models_observations import (
 from .models_serving import Tensorboard, TensorboardRef, TensorboardCreateSpec, TensorboardHandle
 from .exceptions import ValidationError, SubmissionUncertainError, TensorboardFailedError
 from .compute_jobs import duration
+from inspire.services.tensorboard.tensorboard_status import normalize_status, WAIT_TARGETS, TERMINAL_STATUSES
 
 
 class Tensorboards(Service):
@@ -24,7 +25,7 @@ class Tensorboards(Service):
         return Tensorboard(
             row.name,
             self._make_ref(TensorboardRef, row.name, row.tb_id, workspace_id),
-            row.status,
+            normalize_status(row.status),
             row.summary_path,
             row.url,
             row.job_name,
@@ -218,23 +219,28 @@ class Tensorboards(Service):
         self,
         ref: str | TensorboardRef,
         *,
-        target: str = "running",
+        target: str = "RUNNING",
         raise_on_failure: bool = False,
         timeout: float = 60,
         poll_interval: float = 3,
         workspace: str | WorkspaceRef | None = None,
     ) -> Tensorboard:
+        """Wait for a lifecycle target; strip whitespace, ignore case and tb_status_.
+
+        Unknown targets raise ValidationError listing accepted values before polling."""
         duration(timeout, "timeout")
         duration(poll_interval, "poll_interval")
+        target = normalize_status(target)
+        if target not in WAIT_TARGETS:
+            raise ValidationError(f"target must be one of: {', '.join(sorted(WAIT_TARGETS))}.")
         with self.client._transport.scope(timeout=timeout):
             resolved = self._resolve(ref, workspace)
-            target = target.lower().removeprefix("tb_status_")
             while True:
                 self.client._transport.remaining()
                 board = self.get(resolved)
                 if board.status == target:
                     return board
-                if board.status in {"failed", "error", "deleted"}:
+                if board.status in TERMINAL_STATUSES:
                     if raise_on_failure:
                         raise TensorboardFailedError(board)
                     return board
@@ -243,7 +249,7 @@ class Tensorboards(Service):
 
     def _live(self, ref, workspace):
         board = self.get(ref, workspace=workspace)
-        if board.status != "running":
+        if board.status != "RUNNING":
             raise ValidationError(
                 f"TensorBoard {board.name!r} is {board.status}; only a running board serves data."
             )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import inspect
-from typing import get_args, get_origin, get_type_hints
+from typing import get_args, get_origin, get_type_hints, TypeVar
 
 from inspire.platform.web.browser_api import CustomImageInfo
 
@@ -87,6 +87,18 @@ def test_all_facade_signatures(client):
             assert str in get_args(get_args(hints["refs"])[0]), label
             assert get_origin(hints["return"]) is tuple, label
             assert get_args(hints["return"])[1] is Ellipsis, label
+            service = getattr(client, facade)
+            result_type = get_args(hints["return"])[0]
+            get_type = get_type_hints(service.get)["return"]
+            if isinstance(result_type, TypeVar):
+                result_type = service._model
+            if isinstance(get_type, TypeVar):
+                get_type = service._model
+            assert result_type == get_type, label
+
+        if method == "delete":
+            assert get_type_hints(bound)["return"] is type(None), label
+
         if method in {"plan", "create"} and facade != "api_keys":
             assert params[0].name == "spec", label
         if method == "register" or (method == "create" and facade == "api_keys"):

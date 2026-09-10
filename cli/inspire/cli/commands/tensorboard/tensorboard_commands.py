@@ -8,6 +8,7 @@ so an Agent gets scalar series instead of a web address it cannot open.
 """
 
 from __future__ import annotations
+from inspire.services.tensorboard.tensorboard_status import normalize_status
 
 import logging
 from typing import Any, Optional
@@ -149,7 +150,7 @@ def resolve_board(
 def board_row(board: Any) -> dict[str, str]:
     return {
         "name": scrub_raw_ids(board.name),
-        "status": scrub_raw_ids(board.status),
+        "status": normalize_status(board.status),
         "job": scrub_raw_ids(board.job_name),
         "project": scrub_raw_ids(board.project_name),
         "summary_path": scrub_raw_ids(board.summary_path),
@@ -169,7 +170,7 @@ def board_detail(board: Any) -> dict[str, Any]:
         auto_stop_hours = f"{int(board.auto_stop_ms) / 3_600_000:g}"
     return {
         "name": scrub_raw_ids(board.name),
-        "status": scrub_raw_ids(board.status),
+        "status": normalize_status(board.status),
         "job": scrub_raw_ids(board.job_name),
         "project": scrub_raw_ids(board.project_name),
         "compute_group": scrub_raw_ids(board.compute_group_name),

@@ -1,6 +1,7 @@
 """Notebook discovery, submission, lifecycle and image snapshots."""
 
 from __future__ import annotations
+from .models import ImageSelector
 
 from pathlib import Path
 from inspire.services.execution.notebook_transfer import TransferResult, DEFAULT_JUPYTER_MAX_BYTES
@@ -15,7 +16,7 @@ from inspire.platform.web.flow import call, perform_sync
 import uuid
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Iterator, Sequence, Literal
+from typing import Any, Iterator, Sequence
 
 from inspire.platform.web import browser_api
 from inspire.platform.web.browser_api import CustomImageInfo
@@ -63,7 +64,6 @@ from .exceptions import (
     ResolutionIncompleteError,
     ResourceNotFoundError,
     SubmissionUncertainError,
-    WaitTimeoutError,
 )
 
 
@@ -731,12 +731,14 @@ class Notebooks(Service):
         *,
         timeout: float = 600,
         poll_interval: float = 5,
-        target: Literal["RUNNING", "STOPPED"] = "RUNNING",
+        target: str = "RUNNING",
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> Notebook:
+        """Wait for RUNNING or STOPPED; target is stripped and case-insensitive."""
         _duration(timeout, "timeout")
         _duration(poll_interval, "poll_interval")
+        target = normalize_status(target.strip())
         if target not in ("RUNNING", "STOPPED"):
             raise ValidationError("target must be RUNNING or STOPPED.")
         with self.client._transport.scope(timeout=timeout):
@@ -982,28 +984,17 @@ class Notebooks(Service):
 
     def wait_image_ready(
         self,
-        ref: ImageSaveHandle | ImageRef,
+        ref: str | ImageRef | ImageSelector | ImageSaveHandle,
         *,
         timeout: float = 600,
         poll_interval: float = 5,
+        workspace: str | WorkspaceRef | None = None,
     ) -> CustomImageInfo:
-        _duration(timeout, "timeout")
-        _duration(poll_interval, "poll_interval")
-        resolved = ref.ref if isinstance(ref, ImageSaveHandle) else ref
-        if resolved is None:
-            raise ValidationError(
-                "Image identity is not available yet; resolve it in the image catalog first."
-            )
-        self.client._validate_ref(resolved, ImageRef)
-        with self.client._transport.scope(timeout=timeout):
-            try:
-                return browser_api.wait_for_image_ready(
-                    image_id=resolved.key,
-                    session=self.session,
-                    timeout=timeout,
-                    poll_interval=poll_interval,
-                )
-            except TimeoutError as error:
-                raise WaitTimeoutError(str(error)) from error
-            except ValueError as error:
-                raise ValidationError(str(error)) from error
+        """Delegate to images.wait_ready with the same refs and workspace validation.
+
+        Both methods also accept a notebook ImageSaveHandle; its ref must exist.
+        Names and ImageSelector require workspace, while bound refs may omit it.
+        """
+        return self.client.images.wait_ready(
+            ref, timeout=timeout, poll_interval=poll_interval, workspace=workspace
+        )

@@ -146,7 +146,7 @@ def test_wait_and_data(client, catalog, monkeypatch):
     ref = TensorboardRef("board", client.account, client.base_url, "tb-test", "ws-test")
     statuses = iter(["creating", "running"])
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board(next(statuses)))
-    assert client.tensorboards.wait(ref, target="TB_STATUS_RUNNING", poll_interval=0.001).status == "running"
+    assert client.tensorboards.wait(ref, target="TB_STATUS_RUNNING", poll_interval=0.001).status == "RUNNING"
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board())
     monkeypatch.setattr(api, "read_tensorboard_runs", lambda *a, **kw: ["."])
     monkeypatch.setattr(api, "read_tensorboard_scalar_tags", lambda *a, **kw: {".": ["loss"]})
@@ -185,7 +185,7 @@ def test_batch_status_and_failed_wait(client, catalog, monkeypatch):
     assert isinstance(snapshots, tuple) and len(snapshots) == 2
     assert all(snapshot.ref.key == ref.key for snapshot in snapshots)
     monkeypatch.setattr(api, "get_tensorboard", lambda *a, **kw: board("failed"))
-    assert client.tensorboards.wait(ref).status == "failed"
+    assert client.tensorboards.wait(ref).status == "FAILED"
     with pytest.raises(TensorboardFailedError) as error:
         client.tensorboards.wait(ref, raise_on_failure=True)
     assert error.value.tensorboard.ref == ref

@@ -1,6 +1,8 @@
 """HPC Slurm submission and platform observations."""
 
 from __future__ import annotations
+from .models import Instance
+from .instances import sdk_instances
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
 from inspire.services.execution.remote_exec import ExecResult
@@ -58,6 +60,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         output_to: OutputTarget = None,
         capture: bool = True,
     ) -> ExecResult:
+        """Execute on one running instance; instance matches label or handle."""
         from .remote_exec import shaped_command, workload_exec
 
         command = shaped_command(
@@ -155,11 +158,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         project = self._project(ws, spec.project)
         quota = self._quota(ws, spec.group, spec.quota)
         priority = self._resolve_priority(spec.priority, ws, project)
-        image = (
-            self.client.images.get(spec.image, workspace=ws.ref).url
-            if not isinstance(spec.image, str) or "/" not in spec.image
-            else spec.image
-        )
+        image = self.client.images.get(spec.image, workspace=ws.ref)
         layout = core.resolve_slurm_layout(
             node_cpu=quota.cpu_count,
             node_memory_gib=quota.memory_gib,
@@ -181,7 +180,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             logic_compute_group_id=quota.logic_compute_group_id,
             project_id=project.ref.key,
             workspace_id=ws.ref.key,
-            image=image,
+            image=image.url,
             image_type=spec.image_type,
             entrypoint=spec.entrypoint,
             quota_id=quota.quota_id,
@@ -222,7 +221,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
                 ),
             ),
             quota=Quota(quota.gpu_count, quota.cpu_count, quota.memory_gib),
-            image=payload["image"],
+            image=image,
             priority=priority,
             create_kwargs=body,
             payload=payload,
@@ -252,10 +251,16 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
     @operation
     def instances(
         self, ref: str | HPCJobRef, *, workspace: str | WorkspaceRef | None = None
-    ) -> tuple[HPCInstanceView, ...]:
+    ) -> tuple[Instance, ...]:
         resolved = self._resolve(ref, workspace)
         rows, _ = fetch_hpc_instances(resolved.key, limit=500, show_all=True, session=self.session)
-        return tuple(hpc_instance_views(rows))
+        return sdk_instances("hpc", rows)
+
+    def instance_names(
+        self, ref: str | HPCJobRef, *, workspace: str | WorkspaceRef | None = None
+    ) -> tuple[str, ...]:
+        """Return the public labels accepted by exec and logs."""
+        return tuple(row.label for row in self.instances(ref, workspace=workspace))
 
     @operation
     def events(
@@ -278,7 +283,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         rows = api.list_hpc_job_events(resolved.key, session=self.session) if not instance else []
         if not workload_level:
             views = select_hpc_instance_views(
-                self.instances(resolved),
+                hpc_instance_views([view.raw for view in self.instances(resolved)]),
                 (instance,) if isinstance(instance, str) else instance or (),
             )
             # Keep the client-owned synchronous transport in its creating thread.
@@ -311,6 +316,9 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         head: int | None = None,
         limit: int | None = None,
     ) -> LogResult:
+        """Read logs by instance label or handle, singly or as a sequence.
+
+        None and "all" select every instance. Print labels, never handles."""
         return self._logs(
             ref,
             workspace=workspace,

@@ -204,6 +204,18 @@ class JobPlan:
     description: str | None = None
     max_time: str | None = None
     shm: int | None = None
+    create_kwargs: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a public review summary; create_kwargs holds the full payload."""
+        return {
+            "name": self.name, "workspace": self.workspace.name,
+            "project": self.project.name, "compute_group": self.group.name,
+            "image": self.image.name, "quota": str(self.quota),
+            "priority": self.priority, "nodes": self.nodes, "envs_count": self.envs_count,
+            "description": self.description, "max_time": self.max_time, "shm": self.shm,
+            "datasets": [f"{item.dataset}:{item.version}" for item in self.datasets],
+        }
 
     @property
     def summary(self) -> str:
@@ -234,8 +246,13 @@ class EventResult:
 
 
 @dataclass(frozen=True)
-class JobInstance:
-    name: str
+class Instance:
+    """SDK instance identity; print label, never handle, pod or raw platform data."""
+
+    label: str
+    handle: str = field(repr=False)
+    pod: str = field(default="", repr=False)
+    kind: str = ""
     status: str = ""
     node: str = ""
     role: str = ""

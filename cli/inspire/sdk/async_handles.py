@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from dataclasses import dataclass, field
-from typing import Any, Generic, Literal, TYPE_CHECKING, TypeVar
+from typing import Any, Generic, TYPE_CHECKING, TypeVar
 
 from .models import JobHandle, Job, WorkspaceRef
 from .models_compute import HPCJobHandle, HPCJob, RayJobHandle, RayJob
@@ -98,7 +98,7 @@ class AsyncNotebookHandle(_AwaitableHandle[Notebook], NotebookHandle):
         *,
         timeout: float = 600,
         poll_interval: float = 5,
-        target: Literal["RUNNING", "STOPPED"] = "RUNNING",
+        target: str = "RUNNING",
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> Notebook:
@@ -216,7 +216,7 @@ class AsyncTensorboardHandle(_AwaitableHandle[Tensorboard], TensorboardHandle):
     async def wait(
         self,
         *,
-        target: str = "running",
+        target: str = "RUNNING",
         raise_on_failure: bool = False,
         timeout: float = 60,
         poll_interval: float = 3,
@@ -249,6 +249,7 @@ class AsyncImageSaveHandle(_AwaitableHandle[CustomImageInfo], ImageSaveHandle):
         *,
         timeout: float = 600,
         poll_interval: float = 5,
+        workspace: str | WorkspaceRef | None = None,
     ) -> CustomImageInfo:
         """Poll inspire.sdk.notebooks.Notebooks.wait_image_ready again.
 
@@ -260,6 +261,7 @@ class AsyncImageSaveHandle(_AwaitableHandle[CustomImageInfo], ImageSaveHandle):
             self,
             timeout=timeout,
             poll_interval=poll_interval,
+            workspace=workspace,
         )
 
 
