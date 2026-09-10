@@ -148,7 +148,13 @@ def generate() -> str:
             body.append(f"        return _handles.Async{handle}(name=ref.name, ref=ref, {extras}, _facade=self)\n")
         body.append("\n")
     body.append("class InspireAsyncClient(AsyncRuntime):\n")
-    body.append('    """Async SDK with native I/O on the caller event loop."""\n')
+    body.append('    """Share one client across tasks on the same process and event loop.\n\n'
+                '    Account/configuration are pinned on first use, not construction.\n'
+                '    concurrency is a deprecated positive-integer no-op; use an application\n'
+                '    semaphore to limit requests. Local I/O uses a separate four-worker pool.\n'
+                '    Close with async with or await close(); cancellation does not stop\n'
+                '    remote workloads or forcibly interrupt running local offloads.\n'
+                '    """\n')
     body.append("    accounts = Accounts\n\n")
     body.append("    def __init__(\n        self,\n        account: str | None = None,\n        *,\n")
     sig = inspect.signature(InspireClient)

@@ -1,4 +1,14 @@
-"""Native subprocess I/O for the shared SSH/SCP command builders."""
+"""Run shared SSH/SCP command lines with native asyncio subprocess I/O.
+
+Timeout and cancellation kill and reap the local child, including cancellation
+during spawn. That is a local cleanup guarantee, not proof that a command on the
+remote host stopped or that an interrupted transfer rolled back.
+
+Streaming drains both pipes and serializes callbacks through a bounded queue.
+Slow callbacks exert backpressure; separate stdout/stderr pipes do not establish
+a global remote write order. Merged CLI output retains line delivery, so one
+unterminated line can grow even though the chunk queue is bounded.
+"""
 
 from __future__ import annotations
 

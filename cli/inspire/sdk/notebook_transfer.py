@@ -1,4 +1,16 @@
-"""SDK file transfer orchestration using the same bridge preference as exec."""
+"""Choose a transfer transport without changing what a remote path means.
+
+Auto prefers a reachable cached SSH bridge and otherwise uses Jupyter Contents;
+it does not select by file size, create a bridge or retry a failed SSH transfer
+through Jupyter. Relative paths start at the discovered Jupyter root on both
+transports. Absolute SSH paths need no root discovery; Jupyter can only address
+paths within its root. The result preserves the request and exposes remote_path
+for a subsequent exec, whose default cwd may differ.
+
+Jupyter uses a transport-owned application connection and base64 JSON for single
+files. SSH staging/publication lives in inspire.services.execution.notebook_transfer.
+Sync and async facades share these decisions through inspire.platform.web.flow.
+"""
 from __future__ import annotations
 
 import base64

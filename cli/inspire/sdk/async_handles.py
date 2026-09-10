@@ -1,9 +1,15 @@
-"""Client-bound submission handles. Persist their pure-data refs, not handles.
+"""Client-bound polling handles; persist their pure-data refs, not the handles.
 
-Waiting polls the platform with the facade's budgets and renewal rules.
-CANCELLING A WAIT DOES NOT STOP THE REMOTE WORKLOAD: paid compute keeps running.
-Use the workload facade's stop() explicitly to stop it. Repeated awaits poll again.
-Default raise_on_failure=False returns failed workloads rather than raising.
+Awaiting a handle starts a fresh wait through its facade, even after a previous
+wait finished. future() schedules that wait on the running loop; it is not a
+shared completion future. Binding a stored ref validates local account/server
+identity without submitting work or proving that the resource still exists.
+
+Cancelling a wait stops observation only. Workloads may keep running and charging;
+stop them explicitly through their workload facade. Image-save cancellation is a
+separate notebooks.cancel_save_image operation, and Images has no stop method.
+Workload waits return failures by default; image readiness waits instead use the
+image API's error contract and have no raise_on_failure switch.
 """
 
 from __future__ import annotations
@@ -36,10 +42,9 @@ class _AwaitableHandle(Generic[T]):
         raise NotImplementedError
 
     def __await__(self) -> Generator[Any, None, T]:
-        """Poll again using facade defaults; failed workloads return by default.
+        """Start a fresh facade wait with its defaults and request budgets.
 
-        CANCELLATION ONLY STOPS WAITING, NOT THE WORKLOAD. Use facade.stop().
-        Polling uses the same request budgets and session renewal as facade.wait().
+        Cancellation stops this wait, not the submitted workload or image work.
         """
         return self.wait().__await__()
 
@@ -47,7 +52,7 @@ class _AwaitableHandle(Generic[T]):
         """Schedule a fresh wait on the running loop (no cached/shared future).
 
         Suitable for asyncio.wait/as_completed. Cancelling this future only stops
-        waiting: the remote workload keeps running and may keep charging.
+        waiting: submitted work may continue, including billable workloads.
         This is an asyncio Future, not a concurrent.futures.Future for threads.
         """
         return asyncio.get_running_loop().create_task(self.wait())
@@ -67,9 +72,9 @@ class AsyncJobHandle(_AwaitableHandle[Job], JobHandle):
         poll_interval: float = 10,
         raise_on_failure: bool = False,
     ) -> Job:
-        """Poll via jobs.wait with identical defaults and budgets.
+        """Poll via inspire.sdk.jobs.Jobs.wait with the same defaults and budgets.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
+        Cancelling only stops this wait; stop the workload explicitly if needed.
         Failed workloads return normally unless raise_on_failure=True.
         Each call waits again, including after a previous terminal result.
         """
@@ -97,9 +102,9 @@ class AsyncNotebookHandle(_AwaitableHandle[Notebook], NotebookHandle):
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> Notebook:
-        """Poll via notebooks.wait with identical defaults and budgets.
+        """Poll via inspire.sdk.notebooks.Notebooks.wait with the same defaults and budgets.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
+        Cancelling only stops this wait; stop the workload explicitly if needed.
         Failed workloads return normally unless raise_on_failure=True.
         Each call waits again, including after a previous terminal result.
         """
@@ -127,9 +132,9 @@ class AsyncHPCJobHandle(_AwaitableHandle[HPCJob], HPCJobHandle):
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> HPCJob:
-        """Poll via hpc.wait with identical defaults and budgets.
+        """Poll via inspire.sdk.hpc.HPC.wait with the same defaults and budgets.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
+        Cancelling only stops this wait; stop the workload explicitly if needed.
         Failed workloads return normally unless raise_on_failure=True.
         Each call waits again, including after a previous terminal result.
         """
@@ -156,9 +161,9 @@ class AsyncRayJobHandle(_AwaitableHandle[RayJob], RayJobHandle):
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> RayJob:
-        """Poll via ray.wait with identical defaults and budgets.
+        """Poll via inspire.sdk.ray.Ray.wait with the same defaults and budgets.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
+        Cancelling only stops this wait; stop the workload explicitly if needed.
         Failed workloads return normally unless raise_on_failure=True.
         Each call waits again, including after a previous terminal result.
         """
@@ -186,9 +191,9 @@ class AsyncServingHandle(_AwaitableHandle[Serving], ServingHandle):
         workspace: str | WorkspaceRef | None = None,
         target: str = "RUNNING",
     ) -> Serving:
-        """Poll via servings.wait with identical defaults and budgets.
+        """Poll via inspire.sdk.servings.Servings.wait with the same defaults and budgets.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
+        Cancelling only stops this wait; stop the workload explicitly if needed.
         Failed workloads return normally unless raise_on_failure=True.
         Each call waits again, including after a previous terminal result.
         """
@@ -217,9 +222,9 @@ class AsyncTensorboardHandle(_AwaitableHandle[Tensorboard], TensorboardHandle):
         poll_interval: float = 3,
         workspace: str | WorkspaceRef | None = None,
     ) -> Tensorboard:
-        """Poll via tensorboards.wait with identical defaults and budgets.
+        """Poll via inspire.sdk.tensorboards.Tensorboards.wait with the same defaults and budgets.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
+        Cancelling only stops this wait; stop the workload explicitly if needed.
         Failed workloads return normally unless raise_on_failure=True.
         Each call waits again, including after a previous terminal result.
         """
@@ -235,7 +240,7 @@ class AsyncTensorboardHandle(_AwaitableHandle[Tensorboard], TensorboardHandle):
 
 @dataclass(frozen=True)
 class AsyncImageSaveHandle(_AwaitableHandle[CustomImageInfo], ImageSaveHandle):
-    """Awaitable notebooks submission; cancellation never stops remote work."""
+    """Observe a saved image becoming ready; this does not wait for the notebook."""
 
     _facade: async_client.AsyncNotebooks = field(repr=False, compare=False, kw_only=True)
 
@@ -245,10 +250,11 @@ class AsyncImageSaveHandle(_AwaitableHandle[CustomImageInfo], ImageSaveHandle):
         timeout: float = 600,
         poll_interval: float = 5,
     ) -> CustomImageInfo:
-        """Poll via notebooks.wait_image_ready with identical defaults and budgets.
+        """Poll inspire.sdk.notebooks.Notebooks.wait_image_ready again.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
-        Each call waits again, including after a previous terminal result.
+        An unconfirmed image ref raises ValidationError; waiting cannot recover
+        the identity. Cancellation only stops polling. Cancelling the save is a
+        separate notebooks.cancel_save_image(self.notebook) operation.
         """
         return await self._facade.wait_image_ready(
             self,
@@ -259,7 +265,7 @@ class AsyncImageSaveHandle(_AwaitableHandle[CustomImageInfo], ImageSaveHandle):
 
 @dataclass(frozen=True)
 class AsyncImageRegisterHandle(_AwaitableHandle[CustomImageInfo], ImageRegisterHandle):
-    """Awaitable images submission; cancellation never stops remote work."""
+    """Observe a registered image becoming ready; registration does not push bytes."""
 
     _facade: async_client.AsyncImages = field(repr=False, compare=False, kw_only=True)
 
@@ -270,10 +276,10 @@ class AsyncImageRegisterHandle(_AwaitableHandle[CustomImageInfo], ImageRegisterH
         poll_interval: float = 5,
         workspace: str | WorkspaceRef | None = None,
     ) -> CustomImageInfo:
-        """Poll via images.wait_ready with identical defaults and budgets.
+        """Poll inspire.sdk.resources.Images.wait_ready again.
 
-        CANCELLATION DOES NOT STOP REMOTE WORK; explicitly use facade.stop().
-        Each call waits again, including after a previous terminal result.
+        Cancellation stops observation, not the image push. Images has no stop
+        method, and readiness failures follow wait_ready's error contract.
         """
         return await self._facade.wait_ready(
             self.ref,

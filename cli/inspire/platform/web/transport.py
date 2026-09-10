@@ -1,4 +1,14 @@
-"""Shared web dispatcher. SDK writes are sent once, with no implicit replay."""
+"""Caller-owned web state and the blocking driver for shared request decisions.
+
+Console requests, application requests and 数据广场 use this owner for account,
+session generation, deadlines and write classification. Request policy lives in
+inspire.platform.web.transport_core; native async I/O interprets it through
+inspire.platform.web.transport_async. CLI compatibility selects response and
+renewal policy within that design, not another dispatcher.
+
+SDK writes explicitly enter single_send. A preflight read may refresh the
+session; once the write is dispatched, no driver may replay it.
+"""
 
 from __future__ import annotations
 
@@ -141,6 +151,12 @@ class Transport:
 
     @contextmanager
     def single_send(self, operation_id: str = "", *, create: bool = False) -> Iterator[None]:
+        """Allow at most one request, reporting an unknown dispatched outcome.
+
+        A recent returned console, application or plaza response skips the
+        preflight read. This timestamp does not prove business success.
+        operation_id labels an uncertain creation; it is not an idempotency key.
+        """
         self.check()
         if self._write is not None:
             raise _SingleSendViolation("single_send blocks cannot be nested.")
@@ -161,8 +177,8 @@ class Transport:
             _SingleSendViolation,
             ValidationError,
             AuthenticationError,
-    AuthenticationCooldownError,  # noqa: F401 - SDK compatibility export
-    WaitTimeoutError,  # noqa: F401 - SDK compatibility export
+    AuthenticationCooldownError,
+    WaitTimeoutError,
             TransportError,
         ):
             raise

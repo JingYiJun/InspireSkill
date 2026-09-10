@@ -1,4 +1,16 @@
-"""Run shared SDK business logic on the caller loop, suspending at native I/O."""
+"""Share SDK business logic on the caller loop, suspending at explicit I/O calls.
+
+The first use pins account and configuration. Each operation gets a shallow
+client view with its own facade bindings, deadline and write state; catalogue
+storage and acquired authentication snapshots can be shared. Views are not
+thread workers or leased synchronous clients. Facade-local caches are rebuilt
+with each view, including the notebook contents-root cache.
+
+concurrency is a deprecated, validated no-op. Native requests overlap freely;
+Ray/Serving bulk status uses a separate eight-task rolling window. Local I/O
+uses the client-owned pool in inspire.platform.web.offload. Close cancels active
+operations and joins pending offloads; it does not stop remote workloads.
+"""
 from __future__ import annotations
 
 import asyncio

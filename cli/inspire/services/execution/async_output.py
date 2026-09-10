@@ -1,4 +1,14 @@
-"""Offload caller-owned synchronous output sinks without changing capture policy."""
+"""Keep synchronous output sinks usable from native async exec paths.
+
+File and caller-owned sink writes use inspire.platform.web.offload. Each write
+finishes before cancellation propagates, so cleanup cannot close a sink beneath
+an unfinished write. A slow sink can therefore delay cancellation. Capture limits
+still belong to inspire.exec_output; writing a sink does not enlarge capture.
+
+on_output callbacks are different: deliver_output invokes them on the caller
+loop and awaits any awaitable result, preserving order and backpressure. A slow
+synchronous callback still blocks that loop.
+"""
 from __future__ import annotations
 
 from inspire.platform.web.offload import offload
@@ -45,7 +55,7 @@ async def _finish_io(function: Callable[..., Any], *args: Any) -> Any:
 
 
 async def deliver_output(callback: Callable[[str], Any], chunk: str) -> None:
-    """Internal streaming callbacks may await bounded-queue backpressure."""
+    """Deliver user or internal callbacks in order, awaiting backpressure if supplied."""
     result = callback(chunk)
     if inspect.isawaitable(result):
         await result

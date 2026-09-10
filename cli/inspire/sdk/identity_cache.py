@@ -1,4 +1,17 @@
-"""SDK projections onto the shared identity index and refresh engine."""
+"""Project shared identity snapshots into the full catalogues SDK callers need.
+
+inspire.services.catalog.resource_index is authoritative only about its cached
+observations, not current platform state. A fast-path hit needs a complete,
+fresh scope, valid payloads and an unchanged snapshot token. CLI rows containing
+only a name and ID cannot supply project permissions or image fields; they
+trigger a live read instead of inventing those values.
+
+Refreshes use inspire.services.catalog.resource_refresh and its leases. A busy
+writer may leave a usable snapshot; otherwise readers go live without publishing
+under somebody else's lease. Unavailable storage or missing stable identity also
+falls back to the loader. Failed or partial quota enumeration must not become an
+apparently complete empty catalogue.
+"""
 
 from __future__ import annotations
 

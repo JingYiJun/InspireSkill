@@ -1,4 +1,12 @@
-"""Lazy public facade for browser APIs; importing jobs needs no browser runtime."""
+"""Lazy facade for console Actions and notebook/TensorBoard application helpers.
+
+Modules own endpoint spellings, envelope decoding and recorded platform traps.
+Transport acquisition goes through inspire.platform.web.runtime; this package
+does not choose a separate CLI or SDK request policy. 数据广场 catalogue endpoints
+belong to inspire.platform.web.plaza. Keep business projections in
+inspire.services and terminal presentation in inspire.cli. Lazy exports let a
+caller import jobs without loading a browser runtime.
+"""
 
 from importlib import import_module
 from typing import Any, TYPE_CHECKING

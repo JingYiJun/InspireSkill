@@ -1,4 +1,12 @@
-"""Small SDK-only metadata cache; identities and prices live in ResourceIndex."""
+"""Small metadata store for catalogues absent from the shared identity index.
+
+Only priority levels, fair-scheduling metadata and current-user data belong here.
+Identities and prices use inspire.services.catalog.resource_index. Old identity blobs are
+removed when the file is read. Values use a fixed codec, never pickle or imports
+chosen by file contents. A generation check prevents a slow load from undoing a
+concurrent clear, and unavailable storage falls back to live reads in
+inspire.sdk.cache.
+"""
 
 from __future__ import annotations
 

@@ -188,7 +188,6 @@ def _test_ssh_connection(
     Returns:
         True if SSH connection succeeds, False otherwise
     """
-    # Ensure rtunnel binary exists
     try:
         _ensure_rtunnel_binary(config)
     except TunnelError:
@@ -256,7 +255,6 @@ def is_tunnel_available(
     if not bridge:
         return False
 
-    # Test SSH connection with retry
     for attempt in range(retries + 1):
         if _test_ssh_connection(bridge, config):
             return True

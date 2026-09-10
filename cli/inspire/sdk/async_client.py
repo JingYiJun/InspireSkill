@@ -2395,7 +2395,14 @@ class AsyncResources(AsyncFacade):
 
 class InspireAsyncClient(AsyncRuntime):
 
-    """Async SDK with native I/O on the caller event loop."""
+    """Share one client across tasks on the same process and event loop.
+
+    Account/configuration are pinned on first use, not construction.
+    concurrency is a deprecated positive-integer no-op; use an application
+    semaphore to limit requests. Local I/O uses a separate four-worker pool.
+    Close with async with or await close(); cancellation does not stop
+    remote workloads or forcibly interrupt running local offloads.
+    """
 
     accounts = Accounts
 

@@ -118,7 +118,7 @@ def drive_program(program: Program[T]) -> T:
 
 
 async def run_sync(driver: Any, function: Callable[[], Any]) -> Any:
-    """A stack switch is not a thread: all SDK code stays on this event loop.
+    """A stack switch keeps business logic on the caller loop; I/O may be offloaded.
 
     Each suspended stack keeps its own ContextVars. The I/O interpreter inherits
     those values, but disables the bridge while interpreting native workflows.

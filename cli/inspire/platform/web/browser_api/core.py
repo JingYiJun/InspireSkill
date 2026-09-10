@@ -1,8 +1,11 @@
 """Shared helpers for browser (web-session) APIs.
 
-The Inspire web UI exposes SSO-only endpoints under `/api/v2`. Domain modules
-(browser_api_*.py) use this module to avoid copy/pasting URL, Playwright, and
-asyncio-thread bridging logic.
+The Inspire web UI exposes SSO-only endpoints under ``/api/v2``. Modules such
+as inspire.platform.web.browser_api.jobs describe those Actions; this module
+centralizes URL resolution, paging guards and compatibility helpers. JSON calls
+resolve their owner through inspire.platform.web.runtime and use its Transport.
+The thread bridge here is for synchronous browser helpers called from a running
+loop, not the execution model of InspireAsyncClient.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
 # JupyterLab iframe points here.
 NOTEBOOK_LAB_PATH = "/api/v2/notebook/lab"
 
-# Cached base URL (loaded once at module import)
+# Resolve lazily and key by account/environment; importing must not pin a host.
 _cached_base_url: str | None = None
 _cached_base_url_key: tuple[str | None, str | None] | None = None
 
@@ -88,11 +91,10 @@ def _configured_base_url() -> str:
 
 
 def _set_base_url(url: str) -> None:
-    """Override the cached base URL for the current process.
+    """Apply an init --base-url override to the current CLI configuration key.
 
-    This is used by plain ``inspire init`` to propagate a CLI-provided
-    ``--base-url`` into the module-level cache so that all subsequent
-    browser-API calls resolve to the correct host.
+    Update an active CLI transport too. Other account/environment keys reload
+    their configuration, and an SDK transport keeps its own pinned base URL.
     """
     global _cached_base_url, _cached_base_url_key
 
@@ -137,7 +139,9 @@ def _clamped_page_size(body: Optional[dict]) -> Optional[dict]:
     costs nothing: a request above the ceiling could never have returned more
     rows than one at it.
 
-    ``-1`` means "every row" and the gateway honours it, so it is left alone.
+    Negative values are left to the endpoint contract. Some list Actions use
+    ``-1`` for every row; inspire.platform.web.browser_api.availability.api
+    documents why ListNodeDimension still needs explicit pagination.
     """
     if not isinstance(body, dict):
         return body

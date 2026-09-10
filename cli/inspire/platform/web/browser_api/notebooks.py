@@ -627,7 +627,7 @@ def list_notebook_events(
 
     Each raw event carries `content` (free-form message), `created_at`
     (epoch-ms string), `event_id`, `id`, and `notebook_id`. The shared
-    renderer in `cli.utils.events` consumes the synthesized common fields:
+    renderer in `inspire.cli.utils.events` consumes the synthesized common fields:
 
     - ``message`` ← ``content``
     - ``last_timestamp`` ← ``created_at`` (same for ``first_timestamp``)

@@ -1,4 +1,11 @@
-"""Web session management for web UI APIs."""
+"""Acquire, persist and renew platform sessions for the owning Transport.
+
+CAS and browser authentication, cookie jars, refresh locks and login cooldowns
+belong here. Request retries and single-send write policy belong to
+inspire.platform.web.transport_core; endpoint payloads belong to
+inspire.platform.web.browser_api. A locally fresh cache is not proof that the
+server still accepts its cookies.
+"""
 
 
 from __future__ import annotations

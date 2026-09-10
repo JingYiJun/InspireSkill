@@ -1,4 +1,14 @@
-"""Async I/O interpreter for the shared JSON request program."""
+"""Native I/O driver for the same decisions the blocking Transport executes.
+
+HTTP uses httpx; requests still prepares bodies, cookies, netrc and proxy
+settings so changing execution mode does not change the wire contract.
+Authentication workflows suspend on native HTTP, Playwright and lock waits.
+SSH/SCP command builders keep their synchronous shape but run with asyncio
+subprocesses; local file and certificate work uses inspire.platform.web.offload.
+
+Connections belong to a driver context and close on exit. There is no pool of
+thread-pinned SDK clients and no promise to reuse sockets across operations.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +33,12 @@ if TYPE_CHECKING:
 
 
 class AsyncDriver:
+    """Supply I/O outcomes without owning a second retry or authentication policy.
+
+    Use as an async context manager: its HTTP clients and adapted contexts have
+    this lifetime, while identity and session state belong to the Transport.
+    """
+
     def __init__(self, transport: Transport) -> None:
         self.transport = transport
         self.stack = AsyncExitStack()

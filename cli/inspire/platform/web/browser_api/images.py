@@ -1,7 +1,7 @@
 """Browser (web-session) image management APIs (list, detail, create, delete).
 
 Saving a notebook as an image is **not** here: all three Actions behind that
-flow live on the ``notebook`` route, so they sit in :mod:`.notebooks` next to
+flow live on the ``notebook`` route, so they sit in :mod:`inspire.platform.web.browser_api.notebooks` next to
 the rest of the notebook lifecycle.
 """
 

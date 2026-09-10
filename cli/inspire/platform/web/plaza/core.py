@@ -7,7 +7,7 @@ dataset catalogue can be browsed or searched — qz's own ``/api/v2/dataset``
 route carries a single ``ValidateDataset`` Action and no listing at all (see
 :mod:`inspire.platform.web.browser_api.datasets`).
 
-Signing in needs no browser. The CLI's web session already holds the CAS
+Signing in needs no browser. The caller's platform web session holds the CAS
 ticket-granting cookie, which is enough to mint a service ticket for the plaza:
 
 1. ``GET {CAS}/cas/login?service=<plaza>/`` → 302 whose ``Location`` carries
@@ -21,7 +21,9 @@ ticket-granting cookie, which is enough to mint a service ticket for the plaza:
 Responses are ``{"code": 0, "data": …, "msg": "…"}``. ``code`` is 0 on success
 and non-zero for a declared failure whose reason is in ``msg``; the HTTP status
 stays 200 for those, so success can never be read off the status code alone.
-The one status that does carry meaning is 401 — an unauthenticated call answers
+HTTP status still matters: redirects and 401 require authentication recovery,
+and other HTTP errors are classified before business success. An unauthenticated
+call answers
 ``401 {"code": 7, …, "msg": "未登录或非法访问"}``, which is the signal to run the
 handshake again.
 
@@ -75,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 
 class PlazaError(ValueError):
-    """数据广场 answered, and the answer was a declared failure.
+    """A data plaza call failed, either in transport or in its response.
 
     Subclasses ``ValueError`` so the CLI's existing ``except ValueError``
     boundaries keep mapping a refused request to the same user-facing API
@@ -246,7 +248,7 @@ def plaza_request(
     """Call one plaza endpoint and return its unwrapped ``data`` payload.
 
     Follows the same 401 discipline the qz browser APIs do. A lapsed
-    ``datasets-session`` is re-minted from the CAS cookie the CLI already holds,
+    ``datasets-session`` is re-minted from the caller's CAS cookie,
     and only when that fails too is the platform session itself refreshed —
     logging in again is expensive, and most expiries are the plaza's alone.
     """

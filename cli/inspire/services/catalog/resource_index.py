@@ -1,13 +1,14 @@
-"""Disposable per-account resource identity index.
+"""Disposable per-account identity index shared by CLI and SDK readers.
 
-The platform remains the sole source of truth.  This SQLite database only
-accelerates name-to-handle resolution; it must never become the backing store
-for normal ``list`` or status output.
+The platform remains the source of truth. CLI name resolution uses identities;
+SDK catalogue reads may also reuse complete, fresh rows with validated payloads
+through the SDK projection layer. Identity-only observations are insufficient
+for those catalogue views. Workload lists, status and telemetry remain live.
 
-Quota rows live here too, because a quota *is* a name-to-handle mapping: the
-user-facing name is the ``gpu,cpu,mem`` triple and the handle is the platform
-``quota_id``. They carry their compute group in ``compute_group`` and the raw
-price object in ``payload``.
+Quota rows live here too: their name is the user-facing ``gpu,cpu,mem`` triple
+and their handle is the platform ``quota_id``. They carry their compute group
+in ``compute_group`` and the raw price object in ``payload``. Leases and snapshot
+tokens protect publication; a missing or unusable snapshot must allow a live read.
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ def _lease_holder_is_alive(holder: str) -> bool:
 # Three tiers, paced by how fast each kind actually moves.
 #
 # Workload *status* moves minute to minute, but the cached value here is only a
-# name-to-handle identity. Normal list/status output remains live, writes update
+# name-to-handle identity. Workload list/status output remains live, writes update
 # the index immediately, misses go live, and a stale hit gets one invalidation
 # plus live retry. A day therefore avoids repeated name scans without making a
 # mutable platform fact look current.

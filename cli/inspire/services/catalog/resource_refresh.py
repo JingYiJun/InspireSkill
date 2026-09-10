@@ -1,4 +1,12 @@
-"""Shared single-scope refresh discipline for CLI and SDK writers."""
+"""Publish one resource scope for both CLI refreshes and SDK catalogue misses.
+
+A fetcher reports completeness explicitly. Full scans may tombstone absent rows;
+partial scans only merge, and exact-name scans cannot certify the whole scope.
+The lease prevents competing publishers, while generation/revision checks stop a
+slow fetch from restoring data invalidated during its request. A fresh or busy
+outcome need not contain fetched rows: readers decide whether to reuse a snapshot
+or go live. Network enumeration belongs in the supplied fetcher.
+"""
 
 from __future__ import annotations
 

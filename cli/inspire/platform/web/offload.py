@@ -1,4 +1,15 @@
-"""Context-scoped local I/O offloads; SDK clients own their worker lifetime."""
+"""Offload blocking preparation without moving SDK business logic into workers.
+
+Each async SDK client owns up to four lazy worker threads, independent of native
+network concurrency. They handle local files, cache locks, request preparation
+and output sinks. The cached SSH bridge probe is also offloaded as a whole and
+may wait for tunnel reachability; this is not a strict local-files-only boundary.
+Standalone async callers without current_pool use asyncio.to_thread instead.
+
+Cancelling a waiter cannot interrupt a running Python function. The pool keeps
+its concurrent futures so client shutdown can join them before releasing state;
+shutdown may therefore outlast a cancelled operation's timeout.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +23,7 @@ LOCAL_IO_WORKERS = 4
 
 
 class OffloadPool:
-    """Small lazy pool for local I/O, never for SDK business logic or network I/O."""
+    """Bound worker count, not submissions; queued work can exceed four calls."""
 
     def __init__(self) -> None:
         self._executor = ThreadPoolExecutor(

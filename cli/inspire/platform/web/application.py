@@ -1,4 +1,11 @@
-"""Borrowed HTTP connection for non-console applications."""
+"""Private cookie jars for application HTTP under the caller's request policy.
+
+TensorBoard data and Jupyter Contents need application cookies without adding
+them to the console session. A borrowed connection routes sends through Transport
+for deadlines, renewal and single-send classification, but returns a response
+object rather than decoding a console envelope. Platform-cookie renewal preserves
+application cookies; a rejected application cookie is not proof of a failed write.
+"""
 
 from __future__ import annotations
 

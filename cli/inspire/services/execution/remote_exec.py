@@ -1,4 +1,16 @@
-"""Browser-free command execution shared by SDK workloads."""
+"""Browser-free command execution and capture shared by SDK workloads.
+
+PTY and Jupyter use completion markers because a closed socket does not prove
+that the command finished. SSH uses its local process exit status, which can
+also report a connection failure. Neither closing a connection nor cancelling
+an async reader guarantees that a dispatched remote command stopped.
+
+Notebook auto selection only probes cached bridges; bridge creation belongs to
+the CLI. Synchronous and native async readers share command construction and
+capture rules, with callbacks delivered in order and full sinks independent of
+the bounded in-memory capture. File transfer publication belongs to
+inspire.services.execution.notebook_transfer.
+"""
 
 from __future__ import annotations
 
@@ -48,6 +60,15 @@ from inspire.services.execution.notebook_targets import read_target_cache
 
 @dataclass(frozen=True)
 class ExecResult:
+    """Transport completion and bounded decoded output, not proof of workload health.
+
+    completed distinguishes a recognized command end from timeout/disconnection;
+    an SSH connection error can still produce a local exit status. PTY output is
+    merged, while SSH can retain separate stdout/stderr. A truncated capture may
+    coexist with a complete output sink; total_output_bytes counts decoded output
+    as UTF-8 bytes before capture trimming, not network traffic.
+    """
+
     returncode: int
     output: str
     stdout: str

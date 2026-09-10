@@ -52,15 +52,15 @@ SDK 面向能访问平台的本机或控制节点。运行环境需满足网络�
 
 ## 架构
 
-依赖方向为 `sdk → services → platform`；CLI 也复用 services 与 platform，平台层和服务层不得导入 SDK。共享 dispatcher 位于 `inspire.platform.web.transport`，`inspire.platform.web.transport` 保留兼容重导出及既有补丁入口。与传输共用的异常基础层位于 `inspire.platform.errors`，SDK 的 `exceptions` 重导出同一批类；携带 SDK 资源模型的工作负载失败异常仍由 SDK 定义。
+依赖方向为 `sdk → services → platform`；CLI 也复用 services 与 platform，平台层和服务层不得导入 SDK。请求决策与认证 workflow 位于 `inspire.platform.web.transport_core`；`inspire.platform.web.transport` 持有调用方状态并执行同步驱动，`inspire.platform.web.transport_async` 提供原生异步驱动。兼容重导出及既有补丁入口保留在 transport 中。与传输共用的异常基础层位于 `inspire.platform.errors`，SDK 的 `exceptions` 重导出同一批类；携带 SDK 资源模型的工作负载失败异常仍由 SDK 定义。
 
-两种前端共用一次 HTTP／浏览器发送路径，以独立响应策略保留异常类型和原始消息。SDK 与 CLI 的连接所有权、Referer、超时格式及请求体规则保持各自既有语义。CLI 的暂时 HTTP 状态仍是固定集合 `408/425/429/500/502/503/504`。重试循环显式保留两种策略的分支：CLI 刷新／浏览器回退不消耗暂时错误重试次数，SDK 按尝试次数与剩余截止时间计费；写请求发送后在进入这些分支前直接分类退出。
+两种前端共用请求决策程序和响应策略定义；同步与异步驱动分别提供 HTTP／浏览器 I/O，以策略分支保留异常类型和原始消息。SDK 与 CLI 的连接所有权、Referer、超时格式及请求体规则保持各自既有语义。CLI 的暂时 HTTP 状态仍是固定集合 `408/425/429/500/502/503/504`。重试循环显式保留两种策略的分支：CLI 刷新／浏览器回退不消耗暂时错误重试次数，SDK 按尝试次数与剩余截止时间计费；写请求发送后在进入这些分支前直接分类退出。
 
 Session 层为传输提供公开的浏览器创建／获取／关闭、运行时错误报告、原地刷新与无凭据续期入口。刷新中的 `acquire_web_session` 与普通 `get_web_session` 有意区分：前者供已持有刷新锁的调用者使用，不触发前端 adoption；后者获取刷新锁并通知当前前端。CLI 刷新原地更新既有 WebSession，保留调用方持有的对象；SDK 刷新通过 adoption 接收新的 WebSession，并重新配置自己持有的 HTTP 连接。
 
-browser_api 的控制台 v2 JSON 请求通过 `runtime.get_transport(session).request(...)`，数据广场请求通过同一 Transport 的 `plaza_request(...)`，实际发送共用 `_dispatch`。ContextVar 仍用于选择当前 Transport／CLI 会话接纳器；它不再承载一条 SDK 专用请求回调或在两套 dispatcher 之间分流。
+browser_api 的控制台 v2 JSON 请求通过 `inspire.platform.web.runtime.get_transport(session).request(...)`，数据广场通过同一 Transport 的 `plaza_request(...)` workflow。控制台发送调用 `_dispatch`，广场及应用请求则在各自 workflow 中标记 `SharedState.dispatched()`；它们共用写入状态和结果分类，并非每次发送都调用 `_dispatch`。runtime 的 ContextVar 选择当前 Transport／CLI 会话接纳器；`inspire.platform.web.flow.async_call` 则在同一线程上把挂起的调用交给异步驱动，不在 CLI／SDK 两套请求实现间分流。
 
-数据广场有独立主机和 CAS 服务票据握手，内部仍有 `PlazaClient`、`requests.Session` 与 `datasets-session` Cookie，但它们由所属 Transport 持有、按账号与会话代次隔离并负责关闭。SDK 没有另一套独立生命周期的数据广场客户端，也不把它的 Cookie 混入控制台 HTTP 会话。Cookie 被拒时先重做广场握手，再升级到平台会话续期；广场使用自己的信封解包和重试分类，不走浏览器请求回退。远程 exec 的 websocket／SSH 是独立协议，执行数据流不经过 JSON dispatcher；TensorBoard 应用自身的读取接口也是独立数据路径，见其门面说明。
+数据广场有独立主机和 CAS 服务票据握手，内部仍有 `PlazaClient`、`requests.Session` 与 `datasets-session` Cookie，但它们由所属 Transport 持有、按账号与会话代次隔离并负责关闭。SDK 没有另一套独立生命周期的数据广场客户端，也不把它的 Cookie 混入控制台 HTTP 会话。Cookie 被拒时先重做广场握手，再升级到平台会话续期；广场使用自己的信封解包和重试分类，不走浏览器请求回退。远程 exec 的 websocket／SSH 是独立协议，执行数据流不经过 JSON dispatcher；TensorBoard 应用读取与 Jupyter Contents 借用独立 Cookie jar，但其 HTTP 请求仍经过 Transport 的预算、续期和重试策略，见其门面说明。
 
 ## 账号与会话
 
@@ -128,7 +128,7 @@ finally:
 
 构造函数不做 I/O；进入 `async with` 或首次调用时，在事件循环线程读取本地配置、固定账号，并仅保存一次显式凭据。账号、超时和缓存配置错误在此时抛出，完成后可读 `account` 和 `base_url`。每次操作使用独立的预算、写入状态和名称解析上下文，异步连接按请求／操作生命周期关闭；客户端共享目录缓存和已获取的认证快照。`await client.cache.clear()` 清空该缓存并保留计数，`await client.cache.stats()` 返回其 hits／misses／entries。`Accounts` 仍是同步账号管理 API。
 
-异步路径的本地 I/O 按操作卸载到**客户端独占、最多 4 个 worker 的有界线程池**，不借用应用的默认 executor。线程按需启动并在调用间复用；固定 4 个 worker 为短时文件与证书处理提供适度并行，同时限制每客户端的线程开销，不随请求数或 CPU 数量增长。此池只处理本地 I/O 和相关 CPU 工作，不承载业务流程或等待远端请求；原生网络并发不受池大小限制。卸载范围包括：目录缓存的完整锁／读／写／失效操作（包括 RAM 命中时的跨进程校验）、会话缓存、续期配置和账号读取、认证锁文件操作及登录保护的 PBKDF2、`init()` 配置读写、文件传输的检查／读取／暂存／发布、`output_to` 打开／写入／关闭。SSH 桥接可用性探测仍整段卸载；SSH exec 和 SCP 本身使用 asyncio 子进程与异步流读取。浏览器登录和同步登录执行相同的表单选择、提交顺序、认证轮询与错误分类，异步客户端使用 Playwright async API。
+异步路径的本地 I/O 按操作卸载到**客户端独占、最多 4 个 worker 的线程池**，不借用应用的默认 executor。线程按需启动并在调用间复用；固定 4 个 worker 为短时文件与证书处理提供适度并行，同时限制每客户端的线程开销，不随请求数或 CPU 数量增长。此池主要处理本地 I/O 和相关 CPU 工作，不承载完整业务流程；SSH 桥接可用性探测是例外，它整段卸载并可能等待隧道可达性。原生网络并发不受池大小限制，4 的上限约束 worker 数量，不约束排队任务数量。卸载范围包括：目录缓存的完整锁／读／写／失效操作（包括 RAM 命中时的跨进程校验）、会话缓存、续期配置和账号读取、认证锁文件操作及登录保护的 PBKDF2、`init()` 配置读写、文件传输的检查／读取／暂存／发布、`output_to` 打开／写入／关闭。SSH 桥接可用性探测仍整段卸载；SSH exec 和 SCP 本身使用 asyncio 子进程与异步流读取。浏览器登录和同步登录执行相同的表单选择、提交顺序、认证轮询与错误分类，异步客户端使用 Playwright async API。
 
 HTTP 请求准备中的配置读取与环境设置解析在工作线程执行。netrc 按客户端与目标 authority 首次读取后缓存，证书上下文按客户端与 TLS 配置缓存（包括 HTTPS 代理）；首次加载也在工作线程。更新 netrc 或原路径中的证书文件后，应重建客户端读取新值。Websocket 的代理解析和每次连接的证书加载也卸载到线程。
 
@@ -206,7 +206,7 @@ finished_all = await asyncio.gather(*handles)         # 并发等待全部句柄
 
 `handle.wait()` 是协程方法，接受对应门面 wait 的全部关键字参数，默认值及返回对象完全相同；例如 Notebook 支持 `target`，镜像等待仅支持对应的 timeout／poll_interval 等参数，不额外添加 `raise_on_failure`。
 
-**取消等待只会停止轮询，不会停止远端工作负载；任务继续运行，也可能继续计费。** `await handle`、`handle.wait()`、`future()` 的取消均如此。要释放计算资源，显式调用 `await client.jobs.stop(handle.ref)` 或对应工作负载门面的 `stop()`；句柄没有 `cancel()` 方法。
+**取消等待只会停止轮询，不会停止远端工作负载；任务继续运行，也可能继续计费。** `await handle`、`handle.wait()`、`future()` 的取消均如此。要释放计算资源，显式调用 `await client.jobs.stop(handle.ref)` 或对应工作负载门面的 `stop()`；句柄没有 `cancel()` 方法。镜像句柄仅观察 readiness：保存镜像的取消需单独调用 `notebooks.cancel_save_image(handle.notebook)`，`Images` 没有 `stop()`；镜像等待也没有 `raise_on_failure` 参数，而是沿用镜像 readiness 接口的错误合同。
 
 等待会轮询平台，不是订阅，也不是零成本操作；它沿用门面 wait 的请求预算、总等待超时和会话续期规则。可以反复 await 同一句柄，每次重新读取状态并等待；已处于对应终态／目标状态时，下一次读取后即可返回，不缓存上次结果。工作负载的默认 `raise_on_failure=False` 意味着**失败时返回失败对象而非抛异常**，这一点与通常用 Future 表示失败的习惯不同；设置 True 才抛对应 SDK 失败异常。镜像等待继续沿用其门面自己的异常规则。
 
@@ -744,7 +744,7 @@ Jupyter 使用单个 base64 JSON 请求／响应，文本和二进制均按原�
 
 - `local` 接受 `str` 或 `pathlib.Path`。目标参数总是完整目标文件／目录路径，不采用 SCP 的“已有目录下再追加源文件名”规则。自动创建父目录；SSH 递归覆盖会合并目录、保留目标中未涉及的文件。
 - **两种传输的 `remote` 含义一致**：绝对路径是 Notebook 容器内的真实绝对路径；相对路径以 Jupyter Contents 根目录为基准，与 SSH 用户 home 无关。例如根为 `/inspire/project/work` 时，`remote="data/x"` 和 `remote="/inspire/project/work/data/x"` 在 Jupyter、SSH 和 `auto` 中都指同一个文件。返回值 `remote` 保留调用方原始请求，`remote_path` 在两种写法下均为 `/inspire/project/work/data/x`。
-- SDK 从 JupyterLab 页面配置的 `serverRoot` 发现根目录，在客户端生命周期内按 Notebook 缓存。Jupyter 复用已有的入口请求，SSH 相对路径仅首次发现时访问 Jupyter，后续传输不增加根目录发现请求。缺失或无效配置会明确失败，不猜测根目录；此时可用绝对路径配合 `transport="ssh"`，该组合不依赖 Jupyter。
+- SDK 从 JupyterLab 页面配置的 `serverRoot` 发现根目录。同步客户端在 Notebook 门面生命周期内按 Notebook 缓存；异步操作会创建新门面，因此不同操作之间重新发现根目录。Jupyter 复用已有的入口请求；同步 SSH 相对路径仅首次发现时访问 Jupyter，异步 SSH 相对路径每次操作都需发现。缺失或无效配置会明确失败，不猜测根目录；此时可用绝对路径配合 `transport="ssh"`，该组合不依赖 Jupyter。
 - Jupyter 只能访问根目录内可由 Contents API 表达的路径：SDK 将根内绝对路径转成根相对路径，根外路径（例如根为 `/inspire/project/work` 时的 `/tmp/x`）会拒绝并提示 `transport="ssh"`，不会去掉开头 `/` 后写到另一处。`auto` 选中 Jupyter 时遵守同一限制；访问根外文件请显式使用 SSH。
 - 两种 `exec` 连接的是同一个容器，但默认工作目录不同：Jupyter 终端通常从 Jupyter 根目录启动，SSH 从用户 home（常见为 `/root`）启动。上传后执行命令，建议使用绝对文件路径；若命令引用相对路径，显式传 `cwd="<Jupyter 根目录>"`，两种 exec 才会从同一目录查找。上传／下载的相对路径规则不会改变 exec 的默认工作目录。
 - 拒绝所有 `..` 路径分段（包括编码形式）、反斜杠及控制字符。空格、中文和 URL／shell 特殊字符按字面处理：Contents 路径做 URL 编码，SSH 控制命令的 JSON 参数做 shell 引用，SCP 仅看到 SDK 生成的安全临时远端路径。SSH 不支持源或目标路径中的符号链接；Jupyter 的根目录及符号链接访问边界仍由服务器执行。
@@ -755,7 +755,7 @@ Jupyter 使用单个 base64 JSON 请求／响应，文本和二进制均按原�
 
 ### tensorboards
 
-TensorBoard 资源的创建、状态和生命周期查询走共享控制台传输；`tags`／`scalars` 的运行目录、标签和标量数据来自 TensorBoard 应用自身的 HTTP 接口。同步应用读取通过共享 `build_requests_session` 构造临时会话并执行 GET，不经过 `Transport.request()`；该临时会话不属于 Transport 持有的连接池。同步路径每次应用 GET 默认超时为 60 秒，不继承客户端 `timeout` 或剩余 `operation_timeout`，也没有该 dispatcher 的续期／重试保证。异步形式通过原生 HTTP 驱动执行，并将请求超时限制在剩余操作预算内。`points` 只裁剪结果中的尾部点集，底层会读取相应系列再汇总。
+TensorBoard 资源的创建、状态和生命周期查询走共享控制台传输；`tags`／`scalars` 的运行目录、标签和标量数据来自 TensorBoard 应用自身的 HTTP 接口。两种执行模式均通过 `Transport.application_connection()` 借用独立的临时 Cookie jar；GET 经 `ApplicationConnection.request()` 进入 `Transport.request()`，受共享 READ 重试、续期和操作预算约束。底层 helper 提议的超时为 60 秒，SDK 实际请求还受客户端 `timeout` 及剩余 `operation_timeout` 限制。jar 在上下文退出时关闭，应用 Cookie 不混入控制台会话；异步形式在相同 workflow 中使用原生 HTTP I/O。`points` 只裁剪结果中的尾部点集，底层会读取相应系列再汇总。
 
 同步用 `client.tensorboards.方法(...)`；异步用 `await client.tensorboards.方法(...)`，本节全部参数、默认值与返回模型相同。
 
@@ -1008,11 +1008,11 @@ SDK 的 notebooks 门面不提供平台程序日志接口；`metrics` 返回 `tu
 
 ## 错误与时间预算
 
-进入 SDK JSON 写入块时，若 `Transport.request()` 从未返回响应，或距上次返回已满 60 秒，SDK 先通过普通 READ 路径执行一次 `GetUserDetail` 探测，必要时先续期再发送写入；60 秒内已有返回响应则省略探测；此时间戳不代表业务操作一定成功，广场响应也不更新该时间戳。探测共享时间预算，其刷新与重试不计入写请求的单次发送。探测失败时不发送写入；写入发出后即使收到 401 也绝不重放，创建抛 `SubmissionUncertainError`，其他变更抛 `MutationUncertainError`。
+进入 SDK JSON 写入块时，若该 Transport 尚无返回响应记录，或距上次记录已满 60 秒，SDK 先通过普通 READ 路径执行一次 `GetUserDetail` 探测，必要时先续期再发送写入；60 秒内已有返回响应则省略探测；此时间戳不代表业务操作一定成功：控制台／应用请求到达 `_finish` 时更新，广场成功解包后也调用 `_finish` 更新它。探测共享时间预算，其刷新与重试不计入写请求的单次发送。探测失败时不发送写入；写入发出后即使收到 401 也绝不重放，创建抛 `SubmissionUncertainError`，其他变更抛 `MutationUncertainError`。
 
 SDK 定义的异常（包括 `NotebookFailedError`）均从 `InspireError` 派生。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
 
-`timeout` 控制单次请求预算，`operation_timeout` 控制普通操作的协作式总预算，`wait(timeout=...)` 设置整个等待预算；嵌套调用使用更早截止时间。控制台 Transport 的请求、退避和账号刷新锁等待共享剩余预算；TensorBoard 应用 GET 是上述独立超时路径。同步网络库的底层调用和已有浏览器登录流程不能被强制抢占，显式允许浏览器时登录可能超出总预算；这些参数不是硬实时取消保证。需要硬隔离的编排器应使用独立进程，并在超时后核查任何可能已发送的写请求。
+`timeout` 控制单次请求预算，`operation_timeout` 控制普通操作的协作式总预算，`wait(timeout=...)` 设置整个等待预算；嵌套调用使用更早截止时间。控制台 Transport 的请求、退避和账号刷新锁等待共享剩余预算；TensorBoard 应用 GET 与 Jupyter Contents 请求也使用该预算。同步网络库的底层调用和已有浏览器登录流程不能被强制抢占，显式允许浏览器时登录可能超出总预算；这些参数不是硬实时取消保证。需要硬隔离的编排器应使用独立进程，并在超时后核查任何可能已发送的写请求。
 
 传输策略由调用方声明：普通 `operation` 进入 `Transport.scope(timeout=...)`，按 READ 处理。READ 对 requests 异常、HTTP 429/5xx、共享 `_is_transient_v2_error_code` 判定的 v2 暂时错误最多尝试三次，退避与请求共用截止时间。HTTP 401/3xx 无论 allow_browser 设置均允许一次上述会话刷新，重试仍失效则抛 AuthenticationError；requests 层失败也只有显式允许浏览器才可换通道。
 

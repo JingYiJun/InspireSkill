@@ -1,4 +1,15 @@
-"""Notebook file transfer primitives; no bridge creation or browser fallback."""
+"""Path validation, inventories and staged publication for notebook transfers.
+
+The SDK chooses SSH or Jupyter and resolves paths before reaching these helpers.
+A destination names the exact file or directory, not a parent to append a basename
+to. Jupyter path translation preserves container identity and refuses paths outside
+serverRoot; terminal cwd is not evidence of that root.
+
+SSH requires remote python3 and space for a full copy in /tmp. Files publish
+atomically, but directory merges have no rollback and do not snapshot a changing
+source. Cleanup is best effort within the remaining budget: cancellation or a lost
+connection can leave remote staging files. Bridge creation belongs to the CLI.
+"""
 from __future__ import annotations
 
 from inspire.platform.web.flow import blocking_io, blocking_call, call, perform_sync
@@ -26,8 +37,13 @@ DEFAULT_JUPYTER_MAX_BYTES = 16 * 1024 * 1024
 
 @dataclass(frozen=True)
 class TransferResult:
-    """Completed transfer: remote is the caller's request, remote_path its
-    resolved container-absolute location (destination on upload, source on download).
+    """A completed transfer, with both the requested and resolved remote path.
+
+    SDK remote preserves the caller's spelling; remote_path is the absolute
+    container destination on upload or source on download. Use the latter with
+    exec because command cwd may differ. bytes_transferred counts file content,
+    not base64 or protocol overhead; directories themselves do not count as files.
+    This result does not promise a transactional directory snapshot.
     """
 
     local: str
@@ -170,6 +186,13 @@ def transfer_ssh(
     *, local: str, remote: str, download: bool, recursive: bool,
     overwrite: bool, bridge_name: str, account: str, timeout: float,
 ) -> TransferResult:
+    """Stage via SCP and publish complete files at an already resolved remote path.
+
+    Caller-side path resolution must happen first: this layer does not discover
+    Jupyter serverRoot. Directory merges may publish some files before failing.
+    The remote helper is built from inventory/publish so both ends enforce the
+    same rules; remote python3 and temporary disk space are required.
+    """
     import inspect
 
     deadline = time.monotonic() + timeout

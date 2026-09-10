@@ -262,7 +262,6 @@ def _stream_process(ssh_cmd, script, output_callback, stderr_callback, timeout, 
 
     try:
         for line in iter_process_lines(process, stdout):
-            # Check timeout
             if timeout is not None:
                 elapsed = time.time() - start_time
                 if elapsed >= timeout:

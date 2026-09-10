@@ -1,4 +1,14 @@
-"""Per-client catalog snapshots. Exceptions and incomplete catalogs are never stored."""
+"""Catalogue snapshots with optional shared storage and per-client accounting.
+
+RAM-only mode stores loader results for catalog_ttl. Disk mode routes identity
+and price rows through inspire.sdk.identity_cache; only the remaining metadata
+uses inspire.sdk.catalog_store. A shared read validates the disk snapshot before
+counting a RAM hit, so a cache clear in another process is not ignored.
+
+Loaders must reject incomplete results before returning: this layer does not
+infer completeness from a list. Exceptions are never stored. Workload status,
+logs and other live observations do not belong in this cache.
+"""
 
 from __future__ import annotations
 

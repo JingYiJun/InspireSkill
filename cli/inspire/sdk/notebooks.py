@@ -185,14 +185,16 @@ class Notebooks(Service):
         """Upload a file, or recursively transfer a directory over cached SSH.
 
         Small files without a bridge: Jupyter. Large files/directories: SSH.
-        Auto prefers reachable cached SSH; never creates a bridge. Jupyter
-        holds the entire base64 JSON body (~4/3 file size plus copies), has
+        Auto prefers reachable cached SSH; it does not choose by file size
+        or create a bridge. Jupyter holds the entire base64 JSON body
+        (~4/3 file size plus copies), has
         no resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.
         On both transports, relative remote paths start at the discovered
         Jupyter contents root; absolute paths name container files unchanged.
         Jupyter cannot reach paths outside its root: use transport="ssh".
-        The root is cached per notebook for this client's lifetime. '..' is
-        rejected. The result's remote preserves the caller's request;
+        The synchronous facade caches the root per notebook for its lifetime;
+        async calls use fresh facade views and rediscover it. '..' is rejected.
+        The result's remote preserves the caller's request;
         remote_path is the resolved container-absolute destination (upload)
         or source (download). Exec shares the container, but Jupyter starts
         at its root and SSH at the user's home (often /root), so a relative
@@ -251,14 +253,16 @@ class Notebooks(Service):
         """Download a file, or recursively transfer a directory over cached SSH.
 
         Small files without a bridge: Jupyter. Large files/directories: SSH.
-        Auto prefers reachable cached SSH; never creates a bridge. Jupyter
-        holds the entire base64 JSON body (~4/3 file size plus copies), has
+        Auto prefers reachable cached SSH; it does not choose by file size
+        or create a bridge. Jupyter holds the entire base64 JSON body
+        (~4/3 file size plus copies), has
         no resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.
         On both transports, relative remote paths start at the discovered
         Jupyter contents root; absolute paths name container files unchanged.
         Jupyter cannot reach paths outside its root: use transport="ssh".
-        The root is cached per notebook for this client's lifetime. '..' is
-        rejected. The result's remote preserves the caller's request;
+        The synchronous facade caches the root per notebook for its lifetime;
+        async calls use fresh facade views and rediscover it. '..' is rejected.
+        The result's remote preserves the caller's request;
         remote_path is the resolved container-absolute destination (upload)
         or source (download). Exec shares the container, but Jupyter starts
         at its root and SSH at the user's home (often /root), so a relative

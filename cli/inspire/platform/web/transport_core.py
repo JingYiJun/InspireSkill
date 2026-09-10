@@ -1,4 +1,15 @@
-"""Sans-I/O JSON request decisions; all time and I/O outcomes come from drivers."""
+"""Request policy and resumable authentication shared by both I/O drivers.
+
+RequestCore yields decisions: observe a session generation, send, refresh or
+wait. The blocking driver in inspire.platform.web.transport and the native
+async driver in inspire.platform.web.transport_async return outcomes to the
+same program, so retry and single-send rules cannot drift between them.
+The core never infers write safety from an HTTP verb or an Action name.
+
+The workflows below RequestCore describe acquisition and the 数据广场 handshake
+with calls from inspire.platform.web.flow. They also contain local state and
+persistence steps; the whole module is not a pure Sans-I/O state machine.
+"""
 
 from __future__ import annotations
 
@@ -166,6 +177,14 @@ Program = Generator[Action, Any, None]
 
 
 class RequestCore:
+    """Decide retries from driver outcomes, with one write claim per scope.
+
+    Drivers must mark dispatch before sending: a failure before dispatch can be
+    reported directly, while an unclassified failure after it is uncertain.
+    CLI refresh/browser fallback and SDK attempt budgets intentionally differ;
+    they are branches of this program, not separate request implementations.
+    """
+
     def __init__(
         self,
         shared: SharedState,
