@@ -33,7 +33,7 @@ def contents(client, monkeypatch):
     def request(method, url, **options):
         calls.append((method, url, options))
         if url == base + "lab":
-            return SimpleNamespace(status_code=200)
+            return SimpleNamespace(status_code=200, text='<script id="jupyter-config-data">{"serverRoot":"/"}</script>')
         assert options["headers"]["X-XSRFToken"] == "fake-xsrf"
         path = unquote(urlsplit(url).path.split("api/contents/", 1)[1])
         status = 200
@@ -74,7 +74,7 @@ def test_jupyter_round_trip(client, contents, tmp_path, data):
     target = tmp_path / "new parent" / "target"
     back = client.notebooks.download(ref, local=target, remote=remote)
     assert target.read_bytes() == data
-    assert result == TransferResult(str(source), remote, len(data), "jupyter", 1)
+    assert result == TransferResult(str(source), remote, len(data), "jupyter", 1, remote_path="/" + remote)
     assert back.bytes_transferred == len(data)
     assert contents[0]["parent space"]["type"] == "directory"
     assert contents[0]["parent space/中文"]["type"] == "directory"
@@ -197,10 +197,12 @@ def test_explicit_transport_and_recursive_hint(client, contents, tmp_path):
         client.notebooks.download(ref, local=tmp_path / "x", remote="x", recursive=True)
 
 
-def test_async_real_application_dispatch(client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("absolute", [False, True])
+def test_async_real_application_dispatch(client, monkeypatch, tmp_path, absolute):
     from inspire.sdk import _async_runtime
     from inspire.platform.web.browser_api import notebooks
 
+    remote = "/project/dir/file" if absolute else "dir/file"
     models = {}
     requests_seen = []
     monkeypatch.setattr(_async_runtime, "InspireClient", lambda **kw: client)
@@ -210,7 +212,8 @@ def test_async_real_application_dispatch(client, monkeypatch, tmp_path):
     async def send(_http, request, **kwargs):
         requests_seen.append(request)
         if request.url.path.endswith("/lab"):
-            return httpx.Response(200, headers={"set-cookie": "_xsrf=fake; Path=/"}, request=request)
+            return httpx.Response(200, text='<script id="jupyter-config-data">{"serverRoot":"/project"}</script>',
+                                  headers={"set-cookie": "_xsrf=fake; Path=/"}, request=request)
         assert request.headers["X-XSRFToken"] == "fake"
         path = request.url.path.split("api/contents/", 1)[1]
         if request.method == "PUT":
@@ -229,13 +232,16 @@ def test_async_real_application_dispatch(client, monkeypatch, tmp_path):
     async def scenario():
         async with InspireAsyncClient("alpha") as ac:
             ref = job_ref(client, NotebookRef)
-            result = await ac.notebooks.upload(ref, local=source, remote="dir/file")
-            back = await ac.notebooks.download(ref, local=target, remote="dir/file")
+            result = await ac.notebooks.upload(ref, local=source, remote=remote)
+            back = await ac.notebooks.download(ref, local=target, remote=remote)
             assert isinstance(result, TransferResult)
             assert result.bytes_transferred == back.bytes_transferred == source.stat().st_size
             assert result.transport == back.transport == "jupyter"
+            assert result.remote == back.remote == remote
+            assert result.remote_path == back.remote_path == "/project/dir/file"
     asyncio.run(scenario())
     assert target.read_bytes() == source.read_bytes()
+    assert set(models) == {"dir", "dir/file"}
     assert len([r for r in requests_seen if r.method == "PUT"]) == 2
 
 
@@ -253,6 +259,8 @@ def test_async_ssh_round_trip(client, ssh, monkeypatch, tmp_path):
             down = await ac.notebooks.download(ref, local=target, remote=str(remote))
             assert up.bytes_transferred == down.bytes_transferred == source.stat().st_size
             assert up.transport == down.transport == "ssh"
+            assert up.remote == down.remote == str(remote)
+            assert up.remote_path == down.remote_path == str(remote)
     asyncio.run(scenario())
     assert target.read_bytes() == source.read_bytes()
 
@@ -284,7 +292,8 @@ def test_jupyter_failed_put_is_not_replayed(client, monkeypatch, tmp_path):
         response = requests.Response()
         response.url = request.url
         response.status_code = 200 if request.url.endswith("/lab") else 404
-        response._content = b"{}"
+        response._content = (b'<script id="jupyter-config-data">{"serverRoot":"/"}</script>'
+                             if request.url.endswith("/lab") else b"{}")
         if request.method == "PUT":
             puts.append(request)
             raise requests.ConnectionError("response lost")
@@ -349,3 +358,228 @@ def test_symlink_parent_cannot_escape_publication_directory(tmp_path):
     with pytest.raises(ValueError, match="symbolic link"):
         core.publish(source, link / "escaped", True)
     assert not (outside / "escaped").exists()
+
+
+@pytest.fixture
+def shared_container(client, ssh, monkeypatch, tmp_path):
+    """Both real transfer adapters share a disk; only their starting roots differ."""
+    root = tmp_path / "jupyter root"
+    home = tmp_path / "ssh home"
+    root.mkdir()
+    home.mkdir()
+    monkeypatch.chdir(home)
+    lab = "https://example.invalid/proxy/lab"
+    calls = []
+
+    def request(method, url, **options):
+        calls.append((method, url))
+        if url == lab:
+            page = '<script id="jupyter-config-data" type="application/json">' + json.dumps({"serverRoot": str(root)}) + '</script>'
+            return SimpleNamespace(status_code=200, text=page)
+        relative = unquote(urlsplit(url).path.split("api/contents/", 1)[1])
+        path = root / relative
+        if method == "PUT":
+            model = options["json"]
+            if model["type"] == "directory":
+                path.mkdir()
+            else:
+                path.write_bytes(base64.b64decode(model["content"]))
+            return SimpleNamespace(status_code=201)
+        if not path.exists():
+            return SimpleNamespace(status_code=404, json=lambda: {})
+        model = {"type": "directory" if path.is_dir() else "file", "size": path.stat().st_size}
+        if path.is_file() and options.get("params", {}).get("content") != 0:
+            model.update(format="base64", content=base64.b64encode(path.read_bytes()).decode())
+        return SimpleNamespace(status_code=200, json=lambda: model)
+
+    @contextmanager
+    def connection(url):
+        yield SimpleNamespace(cookies={"_xsrf": "fake"}, request=request,
+                              get=lambda url, **kw: request("GET", url, **kw))
+
+    def execute(transport, **kwargs):
+        proc = subprocess.run(kwargs["command"], shell=True, cwd=root if transport == "jupyter" else home,
+                              capture_output=True, text=True)
+        return remote_exec.ExecResult(proc.returncode, proc.stdout + proc.stderr,
+                                     proc.stdout, proc.stderr, True, transport)
+
+    monkeypatch.setattr(sdk, "_notebook_jupyter_url", lambda *a: lab)
+    monkeypatch.setattr(client._transport, "application_connection", connection)
+
+    async def execute_jupyter_async(**kwargs):
+        return execute("jupyter", **kwargs)
+
+    monkeypatch.setattr(remote_exec, "exec_in_notebook_jupyter_async", execute_jupyter_async)
+    monkeypatch.setattr(remote_exec, "exec_in_notebook_jupyter", lambda **kw: execute("jupyter", **kw))
+    monkeypatch.setattr(remote_exec, "exec_in_notebook_ssh", lambda **kw: execute("ssh", **kw))
+    return root, home, calls
+
+
+@pytest.mark.parametrize("upload_transport,download_transport", [("jupyter", "ssh"), ("ssh", "jupyter")])
+@pytest.mark.parametrize("absolute", [True, False])
+def test_cross_transport_same_file(client, shared_container, tmp_path, upload_transport, download_transport, absolute):
+    root, home, _ = shared_container
+    relative = "data/中文 #%.bin"
+    remote = str(root / relative) if absolute else relative
+    source, target = tmp_path / "source", tmp_path / "target"
+    data = bytes(range(256)) + b"\r\nunchanged\x00"
+    source.write_bytes(data)
+    ref = job_ref(client, NotebookRef)
+    client.notebooks.upload(ref, local=source, remote=remote, transport=upload_transport)
+    client.notebooks.download(ref, local=target, remote=remote, transport=download_transport)
+    assert target.read_bytes() == data
+    assert (root / relative).read_bytes() == data
+    assert not (home / relative).exists()
+
+
+@pytest.mark.parametrize("upload_transport", ["jupyter", "ssh"])
+@pytest.mark.parametrize("exec_transport", ["jupyter", "ssh"])
+@pytest.mark.parametrize("absolute", [True, False])
+def test_cross_transport_exec_observes_upload(client, shared_container, tmp_path, upload_transport, exec_transport, absolute):
+    root, _, _ = shared_container
+    remote = str(root / "data/file") if absolute else "data/file"
+    source = tmp_path / "source"
+    source.write_bytes(b"proof\r\n\x00\xff")
+    ref = job_ref(client, NotebookRef)
+    client.notebooks.upload(ref, local=source, remote=remote, transport=upload_transport)
+    result = client.notebooks.exec(ref, command="base64 " + shlex.quote(remote),
+                                   cwd=None if absolute else str(root), transport=exec_transport)
+    assert result.returncode == 0, result.output
+    assert base64.b64decode(result.stdout or result.output) == source.read_bytes()
+
+
+@pytest.mark.parametrize("download", [False, True])
+@pytest.mark.parametrize("transport", ["jupyter", "auto"])
+def test_cross_transport_outside_root_refused(client, shared_container, monkeypatch, tmp_path, download, transport):
+    root, _, calls = shared_container
+    monkeypatch.setattr(remote_exec, "cached_notebook_bridge", lambda **kw: None)
+    local = tmp_path / "local"
+    local.write_bytes(b"keep")
+    method = client.notebooks.download if download else client.notebooks.upload
+    with pytest.raises(ValidationError, match='outside.*Jupyter.*transport="ssh"'):
+        method(job_ref(client, NotebookRef), local=local, remote=str(root) + "-other/file", transport=transport)
+    assert local.read_bytes() == b"keep"
+    assert not any("api/contents/" in url for _, url in calls)
+
+
+@pytest.mark.parametrize("page", ["", "<html>login</html>", '<script id="jupyter-config-data">invalid</script>',
+                                  '<script id="jupyter-config-data">[]</script>'])
+def test_contents_root_missing_or_invalid(page):
+    with pytest.raises(ValueError, match='serverRoot.*transport="ssh"'):
+        core.jupyter_contents_root(page)
+
+
+@pytest.mark.parametrize("root", [None, 3, "relative", "", "//host/path", "/a/../b", "/a\n", "/a\\b"])
+def test_contents_root_rejects_invalid_paths(root):
+    with pytest.raises(ValueError, match='serverRoot.*transport="ssh"'):
+        core.jupyter_contents_root('<script id="jupyter-config-data">' + json.dumps({"serverRoot": root}) + '</script>')
+
+
+def test_contents_root_parses_page_config():
+    page = """<!doctype html><script>{"serverRoot":"/wrong"}</script>
+    <script type='application/json' id='jupyter-config-data'>
+    {"serverRoot": "/project space/中文/"}
+    </script><script>other()</script>"""
+    assert core.jupyter_contents_root(page) == "/project space/中文"
+    assert core.contents_path("/project space/中文/data", "/project space/中文") == "data"
+    assert core.contents_path("/data", "/") == "data"
+    with pytest.raises(ValueError, match="names the Jupyter contents root"):
+        core.contents_path("/project", "/project")
+
+
+def test_root_cached_per_notebook_and_client(client, shared_container, monkeypatch, tmp_path):
+    from dataclasses import replace
+    from inspire.sdk.notebooks import Notebooks
+
+    root, _, calls = shared_container
+    source = tmp_path / "source"
+    source.write_bytes(b"cache")
+    ref = job_ref(client, NotebookRef)
+    parses = []
+    parse = core.jupyter_contents_root
+
+    def discover(page):
+        parses.append(page)
+        return parse(page)
+
+    monkeypatch.setattr(core, "jupyter_contents_root", discover)
+    for transport in ("ssh", "ssh", "jupyter", "jupyter", "ssh"):
+        result = client.notebooks.upload(ref, local=source, remote="data/file", transport=transport)
+        assert result.remote == "data/file"
+    assert len(parses) == 1
+    # The first SSH transfer discovers the root; subsequent SSH transfers do no HTTP.
+    assert len([url for _, url in calls if url.endswith("/lab")]) == 3
+    client.notebooks.upload(replace(ref, key="another-notebook"), local=source, remote="data/file", transport="ssh")
+    assert len(parses) == 2
+    assert Notebooks(client)._contents_roots == {}
+    assert (root / "data/file").read_bytes() == b"cache"
+
+
+def test_absolute_and_relative_remote_are_aliases(client, shared_container, tmp_path):
+    root, _, _ = shared_container
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(b"same file")
+    ref = job_ref(client, NotebookRef)
+    client.notebooks.upload(ref, local=source, remote=str(root / "data/file"), transport="jupyter")
+    client.notebooks.download(ref, local=target, remote="data/file", transport="ssh")
+    assert target.read_bytes() == source.read_bytes()
+    with pytest.raises(ValidationError, match="already exists"):
+        client.notebooks.upload(ref, local=source, remote="data/file", transport="ssh", overwrite=False)
+
+
+def test_ssh_absolute_outside_root_needs_no_jupyter(client, ssh, monkeypatch, tmp_path):
+    monkeypatch.setattr(sdk, "_notebook_jupyter_url", lambda *a: pytest.fail("Jupyter lookup"))
+    source, remote, target = (tmp_path / name for name in ("source", "remote", "target"))
+    source.write_bytes(b"outside")
+    ref = job_ref(client, NotebookRef)
+    client.notebooks.upload(ref, local=source, remote=str(remote), transport="ssh")
+    client.notebooks.download(ref, local=target, remote=str(remote), transport="ssh")
+    assert target.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("transport", ["jupyter", "ssh"])
+@pytest.mark.parametrize("absolute", [False, True])
+@pytest.mark.parametrize("exec_transport", ["jupyter", "ssh"])
+def test_resolved_path_bridges_transfer_and_exec(
+    client, shared_container, monkeypatch, tmp_path,
+    asynchronous, transport, absolute, exec_transport,
+):
+    from inspire.sdk import _async_runtime
+
+    root, home, _ = shared_container
+    relative = "data/中文 ' model.bin"
+    expected = root / relative
+    # Keep the original request, including harmless normalization differences.
+    remote = str(expected) if absolute else "./data//中文 ' model.bin"
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(bytes(range(256)) + b"\r\n")
+    ref = job_ref(client, NotebookRef)
+
+    def command(uploaded):
+        assert uploaded.remote == remote
+        assert Path(uploaded.remote_path).is_absolute()
+        assert uploaded.remote_path == str(expected)
+        assert expected.read_bytes() == source.read_bytes()
+        assert not (home / relative).exists()
+        return "base64 " + shlex.quote(uploaded.remote_path)
+
+    async def scenario():
+        async with InspireAsyncClient("alpha") as ac:
+            uploaded = await ac.notebooks.upload(ref, local=source, remote=remote, transport=transport)
+            executed = await ac.notebooks.exec(ref, command=command(uploaded), transport=exec_transport)
+            downloaded = await ac.notebooks.download(ref, local=target, remote=remote, transport=transport)
+            return executed, downloaded
+
+    if asynchronous:
+        monkeypatch.setattr(_async_runtime, "InspireClient", lambda **kw: client)
+        executed, downloaded = asyncio.run(scenario())
+    else:
+        uploaded = client.notebooks.upload(ref, local=source, remote=remote, transport=transport)
+        executed = client.notebooks.exec(ref, command=command(uploaded), transport=exec_transport)
+        downloaded = client.notebooks.download(ref, local=target, remote=remote, transport=transport)
+    assert executed.returncode == 0, executed.output
+    assert base64.b64decode(executed.stdout or executed.output) == source.read_bytes()
+    assert downloaded.remote == remote
+    assert downloaded.remote_path == str(expected)
+    assert target.read_bytes() == source.read_bytes()

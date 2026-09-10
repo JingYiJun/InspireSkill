@@ -700,7 +700,26 @@ async with InspireAsyncClient("my-account") as client:
     print(downloaded.files_transferred, downloaded.bytes_transferred)
 ```
 
-返回从 `inspire` 和 `inspire.sdk` 导出的 frozen `TransferResult`：`local` 是本地绝对路径，`remote` 是规范化后的远端路径，`bytes_transferred` 为原始文件字节总数，`files_transferred` 为常规文件数量（单文件为 1，空目录为 0），`transport` 是实际使用的 `jupyter` 或 `ssh`。没有 `.to_dict()`，需要时用 `dataclasses.asdict()`。
+返回从 `inspire` 和 `inspire.sdk` 导出的 frozen `TransferResult`：`local` 是本地绝对路径，`remote` 原样保留调用方传入的请求路径，`remote_path` 是解析后的容器绝对路径（上传目标／下载源，两种传输及同步／异步客户端均填充），`bytes_transferred` 为原始文件字节总数，`files_transferred` 为常规文件数量（单文件为 1，空目录为 0），`transport` 是实际使用的 `jupyter` 或 `ssh`。没有 `.to_dict()`，需要时用 `dataclasses.asdict()`。
+
+两种 `exec` 传输共享容器，却从不同工作目录启动：Jupyter 通常在 Jupyter 根目录，SSH 在用户 home（常见为 `/root`）。因此命令中的相对路径与传输的相对 `remote` 不具有相同的基准。用返回的绝对路径连接上传与执行，无需知道这次选中了哪种传输：
+
+```python
+import shlex
+from pathlib import PurePosixPath
+
+result = client.notebooks.upload(ref, local="model.bin", remote="model.bin")
+client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")
+
+# 上面的 train.py 本身仍须能从命令工作目录找到。
+# 若 train.py 与 model.bin 放在同一目录，显式 cwd 可同时定位两者：
+client.notebooks.exec(
+    ref, command="python train.py model.bin",
+    cwd=str(PurePosixPath(result.remote_path).parent),
+)
+```
+
+异步客户端使用相同字段，在 upload、download 和 exec 调用前加 `await`；下载结果的 `remote_path` 同样可用于后续命令引用远端源文件。
 
 选择规则与 `exec` 相同，传输开始后失败不会换通道或重放整个传输：
 
@@ -717,7 +736,10 @@ Jupyter 使用单个 base64 JSON 请求／响应，文本和二进制均按原�
 路径和失败语义：
 
 - `local` 接受 `str` 或 `pathlib.Path`。目标参数总是完整目标文件／目录路径，不采用 SCP 的“已有目录下再追加源文件名”规则。自动创建父目录；SSH 递归覆盖会合并目录、保留目标中未涉及的文件。
-- Jupyter 的 `remote` 相对服务器 Contents 根，开头 `/` 也按该根解释；SSH 的绝对路径指 Notebook 文件系统，相对路径以 SSH 用户 home 为基准。使用 `auto` 时需确保两种根指向同一位置；根不同或访问 `/inspire/...` 绝对共享路径时显式选 SSH。
+- **两种传输的 `remote` 含义一致**：绝对路径是 Notebook 容器内的真实绝对路径；相对路径以 Jupyter Contents 根目录为基准，与 SSH 用户 home 无关。例如根为 `/inspire/project/work` 时，`remote="data/x"` 和 `remote="/inspire/project/work/data/x"` 在 Jupyter、SSH 和 `auto` 中都指同一个文件。返回值 `remote` 保留调用方原始请求，`remote_path` 在两种写法下均为 `/inspire/project/work/data/x`。
+- SDK 从 JupyterLab 页面配置的 `serverRoot` 发现根目录，在客户端生命周期内按 Notebook 缓存。Jupyter 复用已有的入口请求，SSH 相对路径仅首次发现时访问 Jupyter，后续传输不增加根目录发现请求。缺失或无效配置会明确失败，不猜测根目录；此时可用绝对路径配合 `transport="ssh"`，该组合不依赖 Jupyter。
+- Jupyter 只能访问根目录内可由 Contents API 表达的路径：SDK 将根内绝对路径转成根相对路径，根外路径（例如根为 `/inspire/project/work` 时的 `/tmp/x`）会拒绝并提示 `transport="ssh"`，不会去掉开头 `/` 后写到另一处。`auto` 选中 Jupyter 时遵守同一限制；访问根外文件请显式使用 SSH。
+- 两种 `exec` 连接的是同一个容器，但默认工作目录不同：Jupyter 终端通常从 Jupyter 根目录启动，SSH 从用户 home（常见为 `/root`）启动。上传后执行命令，建议使用绝对文件路径；若命令引用相对路径，显式传 `cwd="<Jupyter 根目录>"`，两种 exec 才会从同一目录查找。上传／下载的相对路径规则不会改变 exec 的默认工作目录。
 - 拒绝所有 `..` 路径分段（包括编码形式）、反斜杠及控制字符。空格、中文和 URL／shell 特殊字符按字面处理：Contents 路径做 URL 编码，SSH 控制命令的 JSON 参数做 shell 引用，SCP 仅看到 SDK 生成的安全临时远端路径。SSH 不支持源或目标路径中的符号链接；Jupyter 的根目录及符号链接访问边界仍由服务器执行。
 - `overwrite=False` 先检查目标，已存在即报错。本地单文件发布还用原子硬链接防止检查后被抢占。Jupyter 没有条件创建 API，因此远端预检查无法排除并发写入；调用方须保证目标没有其他写者。递归目录合并同样不提供并发隔离。
 - 下载和 SSH 上传先暂存，逐个文件在目标同目录写完后原子替换，因此中断写入不会暴露半个目标文件；目录合并是逐文件进行，失败前已完成的文件和已创建的父目录可能保留，不保证整个目录事务性回滚。SSH 在远端 `/tmp` 暂存完整副本，下载也需本地临时空间，发布时还需目标文件的临时副本空间；远端需要 `python3`。

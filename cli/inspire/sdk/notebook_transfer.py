@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, TYPE_CHECKING
 
@@ -25,6 +26,7 @@ def transfer(
         raise ValidationError("transport must be auto, jupyter, or ssh.")
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValidationError("max_bytes must be a positive integer.")
+    requested_remote = remote
     remote = core.remote_path(remote)
     path = Path(local).absolute()
     _validate_local(path, download, overwrite, recursive)
@@ -36,11 +38,16 @@ def transfer(
             account=service.client.account,
         ))
     if bridge is not None:
-        return perform_sync(call(core.transfer_ssh,
-            local=str(path), remote=remote, download=download, recursive=recursive,
+        ssh_remote = remote
+        if not PurePosixPath(remote).is_absolute():
+            root = _contents_root(service, resolved.key, timeout)
+            ssh_remote = str(PurePosixPath(root) / remote)
+        result = perform_sync(call(core.transfer_ssh,
+            local=str(path), remote=ssh_remote, download=download, recursive=recursive,
             overwrite=overwrite, bridge_name=bridge, account=service.client.account,
             timeout=min(timeout, service.client._transport.remaining()),
         ))
+        return replace(result, remote=requested_remote)
     if transport == "ssh":
         raise ValidationError(
             "No reachable cached SSH bridge. Run "
@@ -48,9 +55,29 @@ def transfer(
         )
     if recursive:
         raise ValidationError("Recursive transfers require transport='ssh' and a cached bridge.")
-    return jupyter_transfer(service, notebook_id=resolved.key, local=path, remote=remote,
+    result = jupyter_transfer(service, notebook_id=resolved.key, local=path, remote=remote,
                             download=download, overwrite=overwrite, timeout=timeout,
                             max_bytes=max_bytes)
+    return replace(result, remote=requested_remote)
+
+
+def _contents_root(service: Notebooks, notebook_id: str, timeout: float) -> str:
+    cached = service._contents_roots.get(notebook_id)
+    if cached is not None:
+        return cached
+    lab = _notebook_jupyter_url(service.session, notebook_id)
+    if not lab:
+        raise ValidationError(
+            'Cannot discover the Jupyter contents root: no Jupyter access URL; '
+            'use an absolute remote path with transport="ssh".'
+        )
+    with service.client._transport.application_connection(lab) as http:
+        entrance = http.get(lab, timeout=timeout, allow_redirects=True)
+        if entrance.status_code != 200:
+            raise TransportError("Cannot open Jupyter entrance to discover contents root.")
+        root = core.jupyter_contents_root(entrance.text)
+    service._contents_roots[notebook_id] = root
+    return root
 
 
 def jupyter_transfer(
@@ -68,6 +95,13 @@ def jupyter_transfer(
         entrance = http.get(lab, timeout=timeout, allow_redirects=True)
         if entrance.status_code != 200:
             raise TransportError("Cannot open Jupyter entrance.")
+
+        root = service._contents_roots.get(notebook_id)
+        if root is None:
+            root = core.jupyter_contents_root(entrance.text)
+            service._contents_roots[notebook_id] = root
+        requested_remote = remote
+        remote = core.contents_path(remote, root)
 
         def send(method: str, path: str, **options: Any) -> Any:
             response = http.request(
@@ -128,7 +162,8 @@ def jupyter_transfer(
                 })
                 if response.status_code not in (200, 201):
                     raise TransportError("Jupyter did not confirm the upload.")
-    return core.TransferResult(str(local), remote, len(data), "jupyter")
+    return core.TransferResult(str(local), requested_remote, len(data), "jupyter",
+                               remote_path=str(PurePosixPath(root) / remote))
 
 
 @blocking_io

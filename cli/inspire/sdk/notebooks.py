@@ -78,6 +78,9 @@ def _duration(value: float) -> None:
 
 
 class Notebooks(Service):
+    def __init__(self, client: Any) -> None:
+        super().__init__(client)
+        self._contents_roots: dict[str, str] = {}
 
     @operation
     def exec(
@@ -95,6 +98,24 @@ class Notebooks(Service):
         output_to: OutputTarget = None,
         capture: bool = True,
     ) -> ExecResult:
+        """Execute in the same container through either transport.
+
+        Jupyter and SSH share a container but start in different directories:
+        Jupyter normally starts at its contents root, SSH at the user's home
+        (often /root). Relative command paths use that cwd; relative transfer
+        paths always use the Jupyter root. Use the resolved result path::
+
+            import shlex
+            result = client.notebooks.upload(ref, local="model.bin", remote="model.bin")
+            client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")
+
+        train.py must itself be accessible from the command's cwd. To locate
+        both files in the same known directory, set cwd explicitly::
+
+            from pathlib import PurePosixPath
+            client.notebooks.exec(ref, command="python train.py model.bin",
+                                  cwd=str(PurePosixPath(result.remote_path).parent))
+        """
         from inspire.services import remote_exec as core
         from .remote_exec import shaped_command, authenticated_exec
 
@@ -167,9 +188,29 @@ class Notebooks(Service):
         Auto prefers reachable cached SSH; never creates a bridge. Jupyter
         holds the entire base64 JSON body (~4/3 file size plus copies), has
         no resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.
-        Jupyter paths are relative to its contents root (leading / is ignored);
-        SSH paths are absolute or relative to the SSH home. '..' is rejected.
+        On both transports, relative remote paths start at the discovered
+        Jupyter contents root; absolute paths name container files unchanged.
+        Jupyter cannot reach paths outside its root: use transport="ssh".
+        The root is cached per notebook for this client's lifetime. '..' is
+        rejected. The result's remote preserves the caller's request;
+        remote_path is the resolved container-absolute destination (upload)
+        or source (download). Exec shares the container, but Jupyter starts
+        at its root and SSH at the user's home (often /root), so a relative
+        command path differs from a relative transfer path. Use remote_path
+        or set exec's cwd explicitly, as shown below.
         Destinations name the exact file/directory, not a containing directory.
+
+        Bridge a transfer to exec using the resolved path::
+
+            import shlex
+            from pathlib import PurePosixPath
+            result = client.notebooks.upload(ref, local="model.bin", remote="model.bin")
+            client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")
+
+        train.py must be accessible from cwd. If it is beside model.bin::
+
+            client.notebooks.exec(ref, command="python train.py model.bin",
+                                  cwd=str(PurePosixPath(result.remote_path).parent))
 
         Downloads and SSH publication replace complete files atomically;
         recursive directory merges are incremental, not transactional. SSH
@@ -213,9 +254,29 @@ class Notebooks(Service):
         Auto prefers reachable cached SSH; never creates a bridge. Jupyter
         holds the entire base64 JSON body (~4/3 file size plus copies), has
         no resume, and defaults to a 16 MiB cap; raise max_bytes deliberately.
-        Jupyter paths are relative to its contents root (leading / is ignored);
-        SSH paths are absolute or relative to the SSH home. '..' is rejected.
+        On both transports, relative remote paths start at the discovered
+        Jupyter contents root; absolute paths name container files unchanged.
+        Jupyter cannot reach paths outside its root: use transport="ssh".
+        The root is cached per notebook for this client's lifetime. '..' is
+        rejected. The result's remote preserves the caller's request;
+        remote_path is the resolved container-absolute destination (upload)
+        or source (download). Exec shares the container, but Jupyter starts
+        at its root and SSH at the user's home (often /root), so a relative
+        command path differs from a relative transfer path. Use remote_path
+        or set exec's cwd explicitly, as shown below.
         Destinations name the exact file/directory, not a containing directory.
+
+        Bridge a transfer to exec using the resolved path::
+
+            import shlex
+            from pathlib import PurePosixPath
+            result = client.notebooks.download(ref, local="model.bin", remote="model.bin")
+            client.notebooks.exec(ref, command=f"python train.py {shlex.quote(result.remote_path)}")
+
+        train.py must be accessible from cwd. If it is beside model.bin::
+
+            client.notebooks.exec(ref, command="python train.py model.bin",
+                                  cwd=str(PurePosixPath(result.remote_path).parent))
 
         Downloads and SSH publication replace complete files atomically;
         recursive directory merges are incremental, not transactional. SSH

@@ -5,6 +5,7 @@ from inspire.platform.web.flow import blocking_io, blocking_call, call, perform_
 
 import contextlib
 import json
+from html.parser import HTMLParser
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -12,7 +13,7 @@ import shlex
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -25,11 +26,16 @@ DEFAULT_JUPYTER_MAX_BYTES = 16 * 1024 * 1024
 
 @dataclass(frozen=True)
 class TransferResult:
+    """Completed transfer: remote is the caller's request, remote_path its
+    resolved container-absolute location (destination on upload, source on download).
+    """
+
     local: str
     remote: str
     bytes_transferred: int
     transport: str
     files_transferred: int = 1
+    remote_path: str = field(kw_only=True)
 
 
 def remote_path(value: str) -> str:
@@ -47,6 +53,60 @@ def remote_path(value: str) -> str:
     if path in (".", "/"):
         raise ValueError("remote must name a file or directory, not the root.")
     return path
+
+
+class _LabConfigParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_config = False
+        self.data = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script":
+            self.in_config = dict(attrs).get("id") == "jupyter-config-data"
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script":
+            self.in_config = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_config:
+            self.data += data
+
+
+def jupyter_contents_root(page: str) -> str:
+    """Read JupyterLab's serverRoot, never infer it from a terminal's cwd."""
+    parser = _LabConfigParser()
+    parser.feed(page)
+    try:
+        config = json.loads(parser.data)
+    except ValueError:
+        config = None
+    root = config.get("serverRoot") if isinstance(config, dict) else None
+    if (not isinstance(root, str) or not root.startswith("/")
+            or root.startswith("//") or ".." in root.split("/")
+            or "\\" in root or any(ord(c) < 32 for c in root)):
+        raise ValueError(
+            'Cannot discover the Jupyter contents root: JupyterLab omitted a valid '
+            'absolute serverRoot; use an absolute remote path with transport="ssh".'
+        )
+    return str(PurePosixPath(root))
+
+
+def contents_path(remote: str, root: str) -> str:
+    """Translate a container path into a contents API path without rebasing it."""
+    path = PurePosixPath(remote)
+    if path.is_absolute():
+        try:
+            path = path.relative_to(root)
+        except ValueError:
+            raise ValueError(
+                f'Remote path {remote!r} is outside the Jupyter contents root {root!r}; '
+                'use transport="ssh".'
+            ) from None
+    if str(path) == ".":
+        raise ValueError('remote names the Jupyter contents root; use transport="ssh" for directories.')
+    return str(path)
 
 
 def check_size(size: int, cap: int) -> None:
@@ -179,7 +239,7 @@ elif a['action'] == 'cleanup':
             else:
                 info = run("publish", stage)
                 size, count = info["size"], info["count"]
-        return TransferResult(local, remote, size, "ssh", count)
+        return TransferResult(local, remote, size, "ssh", count, remote_path=remote)
     finally:
         with contextlib.suppress(Exception):
             run("cleanup", stage)
