@@ -526,11 +526,14 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
         return
     for row in rows:
         label = str(row["resource"])
-        # One parenthetical, so a kind cached per workspace and per source does
-        # not print two of them side by side.
-        detail = [f"{row['scopes']} scopes"] if int(row.get("scopes") or 0) > 1 else []
-        if row.get("workspaces"):
-            detail.append(f"{row['workspaces']} workspaces")
+        # A kind cached once per workspace says all it has to say with the
+        # workspace count; the scope count only carries information when a kind
+        # is cached several times within one workspace, as images are per source.
+        workspaces = int(row.get("workspaces") or 0)
+        scopes = int(row.get("scopes") or 0)
+        detail = [f"{scopes} scopes"] if scopes > 1 and scopes != workspaces else []
+        if workspaces:
+            detail.append(f"{workspaces} workspace" + ("s" if workspaces > 1 else ""))
         if detail:
             label += f" ({', '.join(detail)})"
         click.echo(
