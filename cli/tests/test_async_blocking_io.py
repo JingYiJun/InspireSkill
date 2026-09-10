@@ -6,6 +6,7 @@ import asyncio
 import builtins
 from contextlib import contextmanager
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -84,14 +85,16 @@ def local_ssh(monkeypatch):
     monkeypatch.setattr(scp, "_resolve_bridge_and_proxy", lambda *a, **kw: (None, bridge, "unused"))
     monkeypatch.setattr(ssh_exec, "build_ssh_process_env", lambda: None)
     monkeypatch.setattr(scp, "build_ssh_process_env", lambda: None)
-    # Execute only the test's local shell script; SSH is never launched.
+    # Allow five ticker steps even with the coarser Windows event-loop clock.
+    # A local Python process supplies output; SSH is never launched.
     monkeypatch.setattr(
         ssh_exec,
         "_build_ssh_base_args",
         lambda **kw: [
             sys.executable,
             "-c",
-            "import subprocess,sys; sys.exit(subprocess.run(['/bin/bash','-s'],input=sys.stdin.buffer.read()).returncode)",
+            "import sys,time; sys.stdout.write('one'); sys.stdout.flush(); "
+            "time.sleep(.2); sys.stderr.write('two')",
         ],
     )
 
@@ -201,7 +204,7 @@ def test_fixed_paths_keep_event_loop_running(tmp_path, monkeypatch, local_ssh):
                     lambda **kw: [
                         sys.executable,
                         "-c",
-                        "import time; time.sleep(.05); print('copied')",
+                        "import sys,time; time.sleep(.2); sys.stdout.buffer.write(b'copied\\n')",
                     ],
                 )
                 copied = await ticker.check(
@@ -458,10 +461,22 @@ def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rej
     asyncio.run(run())
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="The Linux notebook helper runs locally through /bin/bash and stages files in /tmp.",
+)
 @pytest.mark.parametrize("download", [False, True])
 def test_shared_ssh_transfer_uses_async_processes_and_publishes(
     tmp_path, monkeypatch, local_ssh, download
 ):
+    monkeypatch.setattr(
+        ssh_exec, "_build_ssh_base_args",
+        lambda **kw: [
+            sys.executable, "-c",
+            "import subprocess,sys; sys.exit(subprocess.run(['/bin/bash','-s'],"
+            "input=sys.stdin.buffer.read()).returncode)",
+        ],
+    )
     local = tmp_path / "local"
     remote = tmp_path / "remote"
     source, target = (remote, local) if download else (local, remote)
@@ -568,6 +583,14 @@ def test_public_async_output_callback(tmp_path, monkeypatch, local_ssh, stream, 
     from inspire.sdk import _async_runtime
     from inspire.services.execution.async_output import deliver_output
 
+    monkeypatch.setattr(
+        ssh_exec, "_build_ssh_base_args",
+        lambda **kw: [
+            sys.executable, "-c",
+            "import sys,time; sys.stdout.write('one'); sys.stdout.flush(); "
+            "time.sleep(.03); sys.stdout.write('two')",
+        ],
+    )
     base = owner()
     # Use the real public facade/runtime with an isolated account and cached session.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -624,7 +647,7 @@ def test_public_async_output_callback(tmp_path, monkeypatch, local_ssh, stream, 
 
 
 @pytest.mark.parametrize("limit,capture", [(128, True), (None, True), (128, False)])
-def test_native_ssh_capture_matches_sync(local_ssh, limit, capture):
+def test_native_ssh_capture_matches_sync(local_ssh, monkeypatch, limit, capture):
     import shlex
 
     command = shlex.join(
@@ -633,6 +656,14 @@ def test_native_ssh_capture_matches_sync(local_ssh, limit, capture):
             "-c",
             "import sys; sys.stdout.write('汉字' * 6000); sys.stderr.write('error' * 1000)",
         ]
+    )
+    monkeypatch.setattr(
+        ssh_exec, "_build_ssh_base_args",
+        lambda **kw: [
+            sys.executable, "-c",
+            "import sys; sys.stdout.buffer.write(('汉字' * 6000).encode('utf-8')); "
+            "sys.stderr.buffer.write(b'error' * 1000)",
+        ],
     )
     options = dict(
         bridge_name="fake",
@@ -643,6 +674,8 @@ def test_native_ssh_capture_matches_sync(local_ssh, limit, capture):
         capture=capture,
     )
     expected = remote_exec.exec_in_notebook_ssh(**options)
+    assert expected.returncode == 0 and expected.completed
+    assert expected.total_output_bytes == len(("汉字" * 6000 + "error" * 1000).encode("utf-8"))
 
     async def run():
         transport = owner()

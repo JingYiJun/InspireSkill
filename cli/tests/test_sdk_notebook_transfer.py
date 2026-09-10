@@ -6,6 +6,7 @@ import base64
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -25,7 +26,8 @@ from inspire.sdk import notebook_transfer as sdk
 
 
 @pytest.fixture
-def contents(client, monkeypatch):
+def contents(client, monkeypatch, request):
+    root = getattr(request, "param", "/")
     files = {}
     calls = []
     base = "https://example.invalid/api/v2/notebook/lab/nb/"
@@ -33,7 +35,7 @@ def contents(client, monkeypatch):
     def request(method, url, **options):
         calls.append((method, url, options))
         if url == base + "lab":
-            return SimpleNamespace(status_code=200, text='<script id="jupyter-config-data">{"serverRoot":"/"}</script>')
+            return SimpleNamespace(status_code=200, text='<script id="jupyter-config-data">' + json.dumps({"serverRoot": root}) + "</script>")
         assert options["headers"]["X-XSRFToken"] == "fake-xsrf"
         path = unquote(urlsplit(url).path.split("api/contents/", 1)[1])
         status = 200
@@ -64,7 +66,8 @@ def contents(client, monkeypatch):
     return files, calls
 
 
-@pytest.mark.parametrize("data", [b"one\r\ntwo\nlast\r", bytes(range(256)) * 50, b""])
+@pytest.mark.parametrize("data", [b"one\r\ntwo\nlast\r", bytes(range(256)) * 50, b""],
+                         ids=["mixed-newlines", "binary", "empty"])
 def test_jupyter_round_trip(client, contents, tmp_path, data):
     source = tmp_path / "source"
     source.write_bytes(data)
@@ -114,6 +117,10 @@ def test_traversal_rejected_before_lookup(client, monkeypatch, tmp_path, path, t
 
 @pytest.fixture
 def ssh(client, monkeypatch):
+    if os.name != "posix":
+        pytest.skip(
+            "Executing the Linux notebook helper on local paths requires a POSIX filesystem and /tmp."
+        )
     calls = []
     monkeypatch.setattr(remote_exec, "cached_notebook_bridge", lambda **kw: "cached")
     monkeypatch.setattr(core, "load_tunnel_config", lambda **kw: "fake-config")
@@ -448,18 +455,19 @@ def test_cross_transport_exec_observes_upload(client, shared_container, tmp_path
     assert base64.b64decode(result.stdout or result.output) == source.read_bytes()
 
 
+@pytest.mark.parametrize("contents", ["/project"], indirect=True)
 @pytest.mark.parametrize("download", [False, True])
 @pytest.mark.parametrize("transport", ["jupyter", "auto"])
-def test_cross_transport_outside_root_refused(client, shared_container, monkeypatch, tmp_path, download, transport):
-    root, _, calls = shared_container
+def test_cross_transport_outside_root_refused(client, contents, monkeypatch, tmp_path, download, transport):
+    _, calls = contents
     monkeypatch.setattr(remote_exec, "cached_notebook_bridge", lambda **kw: None)
     local = tmp_path / "local"
     local.write_bytes(b"keep")
     method = client.notebooks.download if download else client.notebooks.upload
     with pytest.raises(ValidationError, match='outside.*Jupyter.*transport="ssh"'):
-        method(job_ref(client, NotebookRef), local=local, remote=str(root) + "-other/file", transport=transport)
+        method(job_ref(client, NotebookRef), local=local, remote="/project-other/file", transport=transport)
     assert local.read_bytes() == b"keep"
-    assert not any("api/contents/" in url for _, url in calls)
+    assert not any("api/contents/" in url for _, url, _ in calls)
 
 
 @pytest.mark.parametrize("page", ["", "<html>login</html>", '<script id="jupyter-config-data">invalid</script>',
@@ -583,3 +591,48 @@ def test_resolved_path_bridges_transfer_and_exec(
     assert downloaded.remote == remote
     assert downloaded.remote_path == str(expected)
     assert target.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("contents", ["/project space/中文"], indirect=True)
+@pytest.mark.parametrize("remote,expected", [
+    ("./data//file", "/project space/中文/data/file"),
+    ("/project space/中文/data/file", "/project space/中文/data/file"),
+    ("/outside/file", "/outside/file"),
+])
+def test_ssh_path_resolution_without_local_remote_filesystem(
+    client, contents, monkeypatch, tmp_path, remote, expected,
+):
+    monkeypatch.setattr(remote_exec, "cached_notebook_bridge", lambda **kw: "cached")
+    calls = []
+
+    def transfer(**kwargs):
+        calls.append(kwargs)
+        return TransferResult(kwargs["local"], kwargs["remote"], 4, "ssh",
+                              remote_path=kwargs["remote"])
+
+    monkeypatch.setattr(core, "transfer_ssh", transfer)
+    source = tmp_path / "source"
+    source.write_bytes(b"data")
+    ref = job_ref(client, NotebookRef)
+    for _ in range(2):
+        result = client.notebooks.upload(ref, local=source, remote=remote, transport="ssh")
+        assert result.remote == remote
+        assert result.remote_path == expected
+    assert [call["remote"] for call in calls] == [expected, expected]
+    # Relative resolution discovers and caches the root; absolute SSH never needs Jupyter.
+    assert len(contents[1]) == (0 if remote.startswith("/") else 1)
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_local_publication_overwrite_policy(tmp_path, overwrite):
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_bytes(bytes(range(256)))
+    target.write_bytes(b"old")
+    if overwrite:
+        core.publish(source, target, overwrite)
+        assert target.read_bytes() == source.read_bytes()
+    else:
+        with pytest.raises(ValueError, match="already exists"):
+            core.publish(source, target, overwrite)
+        assert target.read_bytes() == b"old"
+    assert not list(tmp_path.glob(".inspire-transfer-*"))

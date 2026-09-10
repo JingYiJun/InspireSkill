@@ -523,7 +523,7 @@ def test_new_layers_do_not_import_cli_or_ui():
     ]
     paths += list(Path("inspire/services").rglob("*.py")) + list(Path("inspire/sdk").glob("*.py"))
     for path in paths:
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = (
                 [n.name for n in node.names]
                 if isinstance(node, ast.Import)

@@ -210,7 +210,7 @@ def test_async_offloads_cannot_bypass_client_pool():
     for path in Path("inspire").rglob("*.py"):
         if "secrets" in path.parts or path.as_posix() == "inspire/platform/web/offload.py":
             continue
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Call):
                 name = (node.func.attr if isinstance(node.func, ast.Attribute)
                         else node.func.id if isinstance(node.func, ast.Name) else "")

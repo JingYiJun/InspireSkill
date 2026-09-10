@@ -89,6 +89,10 @@ def test_bridge_waits_leave_http_preparation_available(client, tracked, monkeypa
     asyncio.run(run())
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="Executing the unchanged SSH probe argv via a shebang executable requires POSIX.",
+)
 def test_bridge_probe_runs_its_real_command_line_under_the_async_driver(
     client, tracked, monkeypatch, tmp_path
 ):

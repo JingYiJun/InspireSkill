@@ -1049,7 +1049,7 @@ def test_services_and_sdk_do_not_import_cli_or_ui_dependencies():
     private_services = []
     for package in ("services", "sdk", "platform"):
         for path in (root / package).rglob("*.py"):
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             imports = {}
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
@@ -1437,7 +1437,7 @@ def test_root_sdk_exports_match_static_type_checking_imports():
     import inspire
     import inspire.sdk as sdk
 
-    tree = ast.parse(Path(inspire.__file__).read_text())
+    tree = ast.parse(Path(inspire.__file__).read_text(encoding="utf-8"))
     exported = {
         alias.asname or alias.name
         for node in tree.body

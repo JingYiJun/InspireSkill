@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import sqlite3
 from pathlib import Path
 import subprocess
@@ -180,7 +181,7 @@ def test_corrupt_store_is_a_miss(tmp_path, monkeypatch, garbage):
 def test_expiry_across_processes_and_cleanup(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     worker(tmp_path, ["plan"])
-    data = json.loads(disk.path.read_text())
+    data = json.loads(disk.path.read_text(encoding="utf-8"))
     for entry in data["entries"].values():
         entry["created"] -= 120
         entry["expires"] -= 120
@@ -191,7 +192,7 @@ def test_expiry_across_processes_and_cleanup(tmp_path, monkeypatch):
     assert worker(tmp_path, ["images"])[0]["calls"] == {"GetRoutes": 1, "ListImages": 4}
     # Reading metadata performs the remainder's expiry pruning.
     disk.read(KEY)
-    assert len(json.loads(disk.path.read_text())["entries"]) == 0
+    assert len(json.loads(disk.path.read_text(encoding="utf-8"))["entries"]) == 0
 
 
 def test_reader_ttl_caps_sdk_reads_without_shortening_cli_identity_ttl(tmp_path):
@@ -205,12 +206,14 @@ def test_concurrent_process_writers_keep_all_entries(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda i: worker(tmp_path, [{"scope": str(i)}]), range(16)))
-    data = json.loads(disk.path.read_text())
+    data = json.loads(disk.path.read_text(encoding="utf-8"))
     assert len(data["entries"]) == 16
     for i in range(16):
         entry = data["entries"][key_string((*KEY, str(i)))]
         assert disk.value(entry) == {"id": str(i)}
-    assert disk.path.stat().st_mode & 0o777 == 0o600
+    # Windows does not implement POSIX owner-only permission bits.
+    if os.name == "posix":
+        assert disk.path.stat().st_mode & 0o777 == 0o600
     assert not disk.path.with_name(disk.path.name + ".tmp").exists()
 
 
@@ -246,7 +249,7 @@ def test_store_and_memory_are_bounded(tmp_path, monkeypatch):
     cache = CatalogCache(store=disk)
     for i in range(MAX_ENTRIES + 3):
         cache._get((*KEY, str(i)), lambda: {"id": "user"})
-    assert len(json.loads(disk.path.read_text())["entries"]) == MAX_ENTRIES
+    assert len(json.loads(disk.path.read_text(encoding="utf-8"))["entries"]) == MAX_ENTRIES
     assert cache.stats()["entries"] == MAX_ENTRIES
     cache._get(KEY, lambda: {"id": "large", "name": "x" * MAX_BYTES})
     assert disk.path.stat().st_size <= MAX_BYTES
@@ -257,7 +260,7 @@ def test_unknown_types_are_not_deserialized(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     cache = CatalogCache(store=disk)
     cache._get(KEY, lambda: {"id": "user"})
-    data = json.loads(disk.path.read_text())
+    data = json.loads(disk.path.read_text(encoding="utf-8"))
     data["entries"][key_string(KEY)]["value"] = ["os.system", "false"]
     disk.path.write_text(json.dumps(data))
     assert CatalogCache(store=disk)._get(KEY, lambda: {"id": "fresh"}) == {"id": "fresh"}

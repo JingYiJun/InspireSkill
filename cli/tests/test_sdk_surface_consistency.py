@@ -31,7 +31,7 @@ def test_documented_method_counts(client):
     async_client = InspireAsyncClient("alpha")
     try:
         inventory = method_inventory(client, async_client)
-        document = (Path(__file__).parents[2] / "references/sdk.md").read_text()
+        document = (Path(__file__).parents[2] / "references/sdk.md").read_text(encoding="utf-8")
         section = document.split("## 各门面方法表", 1)[1].split("### workspaces", 1)[0]
         documented = {name: (int(sync), int(asynchronous)) for name, sync, asynchronous in
                       re.findall(r"\| `([^`]+)` \| (\d+) \| (\d+) \|", section)}
