@@ -64,9 +64,13 @@ async def run_process(
     encoding: str = "utf-8",
     errors: str = "replace",
     env: Any = None,
+    stdin: Any = None,
 ) -> subprocess.CompletedProcess:
+    # Accepts what the shared command lines pass to subprocess.run: a caller that
+    # detaches the child's stdin must keep doing so when the driver runs natively.
     process = await _spawn(
         *args,
+        stdin=stdin,
         stdout=asyncio.subprocess.PIPE if capture_output else None,
         stderr=asyncio.subprocess.PIPE if capture_output else None,
         env=env,

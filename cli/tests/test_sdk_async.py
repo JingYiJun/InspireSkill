@@ -227,7 +227,8 @@ def test_native_concurrency_without_workers(tracked, monkeypatch, concurrency):
         assert not c._active and not hasattr(c, "_workers")
 
     asyncio.run(run())
-    assert offloaded.count("prepare") == offloaded.count("build") == 2
+    assert offloaded.count("prepare") == 2
+    assert offloaded.count("build") == 1
     assert maximum == 2
     assert len(tracked) == 1 and tracked[0].closed
     assert threads == [threading.get_ident()] * 2

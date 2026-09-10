@@ -474,9 +474,9 @@ def test_bare_plaza_uses_shared_process_default(monkeypatch):
     try:
         plaza_core.plaza_request("GET", "/read")
         transport = runtime.get_transport()
-        assert transport._plaza is not None
+        assert transport._plaza_slot.client is not None
         plaza_core.reset_plaza_client()
-        assert transport._plaza is None
+        assert transport._plaza_slot.client is None
     finally:
         runtime.active_transport.reset(token)
 
@@ -678,7 +678,7 @@ def test_plaza_reset_waits_for_cookie_jar_borrower(monkeypatch):
         first.result(timeout=5)
         second.result(timeout=5)
     assert closed == script.sessions
-    assert transport._plaza is None
+    assert transport._plaza_slot.client is None
 
 
 def test_concurrent_plaza_calls_exclusively_borrow_one_cookie_jar(monkeypatch):
@@ -713,8 +713,8 @@ def test_concurrent_plaza_calls_exclusively_borrow_one_cookie_jar(monkeypatch):
             # Neither the shared generation lock nor plaza state lock spans I/O.
             assert transport._generation_lock.acquire(blocking=False)
             transport._generation_lock.release()
-            assert transport._plaza_lock.acquire(blocking=False)
-            transport._plaza_lock.release()
+            assert transport._plaza_slot.lock.acquire(blocking=False)
+            transport._plaza_slot.lock.release()
         finally:
             release.set()
         assert first.result(timeout=5) == second.result(timeout=5) == {"ok": True}

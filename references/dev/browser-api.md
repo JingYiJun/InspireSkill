@@ -1065,3 +1065,5 @@ GET 它答 `301`，Location 是带 token 的网关地址 `https://<gateway>/ws-�
 8. 对应命令 Help、Wrapper 测试和本页表格同步更新。
 
 **未闭合的调查结果不进入本页。**
+
+SDK 异步 HTTP 连接由客户端持有，跨操作复用；独立 `Transport.request_async` 调用仍在 driver 退出时关闭连接。数据广场登录槽由操作视图共享，借用与重置通过共享 workflow 等待，操作结束不关闭所属客户端的会话。SSH 桥接探测子进程和重试暂停使用原生异步 I/O；本地池仍承担 `_ensure_rtunnel_binary` 的检查及必要时的首次下载。

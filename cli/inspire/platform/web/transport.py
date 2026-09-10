@@ -46,6 +46,16 @@ from inspire.platform.web.transport_core import (
     _SingleSendViolation, _classify_after_dispatch, remaining, uncertain,
 )
 
+class PlazaSlot:
+    """A sign-in and its borrow state shared by operation views."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Condition()
+        self.busy = False
+        self.client: PlazaClient | None = None
+        self.key: tuple[str | None, float] | None = None
+
+
 class Transport:
     """Own dispatch and authentication state for a caller.
 
@@ -70,14 +80,11 @@ class Transport:
         self.cli_compat = cli_compat
         self._decisions = SharedState()
         self._generation_lock = threading.RLock()
-        self._plaza_lock = threading.Condition()
-        self._plaza_busy = False
+        self._plaza_slot = PlazaSlot()
         self._closed = False
         self._session: Any = None
         self._http: Any = None
         self._browser: Any = None
-        self._plaza: PlazaClient | None = None
-        self._plaza_key: tuple[str | None, float] | None = None
         self.deadline: float | None = None
         self._tls_contexts: dict[Any, Any] = {}
         self._preparation_lock = threading.Lock()
@@ -458,29 +465,38 @@ class Transport:
             finally:
                 program.close()
 
-    def reset_plaza_client(self) -> None:
-        """Discard only this transport's signed-in data plaza connection."""
+    @workflow
+    def reset_plaza_client(self) -> FlowProgram[None]:
+        """Discard this owner's sign-in once its current borrower finishes."""
         self.check()
-        with self._plaza_lock:
-            self._plaza_lock.wait_for(lambda: not self._plaza_busy)
-            stale, self._plaza, self._plaza_key = self._plaza, None, None
-            if stale is not None:
-                stale.close()
+        yield call(self._borrow_plaza_slot, None)
+        self._release_plaza_slot()
 
-    def _borrow_plaza_slot(self, key: tuple[str | None, float]) -> Any:
-        with self._plaza_lock:
-            self._plaza_lock.wait_for(lambda: not self._plaza_busy)
-            if self._plaza_key != key:
-                if self._plaza is not None:
-                    self._plaza.close()
-                self._plaza, self._plaza_key = None, None
-            self._plaza_busy = True
-            return self._plaza
+    def _try_borrow_plaza_slot(self, key: tuple[str | None, float] | None) -> tuple[bool, Any]:
+        slot = self._plaza_slot
+        with slot.lock:
+            if slot.busy:
+                return False, None
+            if key is None or slot.key != key:
+                if slot.client is not None:
+                    slot.client.close()
+                slot.client, slot.key = None, None
+            slot.busy = True
+            return True, slot.client
+
+    @workflow
+    def _borrow_plaza_slot(self, key: tuple[str | None, float] | None) -> FlowProgram[Any]:
+        while True:
+            self.check_deadline()
+            acquired, client = yield call(self._try_borrow_plaza_slot, key)
+            if acquired:
+                return client
+            yield call(time.sleep, 0.01)
 
     def _release_plaza_slot(self) -> None:
-        with self._plaza_lock:
-            self._plaza_busy = False
-            self._plaza_lock.notify_all()
+        with self._plaza_slot.lock:
+            self._plaza_slot.busy = False
+            self._plaza_slot.lock.notify_all()
 
     @workflow
     def _acquire_plaza_client(self, session: WebSession, timeout: float) -> FlowProgram[Any]:
@@ -491,8 +507,8 @@ class Transport:
         try:
             if client is None:
                 client = yield call(sign_in, session, self, timeout)
-                with self._plaza_lock:
-                    self._plaza, self._plaza_key = client, key
+                with self._plaza_slot.lock:
+                    self._plaza_slot.client, self._plaza_slot.key = client, key
             return client
         except BaseException:
             self._release_plaza_slot()
@@ -526,6 +542,19 @@ class Transport:
             return await driver.execute(call(
                 self.plaza_request, method, path, params=params, body=body, timeout=timeout,
             ))
+
+    def release_view(self, owner: Transport) -> None:
+        """Retire an operation without tearing down resources borrowed from its owner."""
+        for name in ("_http", "_browser"):
+            resource = getattr(self, name)
+            inherited = getattr(owner, name)
+            if inherited is None:
+                setattr(owner, name, resource)
+            elif resource is not None and resource is not inherited:
+                with contextlib.suppress(Exception):
+                    resource.close()
+        self._session = self._browser = self._http = None
+        self._closed = True
 
     def close(self) -> None:
         if self._closed:

@@ -14,7 +14,7 @@ inspire.services.execution.notebook_transfer.
 
 from __future__ import annotations
 
-from inspire.platform.web.flow import call, blocking_call, perform_sync
+from inspire.platform.web.flow import Program, workflow, call, blocking_call, perform_sync
 from inspire.services.execution.async_output import deliver_output
 
 import asyncio
@@ -320,11 +320,12 @@ def exec_in_notebook_ssh(
     )
 
 
-def cached_notebook_bridge(*, notebook_id: str, workspace_id: str, account: str) -> str | None:
+@workflow
+def cached_notebook_bridge(*, notebook_id: str, workspace_id: str, account: str) -> Program[str | None]:
     """Find only an existing bridge for the exact account/workspace/notebook identity."""
     try:
-        config = load_tunnel_config(account=account)
-        entries = read_target_cache().get("targets", {})
+        config = yield blocking_call(load_tunnel_config, account=account)
+        entries = (yield blocking_call(read_target_cache)).get("targets", {})
         names = [
             row.get("bridge_name")
             for row in entries.values()
@@ -338,13 +339,13 @@ def cached_notebook_bridge(*, notebook_id: str, workspace_id: str, account: str)
         for bridge in bridges:
             if bridge.notebook_id != notebook_id or bridge.workspace_id != workspace_id:
                 continue
-            if tunnel.is_tunnel_available(
+            if (yield call(tunnel.is_tunnel_available,
                 bridge_name=bridge.name,
                 config=config,
                 retries=0,
                 retry_pause=0.0,
                 progressive=False,
-            ):
+            )):
                 return bridge.name
     except (OSError, ValueError, RuntimeError):
         return None

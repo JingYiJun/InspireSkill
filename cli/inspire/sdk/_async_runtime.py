@@ -2,14 +2,17 @@
 
 The first use pins account and configuration. Each operation gets a shallow
 client view with its own facade bindings, deadline and write state; catalogue
-storage and acquired authentication snapshots can be shared. Views are not
-thread workers or leased synchronous clients. Facade-local caches are rebuilt
+storage, the plaza sign-in slot and acquired authentication snapshots are shared.
+Views are not thread workers or leased synchronous clients. Facade-local caches are rebuilt
 with each view, including the notebook contents-root cache.
 
 concurrency is a deprecated, validated no-op. Native requests overlap freely;
 Ray/Serving bulk status uses a separate eight-task rolling window. Local I/O
-uses the client-owned pool in inspire.platform.web.offload. Close cancels active
-operations and joins pending offloads; it does not stop remote workloads.
+uses the client-owned pool in inspire.platform.web.offload. HTTP connections
+also live for the client lifetime. Operation views release their own resources
+without closing shared sessions. Close cancels active operations, closes HTTP
+connections on the owning loop and joins pending offloads; it does not stop
+remote workloads.
 """
 from __future__ import annotations
 
@@ -52,6 +55,8 @@ async def _finish(future: asyncio.Future[Any]) -> Any:
 
 class AsyncRuntime:
     def __init__(self, options: dict[str, Any], concurrency: int | None) -> None:
+        from inspire.platform.web.transport_async import AsyncClientPool
+
         if concurrency is not None:
             if type(concurrency) is not int or concurrency < 1:
                 raise ValidationError("concurrency must be a positive integer.")
@@ -60,6 +65,7 @@ class AsyncRuntime:
                 DeprecationWarning, stacklevel=3,
             )
         self._offload_pool = OffloadPool()
+        self._http_pool = AsyncClientPool()
         self._options = options
         self._pid = os.getpid()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -110,7 +116,7 @@ class AsyncRuntime:
     async def _invoke(self, facade: str, method: str, args: tuple[Any, ...],
                       kwargs: dict[str, Any], producer: Callable[[Any], Any] | None = None,
                       deadline: float | None = None) -> Any:
-        from inspire.platform.web.transport_async import AsyncDriver
+        from inspire.platform.web.transport_async import AsyncDriver, current_client_pool
 
         callback = kwargs.get("on_output")
         if callback is not None and producer is None:
@@ -123,6 +129,7 @@ class AsyncRuntime:
             kwargs = dict(kwargs, on_output=output)
         client = self._operation_client()
         token = current_pool.set(self._offload_pool)
+        http_token = current_client_pool.set(self._http_pool)
         client._transport.deadline = deadline
         try:
             async with AsyncDriver(client._transport) as driver:
@@ -137,8 +144,9 @@ class AsyncRuntime:
             ):
                 owner._session = current._session
             try:
-                client.close()
+                current.release_view(owner)
             finally:
+                current_client_pool.reset(http_token)
                 current_pool.reset(token)
 
     async def _tracked(self, coroutine: Any) -> Any:
@@ -280,7 +288,10 @@ class AsyncRuntime:
             if self._client is not None:
                 self._client.close()
         finally:
-            await self._offload_pool.close()
+            try:
+                await self._http_pool.aclose()
+            finally:
+                await self._offload_pool.close()
 
     async def close(self) -> None:
         self._check()

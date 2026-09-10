@@ -2,8 +2,9 @@
 
 Each async SDK client owns up to four lazy worker threads, independent of native
 network concurrency. They handle local files, cache locks, request preparation
-and output sinks. The cached SSH bridge probe is also offloaded as a whole and
-may wait for tunnel reachability; this is not a strict local-files-only boundary.
+and output sinks; SSH reachability and retry waits use native async I/O.
+One bootstrap exception remains: _ensure_rtunnel_binary checks the local binary
+and may download a missing/unusable rtunnel release in a worker.
 Standalone async callers without current_pool use asyncio.to_thread instead.
 
 Cancelling a waiter cannot interrupt a running Python function. The pool keeps

@@ -173,11 +173,11 @@ finally:
 
 `concurrency` 已弃用：缺省为 `None`；显式传入正整数会发出 `DeprecationWarning`，参数不产生任何效果。保留它是为了让原有代码迁移时不立即失败；它既不是池大小，也不限制在途请求，原有 `concurrency=1` 不再使调用串行。非正整数仍在构造时抛 `ValidationError`。需要限制应用整体并发时，请由调用方使用 `asyncio.Semaphore`；账号认证锁、平台配额和限流继续生效。
 
-构造函数不做 I/O；进入 `async with` 或首次调用时，在事件循环线程读取本地配置、固定账号，并仅保存一次显式凭据。账号、超时和缓存配置错误在此时抛出，完成后可读 `account` 和 `base_url`。每次操作使用独立的预算、写入状态和名称解析上下文，异步连接按请求／操作生命周期关闭；客户端共享目录缓存和已获取的认证快照。`await client.cache.clear()` 清空该缓存并保留计数，`await client.cache.stats()` 返回其 hits／misses／entries。`Accounts` 仍是同步账号管理 API。
+构造函数不做 I/O；进入 `async with` 或首次调用时，在事件循环线程读取本地配置、固定账号，并仅保存一次显式凭据。账号、超时和缓存配置错误在此时抛出，完成后可读 `account` 和 `base_url`。每次操作使用独立的预算、写入状态和名称解析上下文，HTTP 连接池按异步客户端生命周期复用并在关闭客户端时释放；客户端共享目录缓存、已获取的认证快照及按会话代次匹配的数据广场登录槽。操作视图退出不关闭共享会话，广场借用竞争通过同一 workflow 调度等待。`await client.cache.clear()` 清空该缓存并保留计数，`await client.cache.stats()` 返回其 hits／misses／entries。`Accounts` 仍是同步账号管理 API。
 
-异步路径的本地 I/O 按操作卸载到**客户端独占、最多 4 个 worker 的线程池**，不借用应用的默认 executor。线程按需启动并在调用间复用；固定 4 个 worker 为短时文件与证书处理提供适度并行，同时限制每客户端的线程开销，不随请求数或 CPU 数量增长。此池主要处理本地 I/O 和相关 CPU 工作，不承载完整业务流程；SSH 桥接可用性探测是例外，它整段卸载并可能等待隧道可达性。原生网络并发不受池大小限制，4 的上限约束 worker 数量，不约束排队任务数量。卸载范围包括：目录缓存的完整锁／读／写／失效操作（包括 RAM 命中时的跨进程校验）、会话缓存、续期配置和账号读取、认证锁文件操作及登录保护的 PBKDF2、`init()` 配置读写、文件传输的检查／读取／暂存／发布、`output_to` 打开／写入／关闭。SSH 桥接可用性探测仍整段卸载；SSH exec 和 SCP 本身使用 asyncio 子进程与异步流读取。浏览器登录和同步登录执行相同的表单选择、提交顺序、认证轮询与错误分类，异步客户端使用 Playwright async API。
+异步路径的本地 I/O 按操作卸载到**客户端独占、最多 4 个 worker 的线程池**，不借用应用的默认 executor。线程按需启动并在调用间复用；固定 4 个 worker 为短时文件与证书处理提供适度并行，同时限制每客户端的线程开销，不随请求数或 CPU 数量增长。此池处理本地 I/O 和相关 CPU 工作，不承载桥接可达性等待；仍有一个引导例外：`_ensure_rtunnel_binary` 在 worker 中检查本地二进制，缺失或不可用时可能下载 rtunnel。原生网络并发不受池大小限制，4 的上限约束 worker 数量，不约束排队任务数量。卸载范围包括：目录缓存的完整锁／读／写／失效操作（包括 RAM 命中时的跨进程校验）、会话缓存、续期配置和账号读取、认证锁文件操作及登录保护的 PBKDF2、`init()` 配置读写、文件传输的检查／读取／暂存／发布、`output_to` 打开／写入／关闭。SSH 桥接候选选择、探测重试沿用共享 workflow，SSH 探测、exec 和 SCP 使用 asyncio 子进程，探测间隔使用异步等待。浏览器登录和同步登录执行相同的表单选择、提交顺序、认证轮询与错误分类，异步客户端使用 Playwright async API。
 
-HTTP 请求准备中的配置读取与环境设置解析在工作线程执行。netrc 按客户端与目标 authority 首次读取后缓存，证书上下文按客户端与 TLS 配置缓存（包括 HTTPS 代理）；首次加载也在工作线程。更新 netrc 或原路径中的证书文件后，应重建客户端读取新值。Websocket 的代理解析和每次连接的证书加载也卸载到线程。
+HTTP 请求准备中的配置读取与环境设置解析在工作线程执行。netrc 按客户端与目标 authority 首次读取后缓存，证书上下文按客户端与 TLS 配置缓存（包括 HTTPS 代理）；首次加载也在工作线程。更新 netrc 或原路径中的证书文件后，应重建客户端读取新值。Websocket 的代理解析和每次连接的证书加载也卸载到线程。HTTP DNS 由事件循环默认 executor 解析；本地实测同一客户端跨两次操作的 10 个顺序请求仅解析一次并复用一条连接。并发新连接、连接过期或重连仍可能再次解析；PTY DNS 同样使用默认 executor，未引入自定义 DNS 缓存。
 
 **仍可能阻塞事件循环的部分：** 首次使用客户端时的本地构造／账号配置工作（每个客户端一次）；直接调用同步 `Accounts` API；调用方的同步回调、日志 handler；载荷解析、编码、深拷贝等 CPU 工作，以及少量路径处理、懒导入和进程内锁操作。这里不承诺整个 SDK 零阻塞；这些部分仍在调用方循环线程执行，不因引入本地 offload 池而迁移到 worker。
 
@@ -699,7 +699,7 @@ PTY／Jupyter 执行等待超时或连接在完成 marker 出现前结束时，�
 
 此前的无界内存捕获和反复扫描完整历史输出属于 SDK 实现问题，现已用默认 4 MiB 头尾捕获、固定窗口增量 marker 扫描和摊销线性的缓冲写入修复。`max_output_bytes=None` 仍可显式恢复无限捕获；`capture=False` 配合 `output_to`／回调／异步块流适合长输出。平台 PTY 限制与这些已修复的实现问题应分别理解。
 
-Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的原生 PTY／Jupyter `exec` 和 `exec_stream` 的 `on_output` 回调在事件循环线程按顺序运行；SSH 回调在本次卸载的线程运行（同步 exec 在调用线程运行）。公开回调必须是同步函数，应避免耗时操作；异步应用可直接使用 `exec_stream` 消费块，无须自己桥接线程。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
+Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的 PTY／Jupyter／SSH `exec` 和 `exec_stream` 的 `on_output` 回调均在事件循环线程按顺序运行，接受同步函数或异步函数；同步 exec 的回调在调用线程运行。同步回调应避免耗时操作，异步应用也可直接使用 `exec_stream` 消费块。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
 
 ```python
 from contextlib import aclosing
@@ -798,7 +798,7 @@ Jupyter 使用单个 base64 JSON 请求／响应，文本和二进制均按原�
 - `overwrite=False` 先检查目标，已存在即报错。本地单文件发布还用原子硬链接防止检查后被抢占。Jupyter 没有条件创建 API，因此远端预检查无法排除并发写入；调用方须保证目标没有其他写者。递归目录合并同样不提供并发隔离。
 - 下载和 SSH 上传先暂存，逐个文件在目标同目录写完后原子替换，因此中断写入不会暴露半个目标文件；目录合并是逐文件进行，失败前已完成的文件和已创建的父目录可能保留，不保证整个目录事务性回滚。SSH 在远端 `/tmp` 暂存完整副本，下载也需本地临时空间，发布时还需目标文件的临时副本空间；远端需要 `python3`。
 - Jupyter 上传依赖服务器 ContentsManager 的原子性保证；失败或响应丢失时目标可能已经改变。每个 PUT 使用 `single_send`，写入不重试，结果未知会抛 `MutationUncertainError`，调用方应先核查目标。任何失败都不返回成功 `TransferResult`。
-- `timeout` 与客户端操作预算共同限制网络步骤。异步 Jupyter HTTP 沿用原生请求调度，SSH/SCP 卸载到线程；本地文件处理和 base64 编解码仍可能短暂阻塞事件循环。取消等待不能撤回已发送的写入，也不能强制停止工作线程；SSH 临时文件可能残留，必要时检查 `/tmp/inspire-transfer-*`。
+- `timeout` 与客户端操作预算共同限制网络步骤。异步 Jupyter HTTP 沿用原生请求调度，SSH/SCP 使用 asyncio 子进程；本地文件 I/O 卸载到客户端线程池，base64 编解码仍可能短暂阻塞事件循环。取消等待不能撤回已发送的写入；本地子进程会终止并回收，传输流程继续尝试清理暂存文件。清理失败时仍可能残留 SSH 临时文件，必要时检查 `/tmp/inspire-transfer-*`。
 
 ### tensorboards
 

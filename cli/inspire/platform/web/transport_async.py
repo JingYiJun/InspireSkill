@@ -6,8 +6,12 @@ Authentication workflows suspend on native HTTP, Playwright and lock waits.
 SSH/SCP command builders keep their synchronous shape but run with asyncio
 subprocesses; local file and certificate work uses inspire.platform.web.offload.
 
-Connections belong to a driver context and close on exit. There is no pool of
-thread-pinned SDK clients and no promise to reuse sockets across operations.
+SDK connections belong to the async client and are reused across operations.
+Standalone Transport.request_async calls keep driver-scoped connections, closed
+on driver exit. HTTP DNS uses the loop default executor: sequential keep-alive
+requests resolve once per host per client while the connection survives; new
+connections (concurrency, expiry or reconnects) may resolve again. PTY connections
+also use the loop default executor for DNS. No custom resolver cache is added.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import asyncio
 import inspect
 import time
 from contextlib import AsyncExitStack, suppress
+from contextvars import ContextVar
 from typing import Any, TYPE_CHECKING
 
 import httpx
@@ -32,11 +37,31 @@ if TYPE_CHECKING:
     from inspire.platform.web.transport import Transport
 
 
+class AsyncClientPool:
+    """HTTP connections owned by one SDK runtime on its event loop."""
+
+    def __init__(self) -> None:
+        self.clients: dict[tuple[Any, ...], httpx.AsyncClient] = {}
+        self.lock = asyncio.Lock()
+
+    async def aclose(self) -> None:
+        clients, self.clients = self.clients, {}
+        for client in clients.values():
+            with suppress(Exception):
+                await client.aclose()
+
+
+current_client_pool: ContextVar[AsyncClientPool | None] = ContextVar(
+    "inspire_async_client_pool", default=None,
+)
+
+
 class AsyncDriver:
     """Supply I/O outcomes without owning a second retry or authentication policy.
 
-    Use as an async context manager: its HTTP clients and adapted contexts have
-    this lifetime, while identity and session state belong to the Transport.
+    Adapted contexts and standalone HTTP clients close on driver exit. Under
+    an SDK runtime, HTTP clients are borrowed from its ContextVar pool instead.
+    Identity and session state belong to the Transport.
     """
 
     def __init__(self, transport: Transport) -> None:
@@ -169,8 +194,6 @@ class AsyncDriver:
             remote_exec.exec_in_notebook_jupyter: remote_exec.exec_in_notebook_jupyter_async,
             jupyter_terminal.run_command_capture_in_notebook: jupyter_terminal.run_command_capture_in_notebook_async,
         }
-        if action.function in {remote_exec.cached_notebook_bridge}:
-            return await offload(action.function, *action.args, **action.kwargs)
         if inspect.iscoroutinefunction(action.function):
             return await action.function(*action.args, **action.kwargs)
         adapter = adapters.get(action.function)
@@ -198,10 +221,6 @@ class AsyncDriver:
             if asynchronous is None:
                 return context.__exit__(*error)
             return await asynchronous.__aexit__(*error)
-        if getattr(action.function, "__name__", "") in {"_borrow_plaza_slot", "reset_plaza_client"}:
-            while self.transport._plaza_busy:
-                self.transport.check_deadline()
-                await asyncio.sleep(0.01)
         if action.function is time.sleep:
             await asyncio.sleep(*action.args)
             return None
@@ -273,11 +292,20 @@ class AsyncDriver:
         return prepared, http.merge_environment_settings(prepared.url, {}, None, None, None)
 
     async def _client(self, url: str, settings: Any) -> httpx.AsyncClient:
+        pool = current_client_pool.get()
+        if pool is not None:
+            async with pool.lock:
+                return await self._pooled_client(url, settings, pool.clients, shared=True)
+        return await self._pooled_client(url, settings, self.clients, shared=False)
+
+    async def _pooled_client(self, url: str, settings: Any,
+                             clients: dict[tuple[Any, ...], httpx.AsyncClient],
+                             *, shared: bool) -> httpx.AsyncClient:
         proxy = requests.utils.select_proxy(url, settings["proxies"])
         key = (proxy, settings["verify"], settings["cert"])
-        client = self.clients.get(key)
+        client = clients.get(key)
         if client is None:
-            def build() -> httpx.AsyncClient:
+            def build() -> tuple[Any, Any]:
                 from httpx import create_ssl_context
 
                 tls_key = (settings["verify"], settings["cert"])
@@ -294,9 +322,12 @@ class AsyncDriver:
                         if (True, None) not in contexts:
                             contexts[(True, None)] = create_ssl_context(trust_env=False)
                         proxy_config = httpx.Proxy(proxy, ssl_context=contexts[(True, None)])
-                return httpx.AsyncClient(proxy=proxy_config, verify=context,
-                                         trust_env=False, follow_redirects=False)
-            client = await offload(build)
-            await self.stack.enter_async_context(client)
-            self.clients[key] = client
+                return proxy_config, context
+            proxy_config, context = await offload(build)
+            # Ownership starts after the cancellable file preparation has finished.
+            client = httpx.AsyncClient(proxy=proxy_config, verify=context,
+                                       trust_env=False, follow_redirects=False)
+            if not shared:
+                await self.stack.enter_async_context(client)
+            clients[key] = client
         return client
