@@ -5,6 +5,7 @@ import asyncio
 import os
 import subprocess
 import threading
+import time
 
 import httpx
 import pytest
@@ -74,9 +75,11 @@ def test_bridge_waits_leave_http_preparation_available(client, tracked, monkeypa
             probes = [asyncio.create_task(c.notebooks.exec("nb", command="true"))
                       for _ in range(LOCAL_IO_WORKERS)]
             try:
-                async with asyncio.timeout(2):
-                    while started < LOCAL_IO_WORKERS:
-                        await asyncio.sleep(0.001)
+                # asyncio.timeout is 3.11+; this package supports 3.10.
+                deadline = time.monotonic() + 2
+                while started < LOCAL_IO_WORKERS:
+                    assert time.monotonic() < deadline, "the probes never occupied the pool"
+                    await asyncio.sleep(0.001)
                 await asyncio.wait_for(c.workspaces.list(), 0.5)
                 assert all(not task.done() for task in probes)
             finally:
