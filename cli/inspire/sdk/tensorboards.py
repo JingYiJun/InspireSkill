@@ -100,6 +100,8 @@ class Tensorboards(Service):
         self, refs: Sequence[str | TensorboardRef], *, workspace: str | WorkspaceRef | None = None
     ) -> tuple[Tensorboard, ...]:
         """Return one current snapshot per reference, in input order."""
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         return tuple(self.get(ref, workspace=workspace) for ref in refs)
 
     @operation

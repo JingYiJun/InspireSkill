@@ -167,12 +167,14 @@ def test_envelope_read_retries_but_create_does_not(client, monkeypatch):
         return {"ResponseMetadata": {"Error": {"Code": "InternalError", "Message": "fake"}}}
 
     monkeypatch.setattr(client._transport, "_once", busy)
-    with pytest.raises(TransportError, match="API error: InternalError: fake"):
+    with pytest.raises(SubmissionUncertainError) as caught:
         with client._transport.single_send(create=True):
             from inspire.platform.web.session.envelope import _v2_result
 
             _v2_result(client._transport.request("POST", "/api/v2/train?Action=CreateJobConsole"))
     assert calls == [1]
+    assert str(caught.value.__cause__) == "API error: InternalError: fake"
+    assert not caught.value.retryable
 
 
 
@@ -555,10 +557,14 @@ def test_declared_mutation_is_not_replayed(client, monkeypatch):
         raise TransientAPIError("busy")
 
     monkeypatch.setattr(client._transport, "_once", fail)
-    with pytest.raises(TransportError, match="busy"):
+    from inspire.sdk import MutationUncertainError
+
+    with pytest.raises(MutationUncertainError) as caught:
         with client._transport.single_send():
             client._transport.request("GET", "/api/v2/train?Action=GetUnknownSideEffect")
     assert calls == [1]
+    assert str(caught.value.__cause__) == "busy"
+    assert not caught.value.retryable
 
 
 def test_transport_returns_business_envelope_untouched(client, monkeypatch):
@@ -577,7 +583,7 @@ def test_refresh_cooldown_has_structured_deadline(client, monkeypatch):
     deadline = time.time() + 60
 
     def fail(*args, **kw):
-        error = PlatformAuthError("private login detail")
+        error = PlatformAuthError("Account alpha blocked; update credentials with inspire account set --password.")
         error.retry_at = deadline
         raise error
 
@@ -592,7 +598,7 @@ def test_refresh_cooldown_has_structured_deadline(client, monkeypatch):
     with pytest.raises(AuthenticationCooldownError) as caught:
         client._transport._refresh()
     assert caught.value.retry_at == deadline
-    assert "private" not in str(caught.value)
+    assert str(caught.value) == "Account alpha blocked; update credentials with inspire account set --password."
 
 
 @pytest.mark.parametrize("status", [401, 302, 429, 500, 503])
@@ -1380,7 +1386,7 @@ def test_write_outcome_classification(client, monkeypatch, create, outcome):
     expected = (
         ValidationError if outcome in ("Conflict", 400)
         else AuthenticationError if outcome == 403
-        else TransportError if outcome in ("InternalError", "Throttling", 429)
+        else TransportError if outcome in ("Throttling", 429)
         else uncertain
     )
     with pytest.raises(expected) as caught:
@@ -1397,7 +1403,8 @@ def test_write_outcome_classification(client, monkeypatch, create, outcome):
     assert len(calls) == 1
     assert client._transport._write is None
     if outcome in messages:
-        assert str(caught.value) == f"API error: {outcome}: {messages[outcome]}"
+        message_error = caught.value.__cause__ if outcome == "InternalError" else caught.value
+        assert str(message_error) == f"API error: {outcome}: {messages[outcome]}"
         assert caught.value.__cause__ is causes[0]
     elif outcome == 400:
         assert str(caught.value) == "HTTP 400: platform rejection detail"

@@ -450,6 +450,8 @@ class Notebooks(Service):
         *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Notebook, ...]:
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         return tuple(self.get(name, workspace=workspace) for name in refs)
 
     def _groups(self, ws):

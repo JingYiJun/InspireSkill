@@ -573,6 +573,8 @@ class Jobs(Service):
         *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Job, ...]:
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         from inspire.platform.web.browser_api.jobs import list_jobs_by_ids
 
         resolved = [self._resolve(ref, workspace) for ref in refs]
@@ -757,7 +759,11 @@ class Jobs(Service):
             if value is not None:
                 positive(value, label, 10000000)
         job = self.get(ref, workspace=workspace)
-        pods = self.instance_names(job.ref) if instances == "all" else tuple(instances)
+        pods = (
+            self.instance_names(job.ref) if instances == "all"
+            else (instances,) if isinstance(instances, str)
+            else tuple(instances)
+        )
         if start is not None or end is not None:
             if start is None or end is None:
                 raise ValidationError("Both start and end are required.")

@@ -868,10 +868,10 @@ class ResourceIndex:
                     owner_scope, resource_id
                 ) DO UPDATE SET
                     name=excluded.name,
-                    owner_id=excluded.owner_id,
-                    status=excluded.status,
-                    created_at=excluded.created_at,
-                    compute_group=excluded.compute_group,
+                    owner_id=COALESCE(NULLIF(excluded.owner_id, ''), resource_identity.owner_id),
+                    status=COALESCE(NULLIF(excluded.status, ''), resource_identity.status),
+                    created_at=COALESCE(NULLIF(excluded.created_at, ''), resource_identity.created_at),
+                    compute_group=COALESCE(NULLIF(excluded.compute_group, ''), resource_identity.compute_group),
                     payload=excluded.payload,
                     observed_at=excluded.observed_at,
                     expires_at=excluded.expires_at,

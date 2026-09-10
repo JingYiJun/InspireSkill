@@ -230,6 +230,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[Serving, ...]:
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         return tuple(self.get(ref, workspace=workspace) for ref in refs)
 
     @operation

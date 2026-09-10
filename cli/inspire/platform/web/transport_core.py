@@ -21,7 +21,7 @@ from inspire.platform.web.flow import enter_context, exit_context
 
 from inspire.platform.web.flow import Program as FlowProgram, workflow, call, http_call
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Generator, NoReturn
 
 from inspire.platform.errors import (
@@ -45,6 +45,7 @@ class _SingleSendViolation(RuntimeError):
 def _classify_after_dispatch(error: Exception) -> Exception | None:
     """Return a definite rejection, or None when the write outcome is unknown."""
     from inspire.platform.web.session.models import TransientAPIError
+    from inspire.platform.web.session.envelope import _THROTTLING_V2_ERROR_CODES
 
     from inspire.platform.web.plaza.core import PlazaRejected
 
@@ -60,7 +61,9 @@ def _classify_after_dispatch(error: Exception) -> Exception | None:
         return error
     # TransientAPIError is also a ValueError; classify it before business errors.
     if isinstance(error, TransientAPIError):
-        if error.status in (None, 429) or str(error).startswith("API error:"):
+        # Messages may be redacted; use the envelope code, not its rendered text.
+        code = (error.code or "").strip().lower().replace("_", "")
+        if error.status == 429 or code in _THROTTLING_V2_ERROR_CODES:
             return TransportError(str(error))
         return None
     if isinstance(error, ValidationError) or (
@@ -71,13 +74,44 @@ def _classify_after_dispatch(error: Exception) -> Exception | None:
 
 
 @dataclass
-class SharedState:
-    """Pure cross-call state; the owner serializes generation transitions."""
+class AuthenticationState:
+    """Generation evidence shared immediately by all operation views."""
 
     force_browser: bool = False
     unproven_rebuild: float | None = None
     last_success: float | None = None
+
+
+@dataclass
+class SharedState:
+    """Shared authentication evidence with an operation-local write claim."""
+
+    authentication: AuthenticationState = field(default_factory=AuthenticationState)
     write: dict[str, Any] | None = None
+
+    @property
+    def force_browser(self) -> bool:
+        return self.authentication.force_browser
+
+    @force_browser.setter
+    def force_browser(self, value: bool) -> None:
+        self.authentication.force_browser = value
+
+    @property
+    def unproven_rebuild(self) -> float | None:
+        return self.authentication.unproven_rebuild
+
+    @unproven_rebuild.setter
+    def unproven_rebuild(self, value: float | None) -> None:
+        self.authentication.unproven_rebuild = value
+
+    @property
+    def last_success(self) -> float | None:
+        return self.authentication.last_success
+
+    @last_success.setter
+    def last_success(self, value: float | None) -> None:
+        self.authentication.last_success = value
 
     def dispatched(self) -> None:
         if self.write is not None:
@@ -120,7 +154,7 @@ def uncertain(state: dict[str, Any], error: Exception) -> NoReturn:
 def remaining(timeout: float, deadline: float | None, now: float) -> float:
     value = timeout if deadline is None else deadline - now
     if value <= 0:
-        raise WaitTimeoutError("Operation deadline exceeded; remote resources are unchanged.")
+        raise WaitTimeoutError("Operation deadline exceeded; this does not stop remote workloads.")
     return value
 
 
@@ -255,7 +289,8 @@ class RequestCore:
                         str(envelope_error.get("Code") or "")
                     ):
                         raise TransientAPIError(
-                            str(envelope_error.get("Message") or envelope_error.get("Code"))
+                            str(envelope_error.get("Message") or envelope_error.get("Code")),
+                            code=str(envelope_error.get("Code") or ""),
                         )
                 yield Return(payload, observed)
                 return
@@ -382,7 +417,7 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
             self.check_deadline()
             retry_at = getattr(error, "retry_at", None)
             if isinstance(retry_at, (int, float)):
-                raise AuthenticationCooldownError(retry_at) from None
+                raise AuthenticationCooldownError(retry_at, str(error)) from error
             raise AuthenticationError(str(error)) from error
         finally:
             if self._browser is not None:

@@ -13,9 +13,9 @@ class AuthenticationError(InspireError):
 
 
 class AuthenticationCooldownError(AuthenticationError):
-    def __init__(self, retry_at: float):
+    def __init__(self, retry_at: float, message: str | None = None):
         super().__init__(
-            "Account authentication is cooling down; inspect credentials before retrying."
+            message or "Account authentication is cooling down; inspect credentials before retrying."
         )
         self.retry_at = retry_at
 

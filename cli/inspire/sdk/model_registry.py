@@ -118,6 +118,8 @@ class Models(Service):
         project: str | ProjectRef | None = None,
     ) -> tuple[ModelStatus, ...]:
         """Return detailed model status for each reference, in input order."""
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         return tuple(self._status(ref, workspace, project) for ref in refs)
 
     def _status(self, selector, workspace, project):

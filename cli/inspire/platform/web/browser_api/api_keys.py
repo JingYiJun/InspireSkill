@@ -29,9 +29,13 @@ def _call(action: str, body: dict[str, Any], session: WebSession) -> dict[str, A
         )
     except SessionExpiredError:
         raise SessionExpiredError("API key operation requires a valid account session.") from None
-    except Exception:
-        # The server can echo a plaintext key or an internal handle in errors.
-        raise ValueError(f"API key operation {action} failed; no secret was displayed.") from None
+    except Exception as error:
+        # Preserve classification and metadata, but never expose server text or
+        # its cause chain: either can contain plaintext keys/internal handles.
+        error.args = (f"API key operation {action} failed; no secret was displayed.",)
+        error.__cause__ = None
+        error.__context__ = None
+        raise error from None
 
 
 def list_api_keys(*, session: WebSession | None = None) -> list[APIKeyInfo]:

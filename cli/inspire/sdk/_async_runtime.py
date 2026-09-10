@@ -99,6 +99,7 @@ class AsyncRuntime:
         # Facade callbacks must bind to this view; the catalog cache is shared.
         client = copy(self._client)
         client._transport = copy(self._client._transport)
+        # Copy the write claim, retaining the shared authentication evidence.
         client._transport._decisions = copy(self._client._transport._decisions)
         client._catalog_context = None
         for name, value in vars(self._client).items():
@@ -131,8 +132,6 @@ class AsyncRuntime:
         finally:
             assert self._client is not None
             owner, current = self._client._transport, client._transport
-            if current._last_success is not None:
-                owner._last_success = max(owner._last_success or 0, current._last_success)
             if current._session is not None and (
                 owner._session is None or current._session.created_at >= owner._session.created_at
             ):
@@ -153,6 +152,8 @@ class AsyncRuntime:
     async def _status(self, facade: str, refs: Any, workspace: Any) -> tuple[Any, ...]:
         # A rolling window bounds both sockets and tasks. Await input order so a
         # later fast failure cannot replace the first reference's exception.
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         pending: list[asyncio.Task[Any]] = []
         iterator = iter(refs)
         assert self._client is not None

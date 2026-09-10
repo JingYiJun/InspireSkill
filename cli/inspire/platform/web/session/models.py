@@ -81,10 +81,12 @@ class TransientAPIError(ValueError):
         *,
         status: int | None = None,
         retry_after: float | None = None,
+        code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.retry_after = retry_after
+        self.code = code
 
 
 _API_STATUS_RE = re.compile(r"\bAPI returned (\d{3})\b")

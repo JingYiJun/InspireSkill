@@ -248,6 +248,8 @@ class ComputeJobs(Service, Generic[R, J, V]):
         *,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[J, ...]:
+        if isinstance(refs, str):
+            raise ValidationError("refs must be a sequence, not a string.")
         get_details = self._binding.get_details_by_ids
         if get_details is None:
             return tuple(self.get(ref, workspace=workspace) for ref in refs)

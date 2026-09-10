@@ -11,6 +11,8 @@ from .models_serving import ImageRegisterHandle
 from .models_resources import ProjectInfo, ProjectDetail, ProjectOwner, ProjectOwnerRef, ImageDetail
 from .exceptions import (
     InspireError,
+    AuthenticationError,
+    TransportError,
     ValidationError,
     ResourceNotFoundError,
     AmbiguousResourceError,
@@ -44,11 +46,19 @@ def operation(fn: F) -> F:
             except InspireError:
                 raise
             except Exception as error:
+                from inspire.platform.web.session.models import (
+                    AuthenticationError as SessionAuthenticationError, SessionExpiredError, TransientAPIError,
+                )
+
+                if isinstance(error, (SessionAuthenticationError, SessionExpiredError)):
+                    raise AuthenticationError(str(error)) from error
                 cause = error.__cause__
                 while cause is not None:
                     if isinstance(cause, InspireError):
                         raise cause from None
                     cause = cause.__cause__
+                if isinstance(error, TransientAPIError):
+                    raise TransportError(str(error)) from error
                 if isinstance(error, ValueError):
                     raise ValidationError(str(error)) from None
                 if type(error).__module__.startswith("inspire.platform"):
@@ -65,17 +75,19 @@ def image_mutation(fn: F) -> F:
     """Fence readers both before a write and after its outcome, including errors."""
     @wraps(fn)
     def wrapped(self, *args, **kwargs):
-        self._invalidate_images()
-        try:
-            result = fn(self, *args, **kwargs)
-        except BaseException as error:
+        def fence():
             try:
                 self._invalidate_images()
-            except Exception as cache_error:
-                # Preserve submission uncertainty if disk invalidation also fails.
-                raise error from cache_error
-            raise
-        self._invalidate_images()
+            except Exception:
+                # Without a durable fence this client must stop trusting snapshots.
+                # Other processes may still see old disk entries until their TTL.
+                self.client.cache._degrade()
+
+        fence()
+        try:
+            result = fn(self, *args, **kwargs)
+        finally:
+            fence()
         return result
 
     return cast(F, wrapped)

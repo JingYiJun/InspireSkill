@@ -128,6 +128,12 @@ class CatalogCache:
         self._tokens[key] = token
         return cast(T, value)
 
+    def _degrade(self) -> None:
+        """Use live reads for this client after a failed invalidation fence."""
+        self._entries.clear()
+        self._tokens.clear()
+        self.ttl = 0
+
     def clear(self) -> None:
         """Discard all snapshots; lifetime hit/miss counters are preserved."""
         self._entries.clear()

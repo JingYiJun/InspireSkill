@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from inspire.platform.web import plaza
 from inspire.platform.web.browser_api import datasets as mounts_api
 from inspire.services.catalog import dataset_catalog as views
+from .exceptions import ValidationError
 from .models import DatasetMount, Page, WorkspaceRef
 from .models_resources import (
     DatasetInfo,
@@ -132,6 +133,8 @@ class Datasets(Service):
     ) -> tuple[DatasetValidation, ...]:
         from inspire.services.catalog.datasets import DatasetSpecError, parse_dataset_spec
 
+        if isinstance(specs, str):
+            raise ValidationError("specs must be a sequence, not a string.")
         mounts = []
         seen = set()
         for spec in specs:
