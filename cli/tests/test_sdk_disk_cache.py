@@ -29,6 +29,7 @@ from inspire.platform.web.session.models import WebSession
 
 home, account, origin, ttl, disk = sys.argv[1:]
 m = pytest.MonkeyPatch()
+m.setattr("inspire.local_files._restrict_windows_directory", lambda path: None)
 m.setattr(Path, "home", lambda: Path(home))
 def reject(*a, **kw):
     raise AssertionError("Real platform access is forbidden")

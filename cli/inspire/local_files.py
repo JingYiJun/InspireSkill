@@ -186,6 +186,24 @@ def _restrict_windows_directory(path: Path) -> None:
             _warn_once(directory, str(error))
 
 
+def prepare_windows_directory(path: Path, *, create: bool = False) -> None:
+    """Warm ACLs during path resolution without creating accounts on lookup.
+
+    Storage constructors may request creation before entering their first lock.
+    Merely resolving a missing home/account must remain a read-only operation.
+    """
+    try:
+        if create:
+            ensure_private_directory(path)
+            repair_inspire_path(path)
+        elif path.is_dir():
+            _restrict_windows_directory(path)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as error:
+        _warn_once(path, str(error))
+
+
 def restrict_private_path(path: Path) -> None:
     """Narrow POSIX permissions or protect a Windows directory once per process."""
     try:

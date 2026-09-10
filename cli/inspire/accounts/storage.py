@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from contextlib import AbstractContextManager
 from contextvars import ContextVar
@@ -27,6 +28,7 @@ from pathlib import Path
 from inspire.local_files import (
     atomic_write_text as _atomic_write_text,
     ensure_private_directory,
+    prepare_windows_directory,
     repair_inspire_path,
 )
 
@@ -91,20 +93,29 @@ def validate_name(name: str) -> str:
     return candidate
 
 
+def _resolved_directory(path: Path, *, create: bool = False) -> Path:
+    # Warm Windows ACL attempts before callers enter cache locks. POSIX path
+    # resolution remains side-effect free; its permissions are repaired on I/O.
+    if sys.platform == "win32":
+        prepare_windows_directory(path, create=create)
+    return path
+
+
 def inspire_home() -> Path:
-    return Path.home() / ".inspire"
+    return _resolved_directory(Path.home() / ".inspire")
 
 
 def accounts_dir() -> Path:
-    return inspire_home() / "accounts"
+    return _resolved_directory(inspire_home() / "accounts")
 
 
 def current_file() -> Path:
     return inspire_home() / "current"
 
 
-def account_dir(name: str) -> Path:
-    return accounts_dir() / validate_name(name)
+def account_dir(name: str, *, create: bool = False) -> Path:
+    validated = validate_name(name)
+    return _resolved_directory(accounts_dir() / validated, create=create)
 
 
 def account_config_path(name: str) -> Path:

@@ -108,7 +108,10 @@ def test_every_facade_and_signature_has_typed_async_mirror(client):
                for node in ast.walk(checking))
 
 
-def test_checked_in_wrappers_are_current():
+def test_checked_in_wrappers_are_current(monkeypatch, tmp_path):
+    # The generator constructs a client with a fake account; Windows prepares
+    # that account's cache directory before any storage lock can be acquired.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     generate = runpy.run_path("scripts/generate_sdk_async.py")["generate"]
     assert Path("inspire/sdk/async_client.py").read_text() == generate()
 

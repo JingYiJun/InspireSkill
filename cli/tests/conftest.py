@@ -21,6 +21,26 @@ _REAL_SESSION_ACCOUNT_RESOLVER = None
 
 
 @pytest.fixture(autouse=True)
+def _stub_windows_directory_acl(monkeypatch):
+    """Unrelated storage tests must not launch PowerShell for each fake home.
+
+    ACL contract tests opt back in with windows_directory_acl, then supply
+    their own subprocess boundary. Explicit key exports are never stubbed.
+    """
+    original = local_files._restrict_windows_directory
+    monkeypatch.setattr(local_files, "_restrict_windows_directory", lambda path: None)
+    return original
+
+
+@pytest.fixture
+def windows_directory_acl(monkeypatch, _stub_windows_directory_acl):
+    """Exercise real directory memoization and ACL dispatch in focused tests."""
+    monkeypatch.setattr(local_files, "_restrict_windows_directory", _stub_windows_directory_acl)
+    monkeypatch.setattr(local_files, "_windows_directory_attempts", set())
+    monkeypatch.setattr(local_files, "_warned_paths", set())
+
+
+@pytest.fixture(autouse=True)
 def _disable_update_check(monkeypatch):  # noqa: ANN001
     """Tests should not spawn detached update-check subprocesses."""
     monkeypatch.setenv("INSPIRE_SKIP_UPDATE_CHECK", "1")

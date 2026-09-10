@@ -47,7 +47,7 @@ def test_private_file_is_never_observable_with_wide_permissions(monkeypatch, tmp
 
     def observe_replace(source, destination):
         assert stat.S_IMODE(Path(source).stat().st_mode) == 0o600
-        assert Path(source).read_text() == "fixture payload"
+        assert Path(source).read_text(encoding="utf-8") == "fixture payload"
         real_replace(source, destination)
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
@@ -185,7 +185,7 @@ def test_unlocked_concurrent_writers_have_independent_temporaries(monkeypatch, t
         for future in futures:
             future.result(timeout=10)
     assert len(set(sources)) == 2
-    assert target.read_text() in {"a", "b"}
+    assert target.read_text(encoding="utf-8") in {"a", "b"}
     assert list(tmp_path.iterdir()) == [target]
 
 
@@ -202,7 +202,7 @@ def test_account_write_paths_explicitly_request_private_files():
     ]
     calls = []
     for name in paths:
-        tree = ast.parse((root / name).read_text())
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -223,9 +223,28 @@ def test_account_write_paths_explicitly_request_private_files():
 
 def test_windows_ci_lints_and_builds_and_sdk_documents_platform_boundary():
     root = Path(__file__).resolve().parents[2]
-    windows = (root / ".github/workflows/ci.yml").read_text().split("  windows:", 1)[1]
+    windows = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8").split("  windows:", 1)[1]
     assert "run: uv run ruff check inspire tests" in windows
     assert "run: uv build" in windows
-    documentation = (root / "references/sdk.md").read_text()
+    documentation = (root / "references/sdk.md").read_text(encoding="utf-8")
     for term in ("ProactorEventLoop", "SelectorEventLoop", "%USERPROFILE%", "PowerShell"):
         assert term in documentation
+
+
+def test_unrelated_storage_does_not_launch_windows_acl(monkeypatch, tmp_path):
+    from inspire.accounts.storage import account_dir
+
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unrelated tests must not launch an ACL subprocess")
+
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    monkeypatch.setattr(local_files.subprocess, "run", forbidden)
+    for i in range(16):
+        home = tmp_path / str(i)
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        target = account_dir("fixture") / "config.toml"
+        local_files.atomic_write_text(target, "fixture payload", private=True)
+        assert target.read_text(encoding="utf-8") == "fixture payload"

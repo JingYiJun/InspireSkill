@@ -49,7 +49,7 @@ class CatalogStore:
     def __init__(self, account: str, base_url: str) -> None:
         self.account = account
         self.base_url = base_url
-        self.path: Path = account_dir(account) / "sdk-catalog-v1.json"
+        self.path: Path = account_dir(account, create=True) / "sdk-catalog-v1.json"
 
     def _read(self) -> dict[str, Any]:
         """Called under the stable sibling lock, including repair and pruning."""

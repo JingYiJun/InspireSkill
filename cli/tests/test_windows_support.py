@@ -290,6 +290,7 @@ def test_atomic_replace_retries_windows_sharing_violation(
     assert list(tmp_path.iterdir()) == [target]
 
 
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_private_writer_protects_directory_before_creating_temporary(
     as_windows, monkeypatch, tmp_path
 ):
@@ -311,6 +312,7 @@ def test_windows_private_writer_protects_directory_before_creating_temporary(
 
 
 @pytest.mark.parametrize("reason", ["missing PowerShell", "ACL verification failed"])
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_cache_acl_failure_is_reported_once_and_session_still_saves(
     as_windows, monkeypatch, tmp_path, caplog, reason
 ):
@@ -361,6 +363,7 @@ def test_windows_acl_errors_are_safe_and_actionable(as_windows, monkeypatch, tmp
     assert "untrusted subprocess diagnostic" not in str(caught.value)
 
 
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_directory_repair_preserves_owner_access_and_enables_inheritance(as_windows, monkeypatch, tmp_path):
     from inspire import local_files
 
@@ -422,6 +425,7 @@ def test_async_subprocess_requires_proactor_without_changing_policy(
 
 
 @pytest.mark.parametrize("kind", ["guard", "ide", "rtunnel", "catalog", "index", "bridges"])
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, tmp_path, kind):
     from pathlib import Path
     from inspire import local_files
@@ -453,6 +457,9 @@ def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, t
     elif kind == "catalog":
         from inspire.sdk.catalog_store import CatalogStore
 
+        # This test exercises the writer with an arbitrary destination; account
+        # resolution and its three directories have a separate lock-order test.
+        monkeypatch.setattr("inspire.sdk.catalog_store.account_dir", lambda name, **kwargs: tmp_path)
         store = CatalogStore("fixture", "https://example.invalid")
         store.path = path
         store._write({"entries": {}})
@@ -470,6 +477,7 @@ def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, t
     assert path.stat().st_size > 0
 
 
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_unrepairable_acl_is_left_unchanged_with_a_reason(
     as_windows, monkeypatch, tmp_path, caplog
 ):
@@ -489,6 +497,7 @@ def test_windows_unrepairable_acl_is_left_unchanged_with_a_reason(
 
 
 @pytest.mark.parametrize("operations", [1, 10, 100])
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_private_io_acl_cost_is_bounded(as_windows, monkeypatch, tmp_path, operations):
     """Count real ACL launch requests, not calls to a mocked permission helper."""
     from collections import Counter
@@ -525,6 +534,7 @@ def test_windows_private_io_acl_cost_is_bounded(as_windows, monkeypatch, tmp_pat
 
 
 @pytest.mark.parametrize("returncode", [1, 3])
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_directory_acl_failure_is_not_retried_per_operation(
     as_windows, monkeypatch, tmp_path, caplog, returncode
 ):
@@ -544,6 +554,7 @@ def test_windows_directory_acl_failure_is_not_retried_per_operation(
     assert len(caplog.records) == 1
 
 
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_missing_inspire_home_does_not_restrict_parent(as_windows, monkeypatch, tmp_path):
     from pathlib import Path
     from inspire import local_files
@@ -558,6 +569,7 @@ def test_windows_missing_inspire_home_does_not_restrict_parent(as_windows, monke
     local_files.repair_inspire_path(tmp_path / ".inspire/config.toml")
 
 
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_concurrent_directory_initialization_launches_once(
     as_windows, monkeypatch, tmp_path
 ):
@@ -579,6 +591,7 @@ def test_windows_concurrent_directory_initialization_launches_once(
 
 
 @pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.usefixtures("windows_directory_acl")
 def test_windows_export_still_verifies_file_in_cached_directory(
     as_windows, monkeypatch, tmp_path, returncode
 ):
@@ -610,3 +623,82 @@ def test_windows_export_still_verifies_file_in_cached_directory(
         assert output.read_text() == "fixture payload"
     assert len(calls) == 2
     assert not list(tmp_path.glob(".inspire-key-*"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("operations", [1, 16])
+@pytest.mark.parametrize("returncode", [0, 1])
+@pytest.mark.usefixtures("windows_directory_acl")
+def test_windows_catalog_acl_is_warm_before_cache_lock(
+    as_windows, monkeypatch, tmp_path, existing, operations, returncode
+):
+    from collections import Counter
+    from pathlib import Path
+    from inspire import local_files
+    from inspire.accounts import cache_lock
+    from inspire.sdk.catalog_store import CatalogStore
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".inspire"
+    directory = root / "accounts/fixture"
+    if existing:
+        directory.mkdir(parents=True)
+    held = 0
+    acquisitions = 0
+    acquire = cache_lock._acquire
+    release = cache_lock._release
+
+    def tracked_acquire(*args, **kwargs):
+        nonlocal held, acquisitions
+        assert kwargs["timeout"] == 5
+        acquire(*args, **kwargs)
+        held += 1
+        acquisitions += 1
+
+    def tracked_release(*args, **kwargs):
+        nonlocal held
+        release(*args, **kwargs)
+        held -= 1
+
+    calls = []
+
+    def run(args, **kwargs):
+        assert held == 0, "ACL subprocess launched while holding a cache lock"
+        assert args[0] == "powershell.exe"
+        calls.append(Path(kwargs["env"]["INSPIRE_KEY_EXPORT_PATH"]))
+        return subprocess.CompletedProcess(args, returncode)
+
+    monkeypatch.setattr(cache_lock, "_acquire", tracked_acquire)
+    monkeypatch.setattr(cache_lock, "_release", tracked_release)
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    monkeypatch.setattr(local_files.subprocess, "run", run)
+    for i in range(operations):
+        # Re-resolving an account and constructing a new store cannot reset the memo.
+        store = CatalogStore("fixture", "https://example.invalid")
+        key = ("current_user", "fixture", store.base_url, str(i))
+        generation, _ = store.read(key)
+        entry = store.put(key, {"id": str(i)}, 60, generation)
+        assert entry is not None and store.value(entry) == {"id": str(i)}
+    store.invalidate()
+    assert acquisitions == 2 * operations + 1
+    assert held == 0
+    assert Counter(calls) == {root: 1, root / "accounts": 1, directory: 1}
+
+
+@pytest.mark.usefixtures("windows_directory_acl")
+def test_windows_account_lookup_does_not_create_missing_directories(
+    as_windows, monkeypatch, tmp_path
+):
+    from pathlib import Path
+    from inspire import local_files
+    from inspire.accounts.storage import account_dir
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("A missing account lookup must not launch PowerShell")
+
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    monkeypatch.setattr(local_files.subprocess, "run", forbidden)
+    assert account_dir("fixture") == tmp_path / ".inspire/accounts/fixture"
+    assert not (tmp_path / ".inspire").exists()
