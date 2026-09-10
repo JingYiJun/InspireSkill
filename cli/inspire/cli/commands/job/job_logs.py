@@ -23,7 +23,7 @@ from inspire.services.job.job_logs import (
 
 from inspire.bridge.tunnel import (
     TunnelConfig,
-    TunnelNotAvailableError,
+    TunnelError,
     _test_ssh_connection,
     is_tunnel_available,
     load_tunnel_config,
@@ -134,13 +134,16 @@ def _resolve_latest_log_via_ssh(
     construction (``sanitize_job_name_for_filename`` strips them).
 
     Returns the absolute path on hit, ``None`` on no match. Errors during
-    SSH propagate up — the caller is the boundary that decides whether to
-    surface them.
+    tunnel setup or availability propagate up to the command boundary. Other
+    probe failures are logged at debug level and return ``None``.
     """
     cmd = f"ls -1t {glob_pattern} 2>/dev/null | head -n 1"
     try:
         result = run_ssh_command(command=cmd, capture_output=True, bridge_name=bridge_name)
+    except TunnelError:
+        raise
     except Exception:
+        logger.debug("Latest log SSH probe failed", exc_info=True)
         return None
     if result.returncode != 0:
         return None
@@ -453,8 +456,6 @@ def _follow_logs_via_ssh(
 
     api_logger = logging.getLogger("inspire.inspire_api_control")
     original_level = api_logger.level
-    api_logger.setLevel(logging.CRITICAL)
-
     session = get_web_session()
     final_status = None
     status_check_interval = 5
@@ -480,8 +481,10 @@ def _follow_logs_via_ssh(
                 if "exists" in result.stdout:
                     concrete_log_path = remote_log_path
                     break
+        except TunnelError:
+            raise
         except Exception:
-            pass
+            logger.debug("Log file SSH polling failed; retrying", exc_info=True)
 
         time.sleep(5)
 
@@ -517,6 +520,8 @@ def _follow_logs_via_ssh(
             )
             truncation_announced = True
 
+    api_logger.setLevel(logging.CRITICAL)
+    consecutive_status_failures = 0
     try:
         process = subprocess.Popen(
             ssh_args,
@@ -544,6 +549,7 @@ def _follow_logs_via_ssh(
                 try:
                     job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
                     current_status = job_data.get("status", "UNKNOWN")
+                    consecutive_status_failures = 0
 
                     if current_status in _JOB_TERMINAL_STATUSES:
                         final_status = current_status
@@ -551,7 +557,14 @@ def _follow_logs_via_ssh(
                         stdout.close()
                         break
                 except Exception:
-                    pass
+                    logger.debug("Job status query failed while following logs", exc_info=True)
+                    consecutive_status_failures += 1
+                    if consecutive_status_failures == 5:
+                        logger.warning(
+                            "Job status queries failed 5 consecutive times; log following may "
+                            "not stop automatically when the job finishes. Check job status "
+                            "separately or press Ctrl-C to stop following."
+                        )
 
     except KeyboardInterrupt:
         return final_status
@@ -573,6 +586,7 @@ def _find_connected_tunnel_bridges(
     try:
         config = load_tunnel_config()
     except Exception:
+        logger.debug("Tunnel configuration unavailable for connected bridge probe", exc_info=True)
         return []
 
     excluded = (exclude or "").strip()
@@ -593,6 +607,7 @@ def _find_connected_tunnel_bridges(
                 if future.result():
                     connected.append(name)
             except Exception:
+                logger.debug("Connected tunnel bridge probe failed", exc_info=True)
                 continue
 
     return sorted(connected)
@@ -605,6 +620,7 @@ def _resolve_tunnel_preflight_target(
     try:
         tunnel_config = load_tunnel_config()
     except Exception:
+        logger.debug("Tunnel configuration unavailable for log preflight", exc_info=True)
         return bridge_name, None, bool(bridge_name)
 
     if bridge_name:
@@ -770,7 +786,8 @@ def _run_job_logs_single_job(
                 all_output=all_output,
             )
 
-    except TunnelNotAvailableError:
+    except TunnelError:
+        logger.debug("Job log SSH tunnel failed", exc_info=True)
         _emit_no_tunnel_error(ctx, bridge_name=bridge_name)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

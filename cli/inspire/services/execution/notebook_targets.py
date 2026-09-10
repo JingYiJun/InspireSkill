@@ -1,6 +1,7 @@
 """Pure Notebook target-cache readers and bridge lookup helpers."""
 
 from __future__ import annotations
+import logging
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from inspire.accounts import current_account, account_exists
 from inspire.bridge import tunnel as tunnel_module
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
+
+logger = logging.getLogger(__name__)
 
 CACHE_VERSION = 2
 TARGET_CACHE_FILENAME = "notebook-targets.json"
@@ -130,6 +133,7 @@ def candidate_from_cache_entry(
             else tunnel_module.load_tunnel_config()
         )
     except Exception:
+        logger.debug("Cached target tunnel configuration load failed; trying next strategy", exc_info=True)
         return None
     try:
         bridge = config.get_bridge(bridge_name) if bridge_name else None
@@ -139,6 +143,7 @@ def candidate_from_cache_entry(
                     bridge = candidate
                     break
     except Exception:
+        logger.debug("Cached target bridge lookup failed; trying next strategy", exc_info=True)
         return None
     if bridge is None:
         return None
@@ -187,4 +192,5 @@ def target_available(candidate: NotebookTargetCandidate) -> bool:
             progressive=False,
         )
     except Exception:
+        logger.debug("Cached target tunnel availability probe failed; trying next strategy", exc_info=True)
         return False

@@ -13,6 +13,8 @@ persistence steps; the whole module is not a pure Sans-I/O state machine.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import sys
 import time
 from inspire.platform.web.flow import enter_context, exit_context
@@ -31,6 +33,9 @@ from inspire.platform.errors import (
     MutationUncertainError,
     WaitTimeoutError,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class _SingleSendViolation(RuntimeError):
@@ -266,6 +271,7 @@ class RequestCore:
                     raise
                 if self.cli_compat:
                     if isinstance(error, SessionExpiredError):
+                        logger.debug("Web session expired; trying session renewal", exc_info=True)
                         yield Refresh(observed, not refreshed)
                         refreshed = True
                         browser = False
@@ -278,6 +284,7 @@ class RequestCore:
                         and (is_request_error(error) or isinstance(error, _NonJSONResponse))
                         and self.allow_browser
                     ):
+                        logger.debug("HTTP request failed; trying browser fallback", exc_info=True)
                         self.shared.force_browser = browser = True
                         continue
                     if not isinstance(error, TransientAPIError) or attempt == 2:
@@ -288,6 +295,7 @@ class RequestCore:
                 if isinstance(error, SessionExpiredError):
                     if refreshed:
                         raise AuthenticationError(str(error)) from error
+                    logger.debug("Web session expired; trying session renewal", exc_info=True)
                     yield Refresh(observed, True)
                     refreshed = True
                 elif isinstance(error, (ValidationError, AuthenticationError)):
@@ -296,6 +304,7 @@ class RequestCore:
                     error, TransientAPIError
                 ):
                     if self.allow_browser:
+                        logger.debug("HTTP request failed; trying browser fallback", exc_info=True)
                         browser = True
                 elif not isinstance(error, TransientAPIError):
                     raise TransportError(str(error)) from error
@@ -334,6 +343,7 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
                     self.check_deadline()
                     if getattr(error, "retry_at", None) is not None:
                         raise
+                    logger.debug("Cached session load failed; trying session renewal", exc_info=True)
                 if self._session is not None and not require_cas_ticket:
                     renewed = (yield call(auth.renew_web_session_without_credentials, self._session))
                     if renewed is not None:
@@ -341,6 +351,7 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
                         auth._persist(renewed, account=self.account)
                         self._adopt_session(renewed)
                         return
+                logger.debug("No reusable cached session or SSO renewal; trying credential login")
                 try:
                     username, password = auth.get_credentials(self.account)
                     self._adopt_session(
@@ -358,6 +369,7 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
                         or isinstance(error.__cause__, auth._CasVerificationRequired)
                     ):
                         raise
+                    logger.debug("Credential login unavailable; trying browser login", exc_info=True)
                     self._adopt_session(
                         (yield call(auth.get_web_session, force_refresh=True, account=self.account))
                     )
@@ -374,7 +386,9 @@ def refresh(self: Any, *, require_cas_ticket: bool = False) -> FlowProgram[Any]:
             raise AuthenticationError(str(error)) from error
         finally:
             if self._browser is not None:
-                self._browser.close()
+                # Browser cleanup must not replace the renewal result or error.
+                with contextlib.suppress(Exception):
+                    self._browser.close()
                 self._browser = None
 
 
@@ -418,6 +432,7 @@ def refresh_expired_session(self: Any, observed_created_at: float) -> FlowProgra
                     "Web session renewed through cached SSO state without credentials."
                 )
                 return renewed
+            logger.debug("Cached SSO renewal unavailable; trying credential login")
             if not self.allow_browser:
                 from inspire.platform.web.session import auth
 

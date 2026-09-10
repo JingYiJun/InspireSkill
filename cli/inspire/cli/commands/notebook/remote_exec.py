@@ -86,11 +86,19 @@ def _should_auto_passthrough_stdin() -> bool:
         if stdin.isatty():
             return False
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "Automatic stdin passthrough TTY detection failed; trying next strategy",
+            exc_info=True,
+        )
         return False
 
     try:
         mode = os.fstat(stdin.fileno()).st_mode
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "Automatic stdin passthrough file mode detection failed; trying next strategy",
+            exc_info=True,
+        )
         return False
 
     import stat as _stat

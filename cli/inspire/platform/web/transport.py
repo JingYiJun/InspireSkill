@@ -12,6 +12,8 @@ session; once the write is dispatched, no driver may replay it.
 
 from __future__ import annotations
 
+import contextlib
+
 from inspire.platform.web.flow import Program as FlowProgram, workflow, call, http_call
 import os
 import threading
@@ -529,17 +531,19 @@ class Transport:
         if self._closed:
             return
         self.check()
-        try:
+        # Closing one stale resource must not prevent releasing the remaining resources.
+        with contextlib.suppress(Exception):
             self.reset_plaza_client()
-            if self.cli_compat:
-                from inspire.platform.web import session as web_session
+        if self.cli_compat:
+            from inspire.platform.web import session as web_session
 
+            with contextlib.suppress(Exception):
                 web_session.close_browser_client()
+            with contextlib.suppress(Exception):
                 web_session.close_pooled_requests_session()
-            if self._browser is not None:
-                self._browser.close()
-        finally:
-            if self._http is not None:
-                self._http.close()
-            self._session = self._browser = self._http = None
-            self._closed = True
+        for resource in (self._browser, self._http):
+            if resource is not None:
+                with contextlib.suppress(Exception):
+                    resource.close()
+        self._session = self._browser = self._http = None
+        self._closed = True

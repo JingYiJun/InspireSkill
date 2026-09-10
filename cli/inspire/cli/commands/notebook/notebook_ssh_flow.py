@@ -74,6 +74,7 @@ def _describe_proxy_http_status(proxy_url: str, timeout_s: float = 4.0) -> str:
     except urllib_error.HTTPError as error:
         return f"HTTP {error.code}"
     except Exception:
+        logger.debug("Proxy HTTP status probe failed; trying next strategy", exc_info=True)
         return "unreachable"
 
 
@@ -232,6 +233,10 @@ def _should_retry_non_interactive_disconnect(
             progressive=False,
         )
     except Exception:
+        logger.debug(
+            "SSH disconnect retry readiness probe failed; trying next strategy",
+            exc_info=True,
+        )
         return False
 
     return not tunnel_ready

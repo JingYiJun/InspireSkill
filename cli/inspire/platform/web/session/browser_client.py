@@ -6,6 +6,8 @@ from inspire.platform.web.offload import offload
 
 from inspire.platform.web.flow import blocking_io
 
+import contextlib
+import logging
 import hashlib
 import json
 import threading
@@ -21,6 +23,9 @@ from .models import (
 from .browser_launch import chromium_launch_kwargs
 from .proxy import get_playwright_proxy
 from .retry import retry_after_seconds
+
+
+logger = logging.getLogger(__name__)
 
 
 class _BrowserHTTPError(ValueError):
@@ -64,6 +69,7 @@ class _BrowserRequestClient:
         try:
             body_text = resp.text() if resp.status >= 400 else ""
         except Exception:
+            logger.debug("Browser error response body unavailable; classifying HTTP status", exc_info=True)
             body_text = ""
         _classify_response(
             resp.status, resp.headers if resp.status in TRANSIENT_HTTP_STATUSES else {}, body_text
@@ -76,18 +82,15 @@ class _BrowserRequestClient:
             return
         self._closed = True
 
-        try:
+        # The context may already be closed; continue releasing browser resources.
+        with contextlib.suppress(Exception):
             self._context.close()
-        except Exception:
-            pass
-        try:
+        # The browser may already be closed; still stop the Playwright runtime.
+        with contextlib.suppress(Exception):
             self._browser.close()
-        except Exception:
-            pass
-        try:
+        # An already stopped Playwright runtime needs no further cleanup.
+        with contextlib.suppress(Exception):
             self._playwright.stop()
-        except Exception:
-            pass
 
 
 def _session_fingerprint(session: WebSession) -> str:
@@ -117,10 +120,9 @@ _BROWSER_CLIENT_CLOSE_TIMEOUT_SECONDS = 1.0
 def _get_thread_client() -> Optional[_BrowserRequestClient]:
     client = getattr(_BROWSER_CLIENT_TLS, "client", None)
     if client is not None and getattr(client, "_closed", False):
-        try:
+        # A stale thread-local entry must not prevent reporting that no client is available.
+        with contextlib.suppress(AttributeError):
             delattr(_BROWSER_CLIENT_TLS, "client")
-        except Exception:
-            pass
         return None
     return client
 
@@ -130,10 +132,9 @@ def _set_thread_client(client: _BrowserRequestClient) -> None:
 
 
 def _clear_thread_client() -> None:
-    try:
+    # The thread-local client may already be absent during cleanup.
+    with contextlib.suppress(AttributeError):
         delattr(_BROWSER_CLIENT_TLS, "client")
-    except Exception:
-        pass
 
 
 def _register_client(client: _BrowserRequestClient) -> None:
@@ -170,8 +171,8 @@ def _close_client_best_effort(client: _BrowserRequestClient, *, timeout: float |
     def _runner() -> None:
         try:
             client.close()
-        except BaseException:
-            pass
+        except Exception:
+            logger.debug("Browser cleanup worker failed; continuing shutdown", exc_info=True)
         finally:
             done.set()
 
@@ -268,6 +269,7 @@ class AsyncBrowserRequestClient:
         try:
             body_text = await resp.text() if resp.status >= 400 else ""
         except Exception:
+            logger.debug("Browser error response body unavailable; classifying HTTP status", exc_info=True)
             body_text = ""
         _classify_response(
             resp.status, resp.headers if resp.status in TRANSIENT_HTTP_STATUSES else {}, body_text
@@ -281,7 +283,6 @@ class AsyncBrowserRequestClient:
         for resource, method in [(self._context, "close"), (self._browser, "close"),
                                  (self._playwright, "stop")]:
             if resource is not None:
-                try:
+                # An already closed resource must not prevent releasing the rest.
+                with contextlib.suppress(Exception):
                     await getattr(resource, method)()
-                except Exception:
-                    pass

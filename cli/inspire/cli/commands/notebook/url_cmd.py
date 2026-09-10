@@ -12,6 +12,8 @@ all. There is no token-free form — the platform route on the console domain
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from typing import TYPE_CHECKING
 
 import click
@@ -22,6 +24,8 @@ from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.services.utils.raw_ids import scrub_raw_ids
 
 from .transport import preflight_notebook_transport_policy
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
@@ -103,13 +107,16 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
         finally:
             response.close()
     except Exception:
+        logger.debug(
+            "Notebook service HTTP reachability probe failed; trying next strategy",
+            exc_info=True,
+        )
         return "no_service"
     finally:
         if http is not None:
-            try:
+            # HTTP cleanup must not replace the reachability probe result.
+            with contextlib.suppress(Exception):
                 http.close()
-            except Exception:
-                pass
 
     if 200 <= status < 400:
         return "reachable"

@@ -1,6 +1,7 @@
 """Interactive Jupyter terminal CLI adapter."""
 
 from __future__ import annotations
+import contextlib
 import json
 import sys
 from typing import Optional
@@ -46,10 +47,9 @@ def _run_jupyter_terminal_shell(
         _send_jupyter_stdin(ws, _stty_command().replace("\n", "\r"))
 
         def announce_resize() -> None:
-            try:
+            # A missed resize notification must not interrupt the interactive terminal.
+            with contextlib.suppress(Exception):
                 _send_jupyter_stdin(ws, _stty_command().replace("\n", "\r"))
-            except Exception:
-                pass
 
         streams = ShellStreams(ws, stdin)
         with raw_terminal(stdin), watch_terminal_resize(stdin, announce_resize) as poll_resize:

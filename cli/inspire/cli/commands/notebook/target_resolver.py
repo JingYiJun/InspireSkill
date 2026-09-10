@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import json
 import os
 import sys
@@ -32,6 +33,8 @@ from inspire.services.execution.notebook_targets import (  # noqa: F401
     split_target_cache_key as _split_target_cache_key,
     target_available as _target_available,
 )
+
+logger = logging.getLogger(__name__)
 
 CACHE_VERSION = 2
 TARGET_CACHE_FILENAME = "notebook-targets.json"
@@ -317,6 +320,7 @@ def _can_prompt(ctx: Context) -> bool:
     try:
         return bool(sys.stdin.isatty() and sys.stderr.isatty())
     except Exception:
+        logger.debug("Interactive prompt TTY detection failed; trying next strategy", exc_info=True)
         return False
 
 

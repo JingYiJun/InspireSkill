@@ -10,6 +10,7 @@ from inspire.platform.web.flow import enter_context, exit_context
 
 from inspire.platform.web.flow import Program, workflow, call, http_call, perform_sync
 
+import contextlib
 from html.parser import HTMLParser
 import json
 import logging
@@ -777,6 +778,7 @@ def renew_web_session_without_credentials(session: WebSession) -> Program[WebSes
     help.
     """
     if not _has_sso_renewal_state(session):
+        logger.debug("Cached SSO renewal state unavailable; trying next authentication strategy")
         return None
 
     previous_detail = session.user_detail if isinstance(session.user_detail, dict) else {}
@@ -901,7 +903,11 @@ def renew_web_session_without_credentials(session: WebSession) -> Program[WebSes
                     route_fair_scheduling,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Workspace discovery failed during login; workspace names may be incomplete "
+                "until the session is refreshed. Re-login to retry workspace discovery."
+            )
+            logger.debug("Workspace route discovery failed", exc_info=True)
 
         # Optional route discovery must not hide an exhausted operation budget.
         _request_timeout(15)
@@ -939,10 +945,9 @@ def renew_web_session_without_credentials(session: WebSession) -> Program[WebSes
         _persist(renewed, account=account)
         return renewed
     finally:
-        try:
+        # HTTP cleanup must not replace the session renewal result.
+        with contextlib.suppress(Exception):
             http.close()
-        except Exception:
-            pass
 
 
 @workflow
@@ -1094,6 +1099,10 @@ def _login_with_cas_requests(
     try:
         detail = _v2_result(user_detail_resp.json())
     except Exception:
+        logger.debug(
+            "user detail unavailable; resource cache scope will lack subject_id",
+            exc_info=True,
+        )
         detail = {}
     if detail:
         user_detail = detail
@@ -1121,7 +1130,11 @@ def _login_with_cas_requests(
                 route_fair_scheduling,
             )
     except Exception:
-        pass
+        logger.warning(
+            "Workspace discovery failed during login; workspace names may be incomplete "
+            "until the session is refreshed. Re-login to retry workspace discovery."
+        )
+        logger.debug("Workspace route discovery failed", exc_info=True)
 
     _request_timeout(15)
     storage_state = {
@@ -1348,6 +1361,10 @@ def _login_with_browser(
                     perform_sync(call(pass_locator.fill, password))
                     return pass_locator
                 except Exception:
+                    logger.debug(
+                        "Login form selector fill failed; trying next strategy",
+                        exc_info=True,
+                    )
                     continue
             return None
 
@@ -1356,11 +1373,19 @@ def _login_with_browser(
                 perform_sync(call(pass_locator.press, "Enter", timeout=3000))
                 return
             except Exception:
+                logger.debug(
+                    "Login form submission via Enter failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             try:
                 perform_sync(call(pass_locator.evaluate, "el => el.form && el.form.submit()"))
                 return
             except Exception:
+                logger.debug(
+                    "Login form submission via form.submit() failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             try:
                 perform_sync(call(pass_locator.evaluate,
@@ -1373,6 +1398,10 @@ def _login_with_browser(
                     """
                 ))
             except Exception:
+                logger.debug(
+                    "Login form submission via button click failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
 
         pass_locator = _fill_login_form()
@@ -1381,6 +1410,10 @@ def _login_with_browser(
                 perform_sync(call(page.get_by_text("Account login", exact=True).click, timeout=3000, force=True))
                 perform_sync(call(page.wait_for_timeout, 500))
             except Exception:
+                logger.debug(
+                    "Account login tab selection failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             pass_locator = _fill_login_form()
 
@@ -1439,6 +1472,10 @@ def _login_with_browser(
                     if resp.status == 200:
                         return
                 except Exception:
+                    logger.debug(
+                        "Login API authentication probe failed; trying next strategy",
+                        exc_info=True,
+                    )
                     pass
                 perform_sync(call(page.wait_for_timeout, 500))
             if credentials_submitted:
@@ -1461,10 +1498,9 @@ def _login_with_browser(
         # start Chromium but crash while rendering the full Qizhi SPA because
         # fontconfig is incomplete; rendering the SPA is unnecessary for CLI
         # session capture.
-        try:
+        # Session capture can continue even if the page is already closed.
+        with contextlib.suppress(Exception):
             perform_sync(call(page.close))
-        except Exception:
-            pass
 
         user_detail: dict | None = None
         request_headers = {
@@ -1483,6 +1519,10 @@ def _login_with_browser(
                 if detail:
                     user_detail = detail
         except Exception:
+            logger.debug(
+                "user detail unavailable; resource cache scope will lack subject_id",
+                exc_info=True,
+            )
             user_detail = None
 
         # Discover all workspace IDs via `user.GetRoutes`. The response contains
@@ -1511,7 +1551,11 @@ def _login_with_browser(
                     route_fair_scheduling,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Workspace discovery failed during login; workspace names may be incomplete "
+                "until the session is refreshed. Re-login to retry workspace discovery."
+            )
+            logger.debug("Workspace route discovery failed", exc_info=True)
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 

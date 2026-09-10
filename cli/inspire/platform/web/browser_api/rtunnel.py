@@ -11,6 +11,7 @@ from inspire.platform.web.jupyter_urls import (  # noqa: F401
     jupyter_server_base as _jupyter_server_base,
 )
 
+import contextlib
 import json
 import os
 import re
@@ -341,6 +342,7 @@ def _active_account_name() -> str | None:
 
         return current_account()
     except Exception:
+        _log.debug("Active account lookup for rtunnel failed; trying next strategy", exc_info=True)
         return None
 
 
@@ -374,6 +376,10 @@ def get_rtunnel_state_file(
             if account_exists(account):
                 return account_dir(account) / f"{_CACHE_BASENAME}.json"
         except Exception:
+            _log.debug(
+                "Account rtunnel cache path lookup failed; trying next strategy",
+                exc_info=True,
+            )
             pass
 
     root = cache_dir or _default_cache_dir()
@@ -750,6 +756,7 @@ def _response_body_prefix(response: Any, *, limit: int = 400) -> str:
                 break
         return "".join(chunks)[:limit]
     except Exception:
+        _log.debug("Proxy response body prefix read failed; trying next strategy", exc_info=True)
         return ""
 
 
@@ -792,6 +799,10 @@ def _candidate_urls_from_ide_port_forward(
             timeout=max(10, int(timeout_s)),
         )
     except Exception:
+        _log.debug(
+            "Notebook port forward URL discovery failed; trying next strategy",
+            exc_info=True,
+        )
         return []
     return [proxy_url] if proxy_url else []
 
@@ -836,6 +847,7 @@ def _ssh_probe_rtunnel_proxy_url(
         )
         return result.returncode == 0
     except Exception:
+        _log.debug("SSH readiness probe failed; trying next strategy", exc_info=True)
         return False
 
 
@@ -923,6 +935,7 @@ def probe_existing_rtunnel_proxy_url(
                     continue
                 resp = http.get(url, timeout=(5, 5), stream=True)
             except Exception:
+                _log.debug("Candidate proxy HTTP probe failed; trying next strategy", exc_info=True)
                 continue
             try:
                 body = _response_body_prefix(resp)
@@ -941,10 +954,9 @@ def probe_existing_rtunnel_proxy_url(
                     pass
                 return url
             finally:
-                try:
+                # Response cleanup must not replace the proxy probe result.
+                with contextlib.suppress(Exception):
                     resp.close()
-                except Exception:
-                    pass
         return None
     except (OSError, ValueError, RuntimeError, AttributeError):
         return None
@@ -1306,10 +1318,9 @@ def _probe_terminal_command_markers_via_ws(
 
         return markers.get(result)
     finally:
-        try:
+        # Temporary terminal cleanup must not replace the probe result.
+        with contextlib.suppress(Exception):
             _delete_terminal_via_api(context, lab_url=lab_frame.url, term_name=term_name)
-        except Exception:
-            pass
 
 
 def _check_rtunnel_present_via_ws(
@@ -2024,12 +2035,11 @@ def _send_rtunnel_setup_script(
     def _cleanup_browser_terminal() -> None:
         if not browser_term_name:
             return
-        try:
+        # A temporary terminal may already be gone when cleanup runs.
+        with contextlib.suppress(Exception):
             _delete_terminal_via_api(
                 context, lab_url=browser_term_lab_url, term_name=browser_term_name
             )
-        except Exception:
-            pass
 
     try:
         result, browser_term_name = _open_or_create_terminal(context, page, lab_frame)

@@ -17,7 +17,7 @@ from inspire.platform.web.offload import offload
 import asyncio
 import inspect
 import time
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from typing import Any, TYPE_CHECKING
 
 import httpx
@@ -50,7 +50,9 @@ class AsyncDriver:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
-        await self.stack.__aexit__(*args)
+        # The stack attempts every close; cleanup must not replace the request outcome.
+        with suppress(Exception):
+            await self.stack.__aexit__(*args)
 
     async def _browser_send(self, action: Send) -> Any:
         from inspire.platform.web.session.browser_client import AsyncBrowserRequestClient

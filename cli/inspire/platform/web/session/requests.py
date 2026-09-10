@@ -5,6 +5,7 @@ from __future__ import annotations
 from inspire.platform.web.flow import blocking_io
 
 import atexit
+import contextlib
 import threading
 from urllib.parse import urlsplit
 
@@ -80,10 +81,9 @@ def close_pooled_requests_session() -> None:
         stale = list(_pooled_by_thread.values())
         _pooled_by_thread.clear()
     for http in stale:
-        try:
+        # A stale session close failure must not prevent closing the remaining sessions.
+        with contextlib.suppress(Exception):
             http.close()
-        except Exception:  # pragma: no cover - closing must never raise
-            pass
 
 
 atexit.register(close_pooled_requests_session)

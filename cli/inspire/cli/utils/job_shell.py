@@ -1,6 +1,8 @@
 """Interactive CLI adapters for remote terminal sessions."""
 
 from __future__ import annotations
+
+import contextlib
 import shutil
 import sys
 import click
@@ -81,10 +83,9 @@ def run_remote_shell(
         ws.send_text(_stty_command())
 
         def announce_resize() -> None:
-            try:
+            # A missed resize notification must not interrupt the interactive shell.
+            with contextlib.suppress(Exception):
                 ws.send_text(_stty_command())
-            except Exception:
-                pass
 
         streams = ShellStreams(ws, stdin)
         with raw_terminal(stdin), watch_terminal_resize(stdin, announce_resize) as poll_resize:

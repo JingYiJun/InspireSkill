@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from inspire.platform.web.offload import offload
+import contextlib
 import asyncio
 from typing import Generator, Any, cast
 import base64
@@ -337,7 +338,9 @@ class WebSocketClient:
 
         except BaseException:
             if self.sock is not None:
-                self.sock.close()
+                # Preserve the handshake failure even when the socket is already gone.
+                with contextlib.suppress(Exception):
+                    self.sock.close()
                 self.sock = None
             raise
 
@@ -453,14 +456,12 @@ class WebSocketClient:
         sock = self.sock
         if sock is None:
             return
-        try:
+        # The peer may already be gone; still close the local socket.
+        with contextlib.suppress(Exception):
             self._send_frame(0x8)
-        except Exception:
-            pass
-        try:
+        # Cleanup must not prevent clearing the local socket reference.
+        with contextlib.suppress(Exception):
             sock.close()
-        except Exception:
-            pass
         self.sock = None
 
 def _handshake_request(parsed: Any, headers: dict[str, str]) -> tuple[bytes, str]:
@@ -698,12 +699,13 @@ class AsyncWebSocketClient:
         if self.writer is None:
             return
         try:
-            await asyncio.wait_for(self._send_frame(8), min(self.timeout, 1.0))
-        except Exception:
-            pass
-        writer, self.writer = self.writer, None
-        writer.close()
-        try:
-            await asyncio.wait_for(writer.wait_closed(), 1.0)
-        except Exception:
-            pass
+            # A disconnected peer must not prevent releasing the local stream.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._send_frame(8), min(self.timeout, 1.0))
+        finally:
+            writer, self.writer = self.writer, None
+            # Best-effort cleanup also runs when sending the close frame is cancelled.
+            with contextlib.suppress(Exception):
+                writer.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(writer.wait_closed(), 1.0)
