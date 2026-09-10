@@ -68,9 +68,15 @@ class InspireClient:
         catalog_store = CatalogStore(self.account, self.base_url)
         if catalog_disk_cache:
             self.cache = CatalogCache(catalog_ttl, store=catalog_store)
+            from .identity_cache import IdentityCache
+
+            self.cache._identity = IdentityCache(self.account, catalog_ttl, self.base_url)
         # Even readers that opt out must invalidate an existing shared catalog
         # when they mutate images; do not create a disk cache for these clients.
         self.cache._invalidation_store = catalog_store
+        from .identity_cache import IdentityCache
+
+        self.cache._identity_invalidation = IdentityCache(self.account, catalog_ttl, self.base_url)
         self.operation_timeout = operation_timeout
         self._config = config
         self._transport = Transport(

@@ -11,6 +11,7 @@ from typing import Any, TypeVar, cast
 from inspire.platform.web.flow import blocking_call, perform_sync
 
 from .exceptions import ValidationError
+from .identity_cache import IdentityCache
 from .catalog_store import CatalogStore, KINDS, MAX_ENTRIES
 
 T = TypeVar("T")
@@ -27,6 +28,8 @@ class CatalogCache:
         ):
             raise ValidationError("catalog_ttl must be finite non-negative seconds.")
         self.ttl = float(ttl)
+        self._identity: IdentityCache | None = None
+        self._identity_invalidation: IdentityCache | None = None
         self._store = store
         self._invalidation_store = store
         self._shared_hits = 0
@@ -54,11 +57,7 @@ class CatalogCache:
         assert store is not None
         if key[1:3] != (store.account, store.base_url):
             raise ValidationError("Catalog key belongs to another account or server.")
-        self.stats()
-        while len(self._entries) >= MAX_ENTRIES and key not in self._entries:
-            oldest = next(iter(self._entries))
-            del self._entries[oldest]
-            self._tokens.pop(oldest, None)
+        self._make_room(key)
         generation = None
         try:
             generation, shared = store.read(key)
@@ -95,15 +94,46 @@ class CatalogCache:
                 pass
         return value
 
+    def _make_room(self, key: CatalogKey) -> None:
+        self.stats()
+        while len(self._entries) >= MAX_ENTRIES and key not in self._entries:
+            oldest = next(iter(self._entries))
+            del self._entries[oldest]
+            self._tokens.pop(oldest, None)
+    def _get_identity(self, key: CatalogKey, session: Any, load: Callable[[], T], groups: Any) -> T:
+        assert self._identity is not None
+        self._make_room(key)
+        value, shared = self._identity.get(session, key[0], key[3:], load, groups=groups)
+        token = self._identity.token(session, key[0], key[3:])
+        previous = self._entries.get(key)
+        if shared:
+            if previous is not None and time.monotonic() < previous[0] and self._tokens.get(key) == token:
+                self._hits += 1
+            else:
+                self._shared_hits += 1
+        else:
+            self._misses += 1
+        expiry = previous[0] if shared and previous is not None and self._tokens.get(key) == token else time.monotonic() + self.ttl
+        self._entries[key] = (expiry, deepcopy(value))
+        self._tokens[key] = token
+        return cast(T, value)
+
     def clear(self) -> None:
         """Discard all snapshots; lifetime hit/miss counters are preserved."""
         self._entries.clear()
         self._tokens.clear()
+        if self._identity is not None:
+            self._identity.clear()
         if self._store is not None:
             self._store.invalidate()
 
     def _invalidate(self, kind: str, account: str, base_url: str, *scope: Any) -> None:
         """Discard a catalog kind, optionally restricted by a scope prefix."""
+        if kind == "images" and self._identity_invalidation is not None:
+            from inspire.services.resource_index import resource_index_path
+            path = resource_index_path(account)
+            if path is not None and perform_sync(blocking_call(path.exists)):
+                self._identity_invalidation.invalidate_images()
         prefix = (kind, account, base_url, *scope)
         for key in list(self._entries):
             if key[: len(prefix)] == prefix:

@@ -153,7 +153,7 @@ def test_fixed_paths_keep_event_loop_running(tmp_path, monkeypatch, local_ssh):
         transport = owner()
         store = CatalogStore("test", transport.base_url)
         cache = CatalogCache(store=store)
-        key = ("workspaces", "test", transport.base_url)
+        key = ("current_user", "test", transport.base_url)
         try:
             async with AsyncDriver(transport) as driver:
 
@@ -161,7 +161,7 @@ def test_fixed_paths_keep_event_loop_running(tmp_path, monkeypatch, local_ssh):
                     return await run_sync(driver, fn)
 
                 for label, fn in [
-                    ("catalog miss", lambda: cache._get(key, lambda: [{"id": "ws"}])),
+                    ("catalog miss", lambda: cache._get(key, lambda: {"id": "user"})),
                     ("catalog hit", lambda: cache._get(key, lambda: pytest.fail("missed cache"))),
                     ("catalog invalidation", cache.clear),
                     ("upload", lambda: sdk_transfer._read_upload(source, 100)),
@@ -654,4 +654,37 @@ def test_native_ssh_capture_matches_sync(local_ssh, limit, capture):
         finally:
             transport.close()
 
+    asyncio.run(run())
+
+
+def test_shared_index_io_keeps_event_loop_running(tmp_path, monkeypatch):
+    from inspire.services.resource_index import ResourceIndex, ResourceIdentity, ResourceScope
+    ticker = Ticker()
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = ResourceScope("https://example.invalid", "user", "job")
+    original = index._connect
+
+    @contextmanager
+    def slow_connect():
+        ticker.slow("sqlite_connect")
+        with original() as connection:
+            yield connection
+
+    monkeypatch.setattr(index, "_connect", slow_connect)
+    async def run():
+        ticker.loop = asyncio.get_running_loop()
+        pulse = asyncio.create_task(ticker.run())
+        transport = owner()
+        try:
+            async with AsyncDriver(transport) as driver:
+                def refresh():
+                    with index.refresh_lease(scope) as acquired:
+                        assert acquired
+                        index.reconcile(scope, [ResourceIdentity("id", "name")])
+                    assert index.lookup(scope, "name")[0].resource_id == "id"
+                await ticker.check("shared index", run_sync(driver, refresh))
+        finally:
+            pulse.cancel()
+            await asyncio.gather(pulse, return_exceptions=True)
+            transport.close()
     asyncio.run(run())

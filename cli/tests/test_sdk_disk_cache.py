@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -75,8 +76,8 @@ for line in sys.stdin:
         m.setattr(api, "list_notebooks", fake.counted("ListNotebooks", ([], 0)))
         c.notebooks.list("Workspace")
     elif isinstance(action, dict):
-        key = ("workspaces", account, origin, action["scope"])
-        c.cache._get(key, lambda: [{"id": action["scope"]}])
+        key = ("current_user", account, origin, action["scope"])
+        c.cache._get(key, lambda: {"id": action["scope"]})
     print(json.dumps({"calls": fake.calls, "stats": c.cache.stats()}), flush=True)
 c.close()
 """
@@ -101,7 +102,7 @@ def store(tmp_path, monkeypatch):
     return CatalogStore("alpha", "https://example.invalid")
 
 
-KEY = ("workspaces", "alpha", "https://example.invalid")
+KEY = ("current_user", "alpha", "https://example.invalid")
 
 
 def test_plan_reused_by_independent_process(tmp_path):
@@ -172,7 +173,7 @@ def test_corrupt_store_is_a_miss(tmp_path, monkeypatch, garbage):
     disk = store(tmp_path, monkeypatch)
     worker(tmp_path, ["plan"])
     disk.path.write_bytes(garbage)
-    assert sum(worker(tmp_path, ["plan"])[0]["calls"].values()) == 9
+    assert worker(tmp_path, ["plan"])[0]["calls"] == {"GetScheduleConfig": 1}
     assert worker(tmp_path, ["plan"])[0]["calls"] == {}
 
 
@@ -184,13 +185,19 @@ def test_expiry_across_processes_and_cleanup(tmp_path, monkeypatch):
         entry["created"] -= 120
         entry["expires"] -= 120
     disk.path.write_text(json.dumps(data))
+    with sqlite3.connect(disk.path.parent / "resource-index.sqlite3") as connection:
+        connection.execute("UPDATE resource_scope SET last_full_refresh_at = last_full_refresh_at - 120")
+        connection.execute("UPDATE resource_identity SET observed_at = observed_at - 120, expires_at = expires_at - 120")
     assert worker(tmp_path, ["images"])[0]["calls"] == {"GetRoutes": 1, "ListImages": 4}
-    assert len(json.loads(disk.path.read_text())["entries"]) == 5
+    # Reading metadata performs the remainder's expiry pruning.
+    disk.read(KEY)
+    assert len(json.loads(disk.path.read_text())["entries"]) == 0
 
 
-def test_reader_ttl_cannot_extend_writer_ttl(tmp_path):
+def test_reader_ttl_caps_sdk_reads_without_shortening_cli_identity_ttl(tmp_path):
     worker(tmp_path, ["plan"], ttl=0.001)
-    assert sum(worker(tmp_path, ["plan"], ttl=600)[0]["calls"].values()) == 9
+    # The metadata writer TTL still expires; identity lifetimes are the CLI's.
+    assert worker(tmp_path, ["plan"], ttl=600)[0]["calls"] == {"GetScheduleConfig": 1}
     assert sum(worker(tmp_path, ["plan"], ttl=0.001)[0]["calls"].values()) >= 9
 
 
@@ -202,7 +209,7 @@ def test_concurrent_process_writers_keep_all_entries(tmp_path, monkeypatch):
     assert len(data["entries"]) == 16
     for i in range(16):
         entry = data["entries"][key_string((*KEY, str(i)))]
-        assert disk.value(entry) == [{"id": str(i)}]
+        assert disk.value(entry) == {"id": str(i)}
     assert disk.path.stat().st_mode & 0o777 == 0o600
     assert not disk.path.with_name(disk.path.name + ".tmp").exists()
 
@@ -218,7 +225,7 @@ def test_incomplete_enumeration_never_published(tmp_path, monkeypatch):
         cache._get(KEY, fail)
     assert cache.stats()["entries"] == 0
     assert disk.read(KEY)[1] is None
-    assert cache._get(KEY, lambda: [{"id": "complete"}]) == [{"id": "complete"}]
+    assert cache._get(KEY, lambda: {"id": "complete"}) == {"id": "complete"}
 
 
 def test_inflight_enumeration_cannot_undo_process_invalidation(tmp_path, monkeypatch):
@@ -227,7 +234,7 @@ def test_inflight_enumeration_cannot_undo_process_invalidation(tmp_path, monkeyp
 
     def load():
         worker(tmp_path, ["clear"])
-        return [{"id": "stale"}]
+        return {"id": "stale"}
 
     cache._get(KEY, load)
     assert cache.stats()["entries"] == 0
@@ -238,10 +245,10 @@ def test_store_and_memory_are_bounded(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     cache = CatalogCache(store=disk)
     for i in range(MAX_ENTRIES + 3):
-        cache._get((*KEY, str(i)), lambda: [])
+        cache._get((*KEY, str(i)), lambda: {"id": "user"})
     assert len(json.loads(disk.path.read_text())["entries"]) == MAX_ENTRIES
     assert cache.stats()["entries"] == MAX_ENTRIES
-    cache._get(KEY, lambda: [{"id": "large", "name": "x" * MAX_BYTES}])
+    cache._get(KEY, lambda: {"id": "large", "name": "x" * MAX_BYTES})
     assert disk.path.stat().st_size <= MAX_BYTES
     assert disk.read(KEY)[1] is None
 
@@ -249,11 +256,11 @@ def test_store_and_memory_are_bounded(tmp_path, monkeypatch):
 def test_unknown_types_are_not_deserialized(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     cache = CatalogCache(store=disk)
-    cache._get(KEY, lambda: [])
+    cache._get(KEY, lambda: {"id": "user"})
     data = json.loads(disk.path.read_text())
     data["entries"][key_string(KEY)]["value"] = ["os.system", "false"]
     disk.path.write_text(json.dumps(data))
-    assert CatalogCache(store=disk)._get(KEY, lambda: [{"id": "fresh"}]) == [{"id": "fresh"}]
+    assert CatalogCache(store=disk)._get(KEY, lambda: {"id": "fresh"}) == {"id": "fresh"}
 
 
 def test_live_resources_are_not_shared(tmp_path):
@@ -270,7 +277,7 @@ def test_ttl_zero_creates_no_store(tmp_path):
 def test_shared_cache_rejects_wrong_account_key(tmp_path, monkeypatch):
     cache = CatalogCache(store=store(tmp_path, monkeypatch))
     with pytest.raises(ValidationError):
-        cache._get(("workspaces", "beta", KEY[2]), lambda: [])
+        cache._get(("current_user", "beta", KEY[2]), lambda: {"id": "user"})
 
 
 def test_opted_out_writer_invalidates_existing_shared_store(tmp_path):
@@ -291,20 +298,20 @@ def test_scope_parameters_and_integer_keys_round_trip(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     cache = CatalogCache(store=disk)
     keys = [
-        ("prices", *KEY[1:], "ws", "group1", "train"),
-        ("prices", *KEY[1:], "ws", "group2", "train"),
-        ("prices", *KEY[1:], "ws", "group1", "notebook"),
-        ("prices", *KEY[1:], "other", "group1", "train"),
+        ("current_user", *KEY[1:], "ws", "group1", "train"),
+        ("current_user", *KEY[1:], "ws", "group2", "train"),
+        ("current_user", *KEY[1:], "ws", "group1", "notebook"),
+        ("current_user", *KEY[1:], "other", "group1", "train"),
     ]
     for i, key in enumerate(keys):
-        cache._get(key, lambda i=i: [{"quota_id": str(i)}])
+        cache._get(key, lambda i=i: {"id": str(i)})
     other = CatalogCache(store=disk)
 
     def fail():
         pytest.fail("Complete catalog should come from disk")
 
     for i, key in enumerate(keys):
-        assert other._get(key, fail) == [{"quota_id": str(i)}]
+        assert other._get(key, fail) == {"id": str(i)}
     levels = ("priority_levels", *KEY[1:], "ws", "train")
     cache._get(levels, lambda: {"quota": {1: "low", 9: "high"}})
     assert other._get(levels, fail) == {"quota": {1: "low", 9: "high"}}
@@ -313,22 +320,21 @@ def test_scope_parameters_and_integer_keys_round_trip(tmp_path, monkeypatch):
 def test_invalid_row_is_a_miss(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     worker(tmp_path, ["images"])
-    data = json.loads(disk.path.read_text())
-    data["entries"][key_string(KEY)]["value"] = ["list", [["dict", []]]]
-    disk.path.write_text(json.dumps(data))
+    with sqlite3.connect(disk.path.parent / "resource-index.sqlite3") as connection:
+        connection.execute("UPDATE resource_identity SET payload = ? WHERE resource_type = 'workspace'", ('["dict", []]',))
     assert worker(tmp_path, ["images"])[0]["calls"] == {"GetRoutes": 1}
 
 
 def test_unavailable_disk_does_not_serve_unchecked_memory(tmp_path, monkeypatch):
     disk = store(tmp_path, monkeypatch)
     cache = CatalogCache(store=disk)
-    cache._get(KEY, lambda: [{"id": "old"}])
+    cache._get(KEY, lambda: {"id": "old"})
 
     def unavailable(key):
         raise OSError("unavailable")
 
     monkeypatch.setattr(disk, "read", unavailable)
-    assert cache._get(KEY, lambda: [{"id": "new"}]) == [{"id": "new"}]
+    assert cache._get(KEY, lambda: {"id": "new"}) == {"id": "new"}
     assert cache.stats()["entries"] == 0
 
 
@@ -344,7 +350,7 @@ def test_invalidation_failure_is_not_silently_successful(tmp_path, monkeypatch):
         cache._invalidate("images", *KEY[1:])
 
 
-def test_cli_disk_files_are_untouched(tmp_path):
+def test_shared_index_repaired_and_other_cli_disk_files_untouched(tmp_path):
     directory = tmp_path / ".inspire" / "accounts" / "alpha"
     directory.mkdir(parents=True)
     sentinels = {
@@ -357,7 +363,10 @@ def test_cli_disk_files_are_untouched(tmp_path):
     for path in sentinels.values():
         path.write_bytes(b"CLI-owned sentinel")
     worker(tmp_path, ["plan", "register", "clear"])
-    assert all(path.read_bytes() == b"CLI-owned sentinel" for path in sentinels.values())
+    assert sentinels["notebook-targets.json"].read_bytes() == b"CLI-owned sentinel"
+    with sqlite3.connect(sentinels["resource-index.sqlite3"]) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("SELECT COUNT(*) FROM resource_identity").fetchone()[0] == 0
 
 
 def test_default_reader_creates_no_shared_files(tmp_path):

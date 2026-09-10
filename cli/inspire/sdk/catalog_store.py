@@ -1,10 +1,9 @@
-"""Bounded, account-local SDK catalog storage; independent of CLI caches."""
+"""Small SDK-only metadata cache; identities and prices live in ResourceIndex."""
 
 from __future__ import annotations
 
 from inspire.platform.web.flow import blocking_io
 
-from dataclasses import fields
 import json
 import math
 import os
@@ -15,17 +14,16 @@ from uuid import uuid4
 
 from inspire.accounts.cache_lock import exclusive_cache_lock
 from inspire.accounts.storage import account_dir
-from inspire.platform.web.browser_api.images import CustomImageInfo
-from inspire.platform.web.browser_api.projects import ProjectInfo
 from inspire.services.account_config import atomic_write_text
+
+from inspire.services.catalog_codec import (
+    encode_catalog as _encode,
+    decode_catalog as _decode,
+    validate_catalog as _validate_value,
+)
 
 KINDS = frozenset(
     {
-        "workspaces",
-        "projects",
-        "compute_groups",
-        "images",
-        "prices",
         "priority_levels",
         "fair_scheduling",
         "current_user",
@@ -33,67 +31,7 @@ KINDS = frozenset(
 )
 MAX_ENTRIES = 256
 MAX_BYTES = 8 * 1024 * 1024
-_TYPES = {cls.__name__: cls for cls in (ProjectInfo, CustomImageInfo)}
 
-
-def _encode(value: Any) -> Any:
-    # Tagged containers preserve tuple fields and integer dictionary keys.
-    # Only these two known directory models can be reconstructed; no pickle
-    # or imports selected by disk contents.
-    if type(value) in (str, int, float, bool, type(None)):
-        return value
-    if type(value) in (list, tuple):
-        return [type(value).__name__, [_encode(item) for item in value]]
-    if type(value) is dict:
-        return ["dict", [[_encode(k), _encode(v)] for k, v in value.items()]]
-    if type(value) in _TYPES.values():
-        return [
-            type(value).__name__,
-            {f.name: _encode(getattr(value, f.name)) for f in fields(value)},
-        ]
-    raise TypeError("Unsupported catalog value")
-
-
-def _decode(value: Any) -> Any:
-    if type(value) in (str, int, float, bool, type(None)):
-        return value
-    tag, data = value
-    if tag == "list":
-        return [_decode(item) for item in data]
-    if tag == "tuple":
-        return tuple(_decode(item) for item in data)
-    if tag == "dict":
-        return {_decode(k): _decode(v) for k, v in data}
-    if tag in _TYPES:
-        return _TYPES[tag](**{k: _decode(v) for k, v in data.items()})
-    raise ValueError("Unknown catalog value")
-
-
-def _validate_value(kind: str, value: Any) -> None:
-    if kind in {"workspaces", "projects", "compute_groups", "images", "prices"}:
-        if not isinstance(value, list):
-            raise ValueError("Invalid catalog rows")
-        for row in value:
-            if kind == "projects":
-                valid = isinstance(row, ProjectInfo) and bool(row.project_id)
-            elif kind == "images":
-                valid = isinstance(row, CustomImageInfo) and bool(row.image_id)
-            else:
-                identity = {
-                    "workspaces": ("id",),
-                    "compute_groups": ("id", "logic_compute_group_id"),
-                    "prices": ("quota_id", "spec_id"),
-                }[kind]
-                valid = isinstance(row, dict) and any(row.get(field) for field in identity)
-            if not valid:
-                raise ValueError("Catalog omitted a resource identity")
-    elif kind == "fair_scheduling":
-        if type(value) is not bool:
-            raise ValueError("Invalid scheduling flag")
-    elif not isinstance(value, dict) or (
-        kind == "current_user" and not (value.get("id") or value.get("user_id"))
-    ):
-        raise ValueError("Invalid catalog mapping")
 
 
 def key_string(key: tuple[Any, ...]) -> str:

@@ -229,7 +229,7 @@ class Jobs(Service):
         if workspace is None:
             raise ValidationError("workspace is required when selecting a job by name.")
         ws = self.client.workspaces.get(workspace)
-        return exact(self._all(ws, keyword=selector), selector, JobRef, self.client, ws.ref.key).ref
+        return self._indexed_resolution(selector, JobRef, ws.ref.key, lambda: self._all(ws, keyword=selector))
 
     @operation
     def get(self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None) -> Job:

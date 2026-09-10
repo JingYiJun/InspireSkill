@@ -225,7 +225,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         if not isinstance(selector, str) or not selector.strip():
             raise ValidationError("Use a non-empty name or the matching resource reference.")
         ws = self.client.workspaces.get(workspace)
-        return exact(self._all(ws, keyword=selector), selector, self._ref_type, self.client, ws.ref.key).ref
+        return self._indexed_resolution(selector, self._ref_type, ws.ref.key, lambda: self._all(ws, keyword=selector))
 
     @operation
     def get(self, ref: str | R, *, workspace: str | WorkspaceRef | None = None) -> J:

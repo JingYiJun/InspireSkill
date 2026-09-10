@@ -145,9 +145,84 @@ class Service:
                 raise ResolutionIncompleteError("Cannot determine the current user.")
             return rows
 
-        return self.client.cache._get(
-            (kind, self.client.account, self.client.base_url, *scope), complete
+        from .identity_cache import IDENTITY_KINDS
+
+        key = (kind, self.client.account, self.client.base_url, *scope)
+        cache = self.client.cache
+        if kind in IDENTITY_KINDS and cache._identity is not None and cache.ttl > 0:
+            def groups():
+                ws = Resource("", WorkspaceRef("", self.client.account, self.client.base_url, scope[0], scope[0]))
+                return [row[1] for row in self.client.compute_groups._all(ws)]
+
+            return cache._get_identity(key, self.session, complete, groups)
+        return cache._get(key, complete)
+
+    def _indexed_resolution(self, selector, ref_type, workspace_id, load):
+        """Use only a complete fresh candidate set, with the SDK's casefold rules."""
+        from inspire.services.resource_index import ResourceIdentity, scope_for_session
+        from inspire.services.resource_refresh import FetchResult, refresh_scope
+        from .identity_cache import CACHE_ERRORS
+
+        cache = self.client.cache
+        shared = cache._identity
+        if shared is None or cache.ttl <= 0 or not isinstance(selector, str) or not selector.strip():
+            return exact(load(), selector, ref_type, self.client, workspace_id).ref
+        kind = {"JobRef": "job", "NotebookRef": "notebook", "HPCJobRef": "hpc",
+                "RayJobRef": "ray", "ServingRef": "serving"}.get(ref_type.__name__)
+        if kind is None:
+            return exact(load(), selector, ref_type, self.client, workspace_id).ref
+        index = shared.index()
+        scope = scope_for_session(self.session, resource_type=kind, workspace_id=workspace_id, owner_scope="self")
+        if index is None or scope is None:
+            return exact(load(), selector, ref_type, self.client, workspace_id).ref
+        try:
+            token = index.snapshot_token(scope)
+            if not index.scope_due(scope, interval_seconds=cache.ttl, require_full=True):
+                import time
+                records = index.list_identities(scope, fresh_only=False)
+                if all(row.fresh and row.observed_at + cache.ttl > time.time() for row in records):
+                    matches = [row for row in records if row.name.casefold() == selector.strip().casefold()]
+                    if len(matches) == 1:
+                        row = matches[0]
+                        ref = self._make_ref(ref_type, row.name, row.resource_id, workspace_id)
+                        # A still-in-date handle can have been renamed/deleted remotely.
+                        try:
+                            live = getattr(self, "get")(ref)
+                        except ResourceNotFoundError:
+                            index.mark_deleted(scope, resource_id=row.resource_id, allow_name_fallback=False)
+                        else:
+                            raw = getattr(live, "raw", None)
+                            verified_name = raw.get("name") if isinstance(raw, dict) else live.name
+                            if verified_name and str(verified_name).casefold() == selector.strip().casefold():
+                                if token == index.snapshot_token(scope):
+                                    return self._make_ref(ref_type, live.name, live.ref.key, workspace_id)
+                            elif verified_name:
+                                index.mark_deleted(scope, resource_id=row.resource_id, allow_name_fallback=False)
+        except CACHE_ERRORS:
+            pass
+        loaded = []
+        errors = []
+
+        def fetch(_session, _workspace, _name):
+            try:
+                rows = load()
+                loaded.append(rows)
+                return FetchResult([
+                    ResourceIdentity(resource_id=row.ref.key, name=row.name)
+                    for row in rows if row.name.casefold() == selector.strip().casefold()
+                ])
+            except Exception as error:
+                errors.append(error)
+                raise
+
+        refresh_scope(
+            index=index, session=self.session, resource_type=kind, scope=scope,
+            workspace_id=workspace_id, workspace_name="", exact_name=selector.strip(),
+            force=True, fetcher=fetch, case_sensitive=False,
         )
+        if errors:
+            raise errors[0]
+        return exact(loaded[0] if loaded else load(), selector, ref_type, self.client, workspace_id).ref
 
     def _current_user(self) -> dict[str, Any]:
         from inspire.platform.web import browser_api

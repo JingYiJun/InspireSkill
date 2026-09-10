@@ -97,7 +97,7 @@ client = InspireClient.from_credentials("login-name", "password", account="resea
 client.close()
 ```
 
-同步构造签名为 `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60)`。异步构造签名为 `InspireAsyncClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, concurrency=None)`；同步构造时进行的本地配置工作，在异步客户端进入上下文或首次调用时才执行。不传凭据时使用现有账号，省略 account 使用当前账号。username/password 必须成对传入；提供凭据且省略 account 时，以 username 作为本地别名（须符合账号名称规则，邮箱等应显式提供合法 account）。缺失账号会创建；已有账号仅更新显式提供且不同的 auth/api/proxy 字段，保留其他配置。在凭据构造路径中，`proxy=None` 保留原代理，空字符串清空四个代理字段。不传 username/password 时，`base_url` 和 `proxy` 参数不覆盖现有账号配置，应先配置账号或使用凭据构造路径。构造客户端始终不改变默认账号指针，包括创建首个账号时。
+同步构造签名为 `InspireClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, catalog_disk_cache=False)`。异步构造签名为 `InspireAsyncClient(account=None, *, username=None, password=None, base_url=None, proxy=None, allow_browser=False, timeout=30, operation_timeout=120, catalog_ttl=60, catalog_disk_cache=False, concurrency=None)`；同步构造时进行的本地配置工作，在异步客户端进入上下文或首次调用时才执行。不传凭据时使用现有账号，省略 account 使用当前账号。username/password 必须成对传入；提供凭据且省略 account 时，以 username 作为本地别名（须符合账号名称规则，邮箱等应显式提供合法 account）。缺失账号会创建；已有账号仅更新显式提供且不同的 auth/api/proxy 字段，保留其他配置。在凭据构造路径中，`proxy=None` 保留原代理，空字符串清空四个代理字段。不传 username/password 时，`base_url` 和 `proxy` 参数不覆盖现有账号配置，应先配置账号或使用凭据构造路径。构造客户端始终不改变默认账号指针，包括创建首个账号时。
 
 `client.login(*, force=False) -> AccountInfo` 立即建立并验证会话：缓存未过期时复用它并查询当前用户，缺失或过期时调用现有 Transport 续期流程；`force=True` 主动进入续期流程。代码按会话创建时间和缓存 TTL 判断有效期（`SESSION_TTL=3600`，即 1 小时），不会因普通请求而延长本地有效期；这不证明服务器当前强制使用相同的失效时间。续期在账号刷新锁内先重读更新的磁盘缓存，再尝试 SSO Cookie 续期，最后执行受账号登录 guard 保护的 `login_without_browser`（requests CAS 凭据登录）。只有 `allow_browser=True` 才允许 Chromium 登录回退及浏览器请求通道。验证码要求保留原提示并抛 `AuthenticationError`，不会转入浏览器重试；冷却通过 `AuthenticationCooldownError.retry_at` 暴露。
 
@@ -235,9 +235,22 @@ Jobs、HPC、Ray、Servings、Tensorboards、Notebooks 和 Images 都支持 `awa
 
 ### 缓存
 
-每个 `InspireClient` 默认使用独立的进程内目录缓存，`catalog_ttl=60`（秒），`catalog_ttl=0` 禁用两层读取和填充。设置 `catalog_disk_cache=True` 可选择跨进程共享目录；默认关闭，避免调用方不知情地持久化目录、引入本地文件锁等待或改变已有缓存行为。每个子进程仍须自行创建 Client。
+SDK 与 CLI 的持久化身份及配额缓存共用 `inspire.services.resource_index.ResourceIndex`，文件仍为账号目录内的 `resource-index.sqlite3`。共享的单 scope 刷新函数 `inspire.services.resource_refresh.refresh_scope` 负责刷新判断、租约、快照代次检查、完整扫描 reconciliation、部分结果合并和错误记录；SDK 没有另一套 SQLite 写入或刷新循环。旧的 CLI 导入路径仍指向同一模块对象。
 
-缓存仅覆盖工作区路由、项目目录、计算组、各来源的镜像目录、配额价格表、优先级菜单、公平调度标记和当前用户。工作负载列表、资源详情、运行状态、日志、事件、指标和实时用量继续实时读取；目录快照不能作为资源当前可用性或镜像构建就绪的证明。名称消歧检查全部候选；抛出 `ResolutionIncompleteError` 的条目既不进内存，也不写磁盘。各镜像来源独立缓存，单一来源失败不会清除其他已完整枚举的来源。
+`catalog_disk_cache=False` 默认值保持不变：只使用每客户端的短期内存快照，不读写共享目录；显式 `True` 开启共享索引和下面的小型元数据缓存。每个子进程仍独立创建 Client。`catalog_ttl=60` 继续限制 SDK 读取快照的最大年龄，`0` 禁用缓存读取和填充。共享身份行的写入 TTL 和自动刷新周期始终使用 CLI 的分类型默认值（身份通常一天，镜像和配额一周）；SDK 的较短读取期限不会缩短 CLI 行的寿命，也不会提早触发共享 scope 刷新。超过 SDK 读取期限、但尚未达到共享刷新周期时，SDK 直接实时读取，不发布另一套定时刷新结果。因此较长 TTL 的另一个 SDK 客户端仍可读取共享身份；小型元数据条目的有效期仍取写者和读者 TTL 的较短者。这两个构造参数仍有实际用途，未弃用。
+
+| 原 SDK 缓存种类 | 现在的持久化位置及范围 |
+|---|---|
+| `workspaces` | 共享 `workspace` scope，账号主体／服务器全局；每行 payload 保存完整路由投影 |
+| `projects` | 共享 `project` scope；全局查询沿用全局范围，按工作区过滤的目录用独立 owner scope，避免把过滤结果误当完整全局目录并删除其他项目 |
+| `compute_groups` | 与 CLI 相同的工作区 `compute-group` scope |
+| `images` | 共享 `image` 类型，按工作区／来源建立候选 scope；单来源扫描不能替代 CLI 的跨来源完整范围 |
+| `prices` | 与 CLI 相同的工作区／工作负载 `quota-*` scope；通过共享配额 loader／完整计算组 fan-out 取价格，规格删除使用同一墓碑规则 |
+| `priority_levels` | 小型 SDK JSON 缓存；优先级菜单是调度配置，不是身份映射 |
+| `fair_scheduling` | 小型 SDK JSON 缓存；布尔能力标记不建立虚构身份行 |
+| `current_user` | 小型 SDK JSON 缓存；当前用户详情不是资源名称候选集 |
+
+`sdk-catalog-v1.json` 仅保留后三类元数据，打开时清理旧版遗留的身份／价格 blob；其账号／服务器隔离、固定类型白名单、256 项／8 MiB 上限、锁和原子替换规则保留。共享身份行的 payload 使用固定平台模型白名单，不使用 pickle。CLI 旧行只有名称和 ID、缺少 SDK 所需字段时，SDK 回到实时读取，不从身份行推断项目权限、计算组能力或镜像来源。
 
 ```python
 with InspireClient("my-account", catalog_ttl=60, catalog_disk_cache=True) as client:
@@ -247,19 +260,13 @@ with InspireClient("my-account", catalog_ttl=60, catalog_disk_cache=True) as cli
     client.cache.clear()
 ```
 
-`hits` 为内存命中，`shared_hits` 为磁盘命中，`misses` 为需要调用目录加载器的次数（包括加载失败），`entries` 为本客户端尚未过期的内存条目数。默认未开启共享时保留原来的 hits／misses／entries 三键统计；开启共享才增加 `shared_hits`。`clear()` 保留累计计数，开启共享时同时清除本账号、服务器的磁盘目录，并让其他进程在下次读取时丢弃旧内存条目。
+名称快路径仅接受完整、新鲜且能证明候选范围一致的索引快照，使用 SDK 的 Python `casefold()` 精确比较并检查全部候选；不能用 SQLite `NOCASE` 代替 Unicode 消歧。工作负载名称命中仍核验实时详情，重命名／删除后回退原有有界扫描。未命中、歧义、过期、身份不稳定或损坏时也回退；仍保留子串不能匹配完整名称的规则、5000 行保护和 `ResolutionIncompleteError`。CLI 跨来源镜像索引没有完整 SDK 来源证据时不会绕过 SDK 的来源消歧。工作负载列表、状态、日志、事件、指标和实时用量不从身份索引构造。
 
-共享文件通过账号存储路径助手定位为 `~/.inspire/accounts/<alias>/sdk-catalog-v1.json`，采用版本化 JSON 和固定类型白名单，不使用 pickle。键完整保留目录种类、账号、平台地址，以及工作区、来源、计算组、调度类型等范围参数；不同账号使用独立文件，读文件时也校验账号。一个账号的所有服务器合计最多 256 个共享条目、8 MiB；共享模式下内存也最多 256 项。超限按写入顺序淘汰最旧条目；过大单项不持久化。每次访问清理过期或格式无效的条目，损坏、截断或不兼容文件按未命中修复。TTL 使用写入时的 Unix 时间；读者有效期取写者到期时间与读者 TTL 的较早者，命中不续期，时钟回拨到写入时间之前视为未命中。
+共享读写使用同一个 PID 租约及心跳、generation／revision 检查和墓碑实现；租约竞争的 SDK 可以实时读取，但不能把该读取发布进其他进程持有的 scope。初始化与损坏重建使用同一个稳定文件锁，防止并发打开者重复删除刚修复的数据库；普通锁竞争、只读文件及 I/O 错误不触发损坏删除。SQLite 的文件操作和租约进入／退出在异步客户端的本地 I/O 池运行，网络加载器继续使用调用方的同步或异步驱动。
 
-所有共享读写均使用现有 `exclusive_cache_lock` 的固定兄弟锁文件，单次锁等待上限 5 秒；临时文件与目标同目录，fsync 后原子替换，文件权限为 0600。文件数量固定，临时文件在下次写入时复用。网络枚举不持锁，因此并发冷启动可能重复请求；回填前核对失效代次，枚举期间发生写入失效或清空时不保存该旧结果。共享文件无法读取时回退到目录加载器，不返回未经校验的旧内存缓存。
+`hits` 表示本客户端仍有效且代次一致的快照命中，`shared_hits` 表示从共享存储取得的快照，`misses` 表示调用加载器，`entries` 为本客户端的内存条目数。共享身份每次读取都重新检查数据库，不用未经校验的旧内存绕过跨进程失效。未开启共享时仍返回原来的 hits／misses／entries 三键。`clear()` 保留累计计数；开启共享时清理当前账号／服务器的身份目录、配额和 SDK 元数据，CLI 下次查询也会看到该失效。
 
-SDK 镜像注册、删除、可见性／范围修改和 Notebook 保存镜像均在写入前和操作结束后（包括异常路径）使本账号、服务器的所有镜像来源目录失效；工作区可能共享镜像仓库，因此失效跨工作区。未开启共享读取的 SDK 客户端也会失效已存在的共享文件，但不会为此新建共享缓存。每次目录读取先校验共享条目的标识，再判断内存命中，其他进程的旧内存快照不会绕过失效。失效写入失败会向调用方抛出错误，不静默宣告成功；此时平台写操作可能已经完成，不能因此重放平台写入。会话续期保留目录。
-
-指定 `ImageSelector(name=..., source=...)` 只读取该来源，`ImageRef` 直接读取实时详情，registry URL 不枚举镜像目录。CLI、网页或其他机器上的变更不参与这个 SDK 失效协议；需要立即读取这些变更时设置 `catalog_ttl=0`，或先清空共享缓存。
-
-CLI 的资源索引及配额目录仍由 `resource-index.sqlite3` 和现有 CLI 刷新流程管理；SDK 不读取、不写入或改变其格式、TTL、`cache refresh`／`cache clear` 行为，也不复用 Notebook 目标缓存文件。两套缓存各自维护，没有第二个 CLI 缓存写者。
-
-`InspireAsyncClient` 同样接受 `catalog_ttl` 和 `catalog_disk_cache`，同一异步客户端的并发调用共享缓存。`await client.cache.clear()` 和 `await client.cache.stats()` 遵循上述语义，可在流仍打开时调用。
+SDK 镜像写入仍在写前及操作结束后（包括失败路径）使跨工作区镜像目录失效，并同时清理共享索引中的镜像 scope。未开启共享的 SDK 写者也会失效已存在的共享存储，但不会为失效新建存储。失效失败不会被静默当成成功，也不会重放平台写入。会话续期不清空缓存；Notebook 目标缓存不参与此次迁移。
 
 ## 观察结果类型
 
@@ -1019,7 +1026,7 @@ SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_sen
 
 ## CLI-only 范围
 
-- 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、CLI 的磁盘资源缓存命令 `cache *`（SDK 的 `client.cache` 是独立的目录缓存，可选择跨进程共享）；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。
+- 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、CLI 的磁盘资源缓存命令 `cache *`（SDK 的 `client.cache` 可选择与 CLI 共用身份／配额缓存实现）；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。
 - `api-key export` 的文件格式、权限和 stdout 渲染，以及 `api-key run` 的子进程和环境处理；平台密钥读写由 `client.api_keys` 提供。
 - 所有工作负载的 JSON/TOML `batch`；SDK 应用自行循环或编排。
 - Notebook 的 exec 和文件传输（upload/download，含 SCP）由 SDK 提供；`ssh/shell/ssh-config/ssh-proxy/connection */install-deps/proxy-url` 仍为 CLI-only，创建后的 `--post-start/--post-start-script` 及 `job/hpc/ray/serving shell` 也仅保留在 CLI。
