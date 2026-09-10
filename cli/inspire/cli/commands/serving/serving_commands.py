@@ -1,7 +1,6 @@
 """`inspire serving` subcommands."""
 
 from __future__ import annotations
-from inspire.services.serving_submission import with_tag as _with_tag  # noqa: F401
 
 import sys
 import logging
@@ -16,9 +15,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -41,7 +41,7 @@ from inspire.cli.utils.id_resolver import (
     run_with_stale_handle_retry,
 )
 from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -55,15 +55,16 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
-from inspire.cli.utils.job_shell import JobShellError, open_job_shell
+from inspire.platform.web.pty_socket import JobShellError
+from inspire.cli.utils.job_shell import open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from .serving_instances import (
+from inspire.services.serving.serving_instances import (
     ServingInstanceSelectionError,
     select_serving_instance_views,
     serving_instance_views,
 )
-from .public_output import (
+from inspire.services.serving.serving_output import (
     public_configs,
     public_operation,
     public_serving,
@@ -71,18 +72,18 @@ from .public_output import (
     sanitize_public_data,
     sanitize_public_text,
 )
-from inspire.services.serving_submission import created_serving_id as _created_serving_id
-from inspire.services.serving_submission import resolve_image_for_create as _resolve_image_for_create
-from inspire.services.serving_submission import build_resource_spec_price as _build_resource_spec_price
-from inspire.services.serving_views import serving_resource_label as _serving_resource_label
-from inspire.services.serving_views import _public_serving_instance_text as _public_serving_instance_text
-from inspire.services.serving_views import _serving_instance_rank as _serving_instance_rank
-from inspire.services.serving_views import _serving_instance_resource as _serving_instance_resource
-from inspire.services.serving_views import public_serving_instances as _public_serving_instances
-from inspire.services.serving_views import public_serving_version as _public_serving_version
-from inspire.services.serving_views import _scale_replica_count as _scale_replica_count
-from inspire.services.serving_views import public_scale_history_entry as _public_scale_history_entry
-from inspire.services.serving_events import serving_events as _serving_events
+from inspire.services.serving.serving_submission import created_serving_id as _created_serving_id
+from inspire.services.serving.serving_submission import resolve_image_for_create as _resolve_image_for_create
+from inspire.services.serving.serving_submission import build_resource_spec_price as _build_resource_spec_price
+from inspire.services.serving.serving_views import serving_resource_label as _serving_resource_label
+from inspire.services.serving.serving_views import _public_serving_instance_text as _public_serving_instance_text
+from inspire.services.serving.serving_views import _serving_instance_rank as _serving_instance_rank
+from inspire.services.serving.serving_views import _serving_instance_resource as _serving_instance_resource
+from inspire.services.serving.serving_views import public_serving_instances as _public_serving_instances
+from inspire.services.serving.serving_views import public_serving_version as _public_serving_version
+from inspire.services.serving.serving_views import _scale_replica_count as _scale_replica_count
+from inspire.services.serving.serving_views import public_scale_history_entry as _public_scale_history_entry
+from inspire.services.serving.serving_events import serving_events as _serving_events
 
 
 
@@ -191,7 +192,7 @@ def _run_readonly_serving_operation(
 
 
 def _validate_custom_domain(_ctx: click.Context, _param: click.Parameter, value: Optional[str]) -> Optional[str]:
-    from inspire.services.serving_submission import validate_custom_domain
+    from inspire.services.serving.serving_submission import validate_custom_domain
     try:
         return validate_custom_domain(value)
     except ValueError as exc:
@@ -245,7 +246,7 @@ def _resolve_image_id(raw: str, *, session, workspace_id: str) -> str:
 
 
 def _resolve_model_for_create(*, name, workspace_id, project_id, user_id, session, ctx):
-    from inspire.services.serving_submission import resolve_model_for_create
+    from inspire.services.serving.serving_submission import resolve_model_for_create
     return resolve_model_for_create(
         name=name, workspace_id=workspace_id, project_id=project_id,
         user_id=user_id, session=session,
@@ -2078,7 +2079,7 @@ def create_serving(
                 status=str(result.get("status") or ""),
                 created_at=str(result.get("created_at") or ""),
             )
-        from .access import serving_endpoint
+        from inspire.services.serving.serving_access import serving_endpoint
 
         created = public_operation(name, "created")
         endpoint = serving_endpoint(result)

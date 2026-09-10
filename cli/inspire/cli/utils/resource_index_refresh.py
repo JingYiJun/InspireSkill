@@ -10,8 +10,8 @@ import sqlite3
 import time
 from typing import Callable, Iterable, Mapping, Sequence
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     DEFAULT_TTL_SECONDS,
     ResourceIdentity,
     ResourceIndex,
@@ -25,7 +25,7 @@ from inspire.cli.utils.resource_index import (
     scope_for_session,
 )
 
-from inspire.services.resource_refresh import (
+from inspire.services.catalog.resource_refresh import (
     FetchResult as FetchResult,
     RefreshResult as RefreshResult,
     RefreshSummary as RefreshSummary,
@@ -34,7 +34,7 @@ from inspire.services.resource_refresh import (
 )
 
 # Retain private helper patch/import compatibility for existing CLI tests.
-from inspire.services import resource_refresh as _shared_refresh
+from inspire.services.catalog import resource_refresh as _shared_refresh
 
 RESOURCE_TYPES = (
     "workspace",
@@ -537,7 +537,7 @@ def _quota_fetcher(workload: str) -> Fetcher:
     """
 
     def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
-        from inspire.cli.utils.quota_cache import fetch_quota_catalog
+        from inspire.services.catalog.quota_cache import fetch_quota_catalog
 
         catalog = fetch_quota_catalog(
             session,

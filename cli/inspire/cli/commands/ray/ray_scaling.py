@@ -17,7 +17,7 @@ this command group already splits observation: `events`, `instances` and
 
 from __future__ import annotations
 
-from inspire.services.ray_scaling import (
+from inspire.services.ray.ray_scaling import (
     event_time as _event_time,
     public_ray_scaling_events as _public_ray_scaling_events,
 )
@@ -38,16 +38,16 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web.browser_api.ray_jobs import list_ray_job_scaling_histories
 from inspire.platform.web.session import SessionExpiredError, get_web_session

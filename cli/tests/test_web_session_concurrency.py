@@ -6,7 +6,7 @@ from pathlib import Path
 
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.session import WebSession
-from inspire.sdk.transport import Transport
+from inspire.platform.web.transport import Transport
 from inspire.platform.web.session import auth as web_session_auth
 from multiprocess_workers import (
     Barrier,

@@ -16,21 +16,20 @@ from inspire.accounts.cache_lock import exclusive_cache_lock
 from inspire.bridge import tunnel as tunnel_module  # noqa: F401
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import validate_workspace_operation_name
 
-from .public_output import sanitize_public_text
+from inspire.services.notebook.notebook_output import sanitize_public_text
 
-from inspire.services import notebook_targets
-from inspire.services.notebook_targets import (  # noqa: F401
+from inspire.services.execution import notebook_targets
+from inspire.services.execution.notebook_targets import (  # noqa: F401
     NotebookTargetCandidate as NotebookTargetCandidate,
     target_cache_path as target_cache_path,
     split_target_cache_key as _split_target_cache_key,
-    matches_workspace as _matches_workspace,
-    matches_notebook as _matches_notebook,
     target_available as _target_available,
 )
 

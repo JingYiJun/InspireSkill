@@ -15,7 +15,7 @@ from inspire.cli.utils import web_transport
 from inspire.platform.web import session as ws
 from inspire.platform.web.browser_api import core
 from inspire.platform.web.runtime import active_transport, session_transport
-from inspire.sdk.transport import Transport
+from inspire.platform.web.transport import Transport
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_cli_transport_preserves_legacy_error_output(monkeypatch, cli_session, s
 def test_cli_fallback_adopts_session_without_deadline(monkeypatch, cli_session, failure):
     transports = []
     now = [0.0]
-    monkeypatch.setattr("inspire.sdk.transport.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("inspire.platform.web.transport.time.monotonic", lambda: now[0])
 
     def post(*args, **kwargs):
         transport = active_transport.get()
@@ -132,7 +132,7 @@ def test_cli_failure_from_transport_keeps_command_contract(monkeypatch, cli_sess
 
 
 def test_no_deadline_scope_preserves_sdk_default_and_nested_deadline(monkeypatch):
-    monkeypatch.setattr("inspire.sdk.transport.time.monotonic", lambda: 10)
+    monkeypatch.setattr("inspire.platform.web.transport.time.monotonic", lambda: 10)
     transport = Transport("chosen", "https://example.test", username="test")
     with transport.scope(timeout=None):
         assert transport.deadline is None

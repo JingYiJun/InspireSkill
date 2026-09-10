@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from inspire.services.hpc_status import matches_status, normalize_status
+from inspire.services.hpc.hpc_status import matches_status, normalize_status
 
-from inspire.services.hpc_instances import (
+from inspire.services.hpc.hpc_instances import (
     hpc_instance_rank as _hpc_instance_rank,
     fetch_hpc_instances as _fetch_hpc_instances,
     HPCInstanceSelectionError as HPCInstanceSelectionError,
@@ -13,7 +13,7 @@ from inspire.services.hpc_instances import (
     select_hpc_instance_views as select_hpc_instance_views,
 )
 
-from inspire.services.hpc_submission import (
+from inspire.services.hpc.hpc_submission import (
     created_hpc_job_id as _created_hpc_job_id,
     looks_like_full_slurm_script as _looks_like_full_slurm_script,
     hpc_plan_payload as _hpc_plan_payload,
@@ -38,9 +38,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -58,7 +59,7 @@ from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
     require_confirmation,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -84,17 +85,18 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
-from inspire.cli.utils.job_shell import JobShellError, open_job_shell
+from inspire.platform.web.pty_socket import JobShellError
+from inspire.cli.utils.job_shell import open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
-from .public_output import (
+from inspire.services.hpc.hpc_output import (
     format_hpc_status,
     public_hpc_list_item,
     public_hpc_status,
 )
 
-from inspire.services.image_resolution import resolve_image_url
+from inspire.services.catalog.image_resolution import resolve_image_url
 
 
 def build_hpc_create_payload(**kwargs):

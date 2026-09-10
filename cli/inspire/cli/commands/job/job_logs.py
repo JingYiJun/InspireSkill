@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import click
 
-from inspire.services.job_logs import (
+from inspire.services.job.job_logs import (
     web_log_time_range as _web_log_time_range,
     web_log_sort_key,
     web_log_identity,
@@ -40,10 +40,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session

@@ -1,6 +1,6 @@
 """CLI instance labels backed by the shared selection service."""
 
-from inspire.services.job_events import (
+from inspire.services.job.job_events import (
     JobInstanceSelectionError as JobInstanceSelectionError,
     JobInstanceView as JobInstanceView,
     select_job_instance_views as select_job_instance_views,

@@ -164,7 +164,7 @@ def _isolate_resource_index(monkeypatch, tmp_path):  # noqa: ANN001
     Tests that want an index point `ResourceIndex` at their own path, which
     goes nowhere near this.
     """
-    from inspire.cli.utils import resource_index as resource_index_module
+    from inspire.services.catalog import resource_index as resource_index_module
 
     def _scratch_path(account=None):  # noqa: ANN001
         name = str(account or "").strip() or "default"

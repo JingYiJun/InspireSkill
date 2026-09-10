@@ -19,18 +19,18 @@ from typing import Any, Callable, Optional
 
 import click
 
-from inspire.services.job_events import (
+from inspire.services.job.job_events import (
     event_sort_key as event_sort_key,
     event_type as event_type,
     matching_events,
 )
 
 from inspire.cli.context import Context, EXIT_API_ERROR
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import BoundedCollection, truncation_notice
+from inspire.services.utils.collections import BoundedCollection, truncation_notice
 from inspire.cli.utils.errors import exit_with_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 DEFAULT_EVENT_TAIL = 20
 FOLLOW_EVENT_KEY_LIMIT = 2048

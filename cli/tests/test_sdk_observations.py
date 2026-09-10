@@ -31,13 +31,13 @@ from inspire.cli.main import main
 from inspire.config import Config
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api import ray_jobs
-from inspire.services.serving_views import public_serving_version, public_scale_history_entry
-from inspire.services.serving_output import public_configs
-from inspire.services.serving_access import invocation_info
-from inspire.services.serving_api_metrics import group_summary
-from inspire.services.ray_scaling import public_ray_scaling_events, event_time
-from inspire.services.notebook_output import public_runs
-from inspire.services.tensorboard_data import collect_series, tail
+from inspire.services.serving.serving_views import public_serving_version, public_scale_history_entry
+from inspire.services.serving.serving_output import public_configs
+from inspire.services.serving.serving_access import invocation_info
+from inspire.services.serving.serving_api_metrics import group_summary
+from inspire.services.ray.ray_scaling import public_ray_scaling_events, event_time
+from inspire.services.notebook.notebook_output import public_runs
+from inspire.services.tensorboard.tensorboard_data import collect_series, tail
 
 
 def cli_json(*args):

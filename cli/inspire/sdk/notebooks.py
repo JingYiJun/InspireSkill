@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from inspire.services.notebook_transfer import TransferResult, DEFAULT_JUPYTER_MAX_BYTES
+from inspire.services.execution.notebook_transfer import TransferResult, DEFAULT_JUPYTER_MAX_BYTES
 from .resources import image_mutation
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
-from inspire.services.remote_exec import ExecResult
+from inspire.services.execution.remote_exec import ExecResult
 import builtins
 import math
 import time
@@ -19,14 +19,14 @@ from typing import Any, Iterator, Sequence, Literal
 
 from inspire.platform.web import browser_api
 from inspire.platform.web.browser_api import CustomImageInfo
-from inspire.services import notebooks as core
-from inspire.services.notebook_output import public_notebook, public_runs
-from inspire.services.notebook_status import (
+from inspire.services.notebook import notebooks as core
+from inspire.services.notebook.notebook_output import public_notebook, public_runs
+from inspire.services.notebook.notebook_status import (
     normalize_status,
     TERMINAL_STATUSES,
 )
-from inspire.services.quotas import parse_quota
-from inspire.services.workload_quota import (
+from inspire.services.catalog.quotas import parse_quota
+from inspire.services.catalog.workload_quota import (
     selected_groups,
     quota_values,
     match_quota_rows,
@@ -116,7 +116,7 @@ class Notebooks(Service):
             client.notebooks.exec(ref, command="python train.py model.bin",
                                   cwd=str(PurePosixPath(result.remote_path).parent))
         """
-        from inspire.services import remote_exec as core
+        from inspire.services.execution import remote_exec as core
         from .remote_exec import shaped_command, authenticated_exec
 
         if transport not in ("auto", "jupyter", "ssh"):
@@ -505,7 +505,7 @@ class Notebooks(Service):
         ws = self.client.workspaces.get(workspace)
         if isinstance(group, ComputeGroupRef):
             self.client._validate_ref(group, ComputeGroupRef, ws.ref.key)
-        from inspire.services.workload_quota import query_workspace_quotas, sort_quota_rows
+        from inspire.services.catalog.workload_quota import query_workspace_quotas, sort_quota_rows
 
         groups = self._groups(ws)
         if isinstance(group, ComputeGroupRef):
@@ -550,7 +550,7 @@ class Notebooks(Service):
         return self._page(rows, limit=limit, cursor=cursor, query=(ws.ref.key, group, include_empty))
 
     def _plan(self, spec):
-        from inspire.services.datasets import parse_dataset_specs, resolve_dataset_info
+        from inspire.services.catalog.datasets import parse_dataset_specs, resolve_dataset_info
         from inspire.task_priority import resolve_task_priority
 
         if not isinstance(spec, NotebookCreateSpec):
@@ -774,7 +774,7 @@ class Notebooks(Service):
         limit: int = 100,
         workspace: str | WorkspaceRef | None = None,
     ) -> EventResult:
-        from inspire.services.job_events import matching_events
+        from inspire.services.job.job_events import matching_events
 
         positive(limit)
         resolved = self._resolve(ref, workspace)

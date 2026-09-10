@@ -6,7 +6,7 @@ from typing import Callable
 
 import click
 
-from inspire.services.task_priority import (
+from inspire.services.catalog.task_priority import (
     resolve_workspace_task_priority as resolve_workspace_task_priority,
 )
 

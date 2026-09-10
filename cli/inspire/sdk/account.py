@@ -10,7 +10,7 @@ from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api
 from inspire.platform.web.browser_api import api_keys
 from inspire.platform.web.session import SessionExpiredError
-from inspire.services import account_check, account_context
+from inspire.services.account import account_check, account_context
 from .exceptions import AuthenticationError
 from .models import Page, WorkspaceRef
 from .models_resources import (

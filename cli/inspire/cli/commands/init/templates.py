@@ -11,7 +11,7 @@ from inspire.config import (
     ConfigOption,
 )
 
-from inspire.services.account_config import (
+from inspire.services.account.account_config import (
     atomic_write_text as _atomic_write_text,
     ACCOUNT_CONFIG_TEMPLATE,
 )
@@ -62,7 +62,7 @@ def _write_single_file(
     generated = tomllib.loads(toml_content)
     existing = Config._load_toml(output_path) if output_path.exists() else {}
     from .discover import _sanitize_account_config
-    from .toml_helpers import _toml_dumps
+    from inspire.services.account.account_config import toml_dumps as _toml_dumps
 
     merged = _sanitize_account_config(existing)
     for section, value in generated.items():

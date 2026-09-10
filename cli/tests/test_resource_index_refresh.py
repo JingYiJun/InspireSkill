@@ -12,12 +12,7 @@ from click.testing import CliRunner
 
 from inspire.accounts import create_account, set_current_account
 from inspire.cli.context import EXIT_API_ERROR, EXIT_VALIDATION_ERROR
-from inspire.cli.utils.resource_index import (
-    DEFAULT_TTL_SECONDS,
-    ResourceIdentity,
-    ResourceIndex,
-    ResourceScope,
-)
+from inspire.services.catalog.resource_index import DEFAULT_TTL_SECONDS, ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.cli.utils.resource_index_refresh import (
     RESOURCE_FETCHERS,
     FetchResult,
@@ -1566,7 +1561,7 @@ def test_project_lookup_ignores_the_caller_workspace(tmp_path, monkeypatch) -> N
 
 def test_quota_refresh_warms_one_workload_catalog(tmp_path, monkeypatch) -> None:
     """Quota is an ordinary resource type: `cache refresh --resource` reaches it."""
-    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.services.catalog import quota_cache as quota_cache_module
 
     index = ResourceIndex(tmp_path / "index.sqlite3")
     groups = [
@@ -1662,7 +1657,7 @@ def test_partial_named_refresh_does_not_replace_what_it_could_not_read(
 
 def _patch_quota_platform(monkeypatch, *, rate_limited: set[str]) -> None:  # noqa: ANN001
     """Stub the quota fan-out, rate-limiting the named compute groups."""
-    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.services.catalog import quota_cache as quota_cache_module
     from inspire.platform.web.session import TransientAPIError
 
     monkeypatch.setattr(
@@ -1759,7 +1754,7 @@ def test_a_catalog_the_platform_emptied_is_still_reconciled(
     _patch_quota_platform(monkeypatch, rate_limited=set())
     _refresh_quota(index)
 
-    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.services.catalog import quota_cache as quota_cache_module
 
     monkeypatch.setattr(
         quota_cache_module.browser_api_module,

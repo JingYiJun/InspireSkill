@@ -2,7 +2,7 @@
 
 import pytest
 
-from inspire.services import job_logs
+from inspire.services.job import job_logs
 from inspire.platform.web.browser_api.jobs import JOB_LOG_MAX_WINDOW_MS
 
 

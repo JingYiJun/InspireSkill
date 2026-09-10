@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Iterable, Sequence, cast
 
 from inspire import __version__
-from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils import json_formatter
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 DEFAULT_DEBUG_LOG_LIMIT = 20
 DEFAULT_DEBUG_LOG_DIR = Path.home() / ".cache" / "inspire-skill" / "logs"

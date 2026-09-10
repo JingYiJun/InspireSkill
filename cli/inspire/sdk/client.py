@@ -12,7 +12,7 @@ from .accounts import Accounts, InitResult, ensure_credentials
 from .models_resources import AccountInfo
 
 from .exceptions import ConfigurationError, ValidationError
-from .transport import Transport
+from inspire.platform.web.transport import Transport
 from .cache import CatalogCache
 from .resources import Workspaces, Projects, ComputeGroups, Images
 
@@ -176,7 +176,7 @@ class InspireClient:
         Force drops those sections, like inspire init --force.
         """
         from inspire.platform.web.session import DEFAULT_WORKSPACE_ID
-        from inspire.services.account_config import (
+        from inspire.services.account.account_config import (
             ACCOUNT_CONFIG_TEMPLATE,
             sanitize_account_config,
             toml_dumps,

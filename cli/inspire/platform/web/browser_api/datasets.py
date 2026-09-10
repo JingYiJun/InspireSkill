@@ -43,7 +43,7 @@ class DatasetMount:
 
     @classmethod
     def parse(cls, text: str) -> DatasetMount:
-        from inspire.services.datasets import parse_dataset_spec
+        from inspire.services.catalog.datasets import parse_dataset_spec
 
         return parse_dataset_spec(text)
 

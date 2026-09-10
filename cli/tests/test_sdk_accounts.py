@@ -14,7 +14,7 @@ from inspire.accounts import account_scope
 from inspire.config import Config
 from inspire.platform.web.session import auth, DEFAULT_WORKSPACE_ID
 from inspire.platform.web.session.models import WebSession
-from inspire.services.account_config import atomic_write_text
+from inspire.services.account.account_config import atomic_write_text
 from test_sdk import client as client
 
 
@@ -190,7 +190,7 @@ name = "other"
     assert Config._load_toml(path) == expected
     before = path.read_bytes()
     write = Mock(wraps=atomic_write_text)
-    monkeypatch.setattr("inspire.services.account_config.atomic_write_text", write)
+    monkeypatch.setattr("inspire.services.account.account_config.atomic_write_text", write)
     assert not client.init().changed
     write.assert_not_called()
     assert path.read_bytes() == before
@@ -213,7 +213,7 @@ def test_init_unchanged_dict_does_not_reformat(client, monkeypatch):
     initial = path.read_text() + f'\n# Keep formatting\n[api]\nbase_url="{client.base_url}"\n'
     path.write_text(initial)
     write = Mock(side_effect=AssertionError("Unchanged dictionaries must not be written"))
-    monkeypatch.setattr("inspire.services.account_config.atomic_write_text", write)
+    monkeypatch.setattr("inspire.services.account.account_config.atomic_write_text", write)
     assert not client.init().changed
     write.assert_not_called()
     assert path.read_text() == initial

@@ -52,7 +52,7 @@ SDK 面向能访问平台的本机或控制节点。运行环境需满足网络�
 
 ## 架构
 
-依赖方向为 `sdk → services → platform`；CLI 也复用 services 与 platform，平台层和服务层不得导入 SDK。共享 dispatcher 位于 `inspire.platform.web.transport`，`inspire.sdk.transport` 保留兼容重导出及既有补丁入口。与传输共用的异常基础层位于 `inspire.platform.errors`，SDK 的 `exceptions` 重导出同一批类；携带 SDK 资源模型的工作负载失败异常仍由 SDK 定义。
+依赖方向为 `sdk → services → platform`；CLI 也复用 services 与 platform，平台层和服务层不得导入 SDK。共享 dispatcher 位于 `inspire.platform.web.transport`，`inspire.platform.web.transport` 保留兼容重导出及既有补丁入口。与传输共用的异常基础层位于 `inspire.platform.errors`，SDK 的 `exceptions` 重导出同一批类；携带 SDK 资源模型的工作负载失败异常仍由 SDK 定义。
 
 两种前端共用一次 HTTP／浏览器发送路径，以独立响应策略保留异常类型和原始消息。SDK 与 CLI 的连接所有权、Referer、超时格式及请求体规则保持各自既有语义。CLI 的暂时 HTTP 状态仍是固定集合 `408/425/429/500/502/503/504`。重试循环显式保留两种策略的分支：CLI 刷新／浏览器回退不消耗暂时错误重试次数，SDK 按尝试次数与剩余截止时间计费；写请求发送后在进入这些分支前直接分类退出。
 
@@ -235,7 +235,7 @@ Jobs、HPC、Ray、Servings、Tensorboards、Notebooks 和 Images 都支持 `awa
 
 ### 缓存
 
-SDK 与 CLI 的持久化身份及配额缓存共用 `inspire.services.resource_index.ResourceIndex`，文件仍为账号目录内的 `resource-index.sqlite3`。共享的单 scope 刷新函数 `inspire.services.resource_refresh.refresh_scope` 负责刷新判断、租约、快照代次检查、完整扫描 reconciliation、部分结果合并和错误记录；SDK 没有另一套 SQLite 写入或刷新循环。旧的 CLI 导入路径仍指向同一模块对象。
+SDK 与 CLI 的持久化身份及配额缓存共用 `inspire.services.catalog.resource_index.ResourceIndex`，文件仍为账号目录内的 `resource-index.sqlite3`。共享的单 scope 刷新函数 `inspire.services.catalog.resource_refresh.refresh_scope` 负责刷新判断、租约、快照代次检查、完整扫描 reconciliation、部分结果合并和错误记录；SDK 没有另一套 SQLite 写入或刷新循环。CLI 和 SDK 均直接导入实现模块，不保留旧路径转发壳。
 
 `catalog_disk_cache=False` 默认值保持不变：只使用每客户端的短期内存快照，不读写共享目录；显式 `True` 开启共享索引和下面的小型元数据缓存。每个子进程仍独立创建 Client。`catalog_ttl=60` 继续限制 SDK 读取快照的最大年龄，`0` 禁用缓存读取和填充。共享身份行的写入 TTL 和自动刷新周期始终使用 CLI 的分类型默认值（身份通常一天，镜像和配额一周）；SDK 的较短读取期限不会缩短 CLI 行的寿命，也不会提早触发共享 scope 刷新。超过 SDK 读取期限、但尚未达到共享刷新周期时，SDK 直接实时读取，不发布另一套定时刷新结果。因此较长 TTL 的另一个 SDK 客户端仍可读取共享身份；小型元数据条目的有效期仍取写者和读者 TTL 的较短者。这两个构造参数仍有实际用途，未弃用。
 

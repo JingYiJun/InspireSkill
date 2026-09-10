@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from inspire.services.async_output import deliver_output
+from inspire.services.execution.async_output import deliver_output
 
 from inspire.exec_output import (
     DEFAULT_MAX_OUTPUT_BYTES,
@@ -12,7 +12,7 @@ from inspire.exec_output import (
 )
 
 import asyncio
-from inspire.services.async_output import async_output_writer
+from inspire.services.execution.async_output import async_output_writer
 import base64
 import contextlib
 import json

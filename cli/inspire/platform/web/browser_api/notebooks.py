@@ -24,7 +24,7 @@ from inspire.platform.web.session import (
 # ---------------------------------------------------------------------------
 
 
-from inspire.services.notebook_status import (
+from inspire.services.notebook.notebook_status import (
     NotebookFailedError as NotebookFailedError,
     TERMINAL_STATUSES as _NOTEBOOK_TERMINAL_STATUSES,
     normalize_status,

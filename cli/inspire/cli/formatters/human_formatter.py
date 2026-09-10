@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.services.text import format_epoch as format_epoch
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.text import format_epoch as format_epoch
 
 
 def format_error(message: str, hint: Optional[str] = None) -> str:

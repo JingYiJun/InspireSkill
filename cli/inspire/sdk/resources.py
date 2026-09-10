@@ -159,8 +159,8 @@ class Service:
 
     def _indexed_resolution(self, selector, ref_type, workspace_id, load):
         """Use only a complete fresh candidate set, with the SDK's casefold rules."""
-        from inspire.services.resource_index import ResourceIdentity, scope_for_session
-        from inspire.services.resource_refresh import FetchResult, refresh_scope
+        from inspire.services.catalog.resource_index import ResourceIdentity, scope_for_session
+        from inspire.services.catalog.resource_refresh import FetchResult, refresh_scope
         from .identity_cache import CACHE_ERRORS
 
         cache = self.client.cache
@@ -258,7 +258,7 @@ class Service:
         return self._catalog("fair_scheduling", (ws.ref.key,), load)
 
     def _resolve_priority(self, requested: int | None, ws: Resource[WorkspaceRef], project: Any) -> int:
-        from inspire.services.task_priority import resolve_workspace_task_priority
+        from inspire.services.catalog.task_priority import resolve_workspace_task_priority
 
         return resolve_workspace_task_priority(
             requested,
@@ -424,7 +424,7 @@ class Workspaces(Service):
 class Projects(Service):
     def _all(self, ws=None):
         from inspire.platform.web import browser_api
-        from inspire.services.projects import project_to_dict
+        from inspire.services.catalog.projects import project_to_dict
         from .models_resources import ProjectInfo
 
         rows = (
@@ -486,7 +486,7 @@ class Projects(Service):
         workspace: str | WorkspaceRef | None = None,
     ) -> ProjectDetail:
         from inspire.platform.web import browser_api
-        from inspire.services.projects import project_detail_view
+        from inspire.services.catalog.projects import project_detail_view
 
         if isinstance(ref, ProjectRef):
             ws = self.client.workspaces.get(workspace) if workspace is not None else None
@@ -503,7 +503,7 @@ class Projects(Service):
     @operation
     def owners(self) -> tuple[ProjectOwner, ...]:
         from inspire.platform.web import browser_api
-        from inspire.services.projects import owner_views
+        from inspire.services.catalog.projects import owner_views
 
         rows = browser_api.list_project_owners(session=self.session)
         return tuple(
@@ -576,7 +576,7 @@ class Images(Service):
 
     def _all(self, ws, source=None, keyword=None, *, require_complete=False):
         from inspire.platform.web import browser_api
-        from inspire.services import images
+        from inspire.services.catalog import images
 
         sources = self.SOURCES if source in (None, "all") else (source.lower(),)
         rows, failed = [], []
@@ -647,7 +647,7 @@ class Images(Service):
         ws = self.client.workspaces.get(workspace)
         if isinstance(ref, ImageRef):
             from inspire.platform.web import browser_api
-            from inspire.services import images
+            from inspire.services.catalog import images
 
             self.client._validate_ref(ref, ImageRef, ws.ref.key)
             row = browser_api.get_image_detail(image_id=ref.key, session=self.session)
@@ -687,7 +687,7 @@ class Images(Service):
         workspace: str | WorkspaceRef | None = None,
     ) -> ImageDetail:
         from inspire.platform.web import browser_api
-        from inspire.services.images import image_summary
+        from inspire.services.catalog.images import image_summary
 
         resolved = self._write_ref(ref, workspace)
         row = browser_api.get_image_detail(image_id=resolved.key, session=self.session)
@@ -716,7 +716,7 @@ class Images(Service):
     ) -> ImageRegisterHandle:
         from uuid import uuid4
         from inspire.platform.web import browser_api
-        from inspire.services.image_writes import (
+        from inspire.services.catalog.image_writes import (
             parse_visibility_value,
             IMAGE_ADD_METHOD_LOCAL_PUSH,
         )
@@ -801,7 +801,7 @@ class Images(Service):
         workspace: str | WorkspaceRef | None = None,
     ) -> None:
         from inspire.platform.web import browser_api
-        from inspire.services.image_writes import parse_visibility_value
+        from inspire.services.catalog.image_writes import parse_visibility_value
 
         resolved = self._write_ref(ref, workspace)
         value = parse_visibility_value(visibility)

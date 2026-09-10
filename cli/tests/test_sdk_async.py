@@ -324,7 +324,7 @@ def test_iterator_runs_next_and_close_on_event_loop(tracked, monkeypatch):
 
 def test_exec_callback_and_async_chunks(tracked, monkeypatch):
     from inspire.sdk.jobs import Jobs
-    from inspire.services.remote_exec import ExecResult
+    from inspire.services.execution.remote_exec import ExecResult
     callback_threads = []
     expected = ExecResult(output="onetwo", stdout="onetwo", stderr="", returncode=0,
                           completed=True, transport="fake")
@@ -821,8 +821,8 @@ def test_concurrent_writes_have_separate_single_send_and_deadline_state(tracked,
 @pytest.mark.parametrize("transport", ["jupyter", "ssh"])
 def test_notebook_exec_uses_native_io_and_loop_callbacks(tracked, monkeypatch, transport):
     from inspire.sdk.notebooks import Notebooks
-    from inspire.services import remote_exec as core
-    from inspire.services.async_output import deliver_output
+    from inspire.services.execution import remote_exec as core
+    from inspire.services.execution.async_output import deliver_output
     threads = []
     closed = asyncio.Event()
     result = core.ExecResult(0, "onetwo", "onetwo", "", True, transport)

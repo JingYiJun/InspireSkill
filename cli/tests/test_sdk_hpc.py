@@ -31,7 +31,7 @@ from inspire import (
 )
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.projects import ProjectInfo
-from inspire.services.quotas import ResolvedQuota
+from inspire.services.catalog.quotas import ResolvedQuota
 
 
 @pytest.fixture
@@ -62,14 +62,14 @@ def catalog(client, monkeypatch):
         "inspire.platform.web.browser_api.workspaces.is_fair_scheduling_workspace", lambda *a: False
     )
     monkeypatch.setattr(
-        "inspire.services.image_resolution.resolve_image_url",
+        "inspire.services.catalog.image_resolution.resolve_image_url",
         lambda value, **kw: "registry/image:v1",
     )
     monkeypatch.setattr(
-        "inspire.services.hpc_submission.resolve_image_url", lambda value, **kw: "registry/image:v1"
+        "inspire.services.hpc.hpc_submission.resolve_image_url", lambda value, **kw: "registry/image:v1"
     )
     monkeypatch.setattr(
-        "inspire.services.ray_submission.resolve_image_id", lambda value, **kw: "image-test"
+        "inspire.services.ray.ray_submission.resolve_image_id", lambda value, **kw: "image-test"
     )
     from inspire.platform.web.browser_api.images import CustomImageInfo
 
@@ -113,7 +113,7 @@ def catalog(client, monkeypatch):
 def check_cli_payload(kind, client, catalog, monkeypatch):
     from inspire.cli.main import main
     from inspire.cli.utils import quota_resolver
-    from inspire.services import datasets
+    from inspire.services.catalog import datasets
 
     cli = import_module(f"inspire.cli.commands.{kind}.{kind}_commands")
     service = getattr(client, kind)
@@ -244,7 +244,7 @@ def check_cli_payload(kind, client, catalog, monkeypatch):
     assert result.exit_code == 0, result.output
     assert captured == [planned.create_kwargs]
     # JSON output deliberately scrubs platform paths; apply the same public rendering to SDK plan.
-    from inspire.cli.formatters.json_formatter import format_json
+    from inspire.services.utils.json_formatter import format_json
 
     assert json.loads(result.output) == json.loads(format_json(planned.to_dict()))
     assert (
@@ -399,7 +399,7 @@ def check_logs(kind, client, monkeypatch, head):
         else cli_log._clamped_window({"created_at": "1000000", "finished_at": "2000000"}, None)
     )
     assert (calls[0]["start_timestamp_ms"], calls[0]["end_timestamp_ms"]) == expected_range[:2]
-    from inspire.services.job_logs import select_job_logs
+    from inspire.services.job.job_logs import select_job_logs
 
     fetched = rows if kind == "hpc" and not head else rows[:2]
     expected = select_job_logs(

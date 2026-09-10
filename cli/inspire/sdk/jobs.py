@@ -3,7 +3,7 @@
 from __future__ import annotations
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
-from inspire.services.remote_exec import ExecResult
+from inspire.services.execution.remote_exec import ExecResult
 from typing import Iterator, Sequence, Any
 import builtins
 from .models import Page, WorkspaceRef, ComputeGroupRef
@@ -40,8 +40,8 @@ from .exceptions import (
     SubmissionUncertainError,
     JobFailedError,
 )
-from inspire.services.job_output import public_job_status
-from inspire.services.job_status import normalize_status, TERMINAL_STATUSES
+from inspire.services.job.job_output import public_job_status
+from inspire.services.job.job_status import normalize_status, TERMINAL_STATUSES
 
 
 class Jobs(Service):
@@ -76,7 +76,7 @@ class Jobs(Service):
             capture=capture,
         )
         resolved = self._resolve(ref, workspace)
-        from inspire.services.job_events import list_all_job_instances
+        from inspire.services.job.job_events import list_all_job_instances
 
         rows = list_all_job_instances(resolved.key, session=self.session)
         return workload_exec(
@@ -245,7 +245,7 @@ class Jobs(Service):
 
     def _quota_rows(self, ws, group):
         from inspire.platform.web.browser_api.notebooks import get_resource_prices
-        from inspire.services.quotas import ResolvedQuota
+        from inspire.services.catalog.quotas import ResolvedQuota
 
         rows = self._catalog(
             "prices",
@@ -266,7 +266,7 @@ class Jobs(Service):
             key = str(row.get("quota_id") or row.get("spec_id") or "")
             if not key:
                 raise ResolutionIncompleteError("Quota catalog omitted a tier identity.")
-            from inspire.services.workload_quota import quota_values
+            from inspire.services.catalog.workload_quota import quota_values
 
             gpu_count, cpu_count, memory_gib, gpu = quota_values(row)
             quota = Quota(gpu_count, cpu_count, memory_gib)
@@ -291,7 +291,7 @@ class Jobs(Service):
         cursor: str | None = None,
     ) -> Page[QuotaOption]:
         from dataclasses import replace
-        from inspire.services.workload_quota import query_workspace_quotas
+        from inspire.services.catalog.workload_quota import query_workspace_quotas
 
         ws = self.client.workspaces.get(workspace)
         groups = self.client.compute_groups._all(ws)
@@ -353,7 +353,7 @@ class Jobs(Service):
 
     def _plan(self, spec):
         from inspire.platform.web.browser_api.availability import get_quota_priority_levels
-        from inspire.services.job_submission import build_training_job_plan
+        from inspire.services.job.job_submission import build_training_job_plan
         from inspire.task_priority import resolve_task_priority
 
         if not isinstance(spec, JobCreateSpec):
@@ -375,7 +375,7 @@ class Jobs(Service):
             raise ValidationError("quota must be str, Quota or QuotaRef.")
         requested_quota = spec.quota
         if isinstance(requested_quota, str):
-            from inspire.services.quotas import parse_quota
+            from inspire.services.catalog.quotas import parse_quota
 
             parsed = parse_quota(requested_quota)
             requested_quota = Quota(parsed.gpu_count, parsed.cpu_count, parsed.memory_gib)
@@ -385,7 +385,7 @@ class Jobs(Service):
             [x[0] for x in project_rows], spec.project, ProjectRef, self.client, ws.ref.key
         )
         project_data = next(x[1] for x in project_rows if x[0].ref.key == project.ref.key)
-        from inspire.services.compute_groups import group_supports_workload
+        from inspire.services.catalog.compute_groups import group_supports_workload
 
         group_rows = self.client.compute_groups._all(ws)
         group = exact(
@@ -432,7 +432,7 @@ class Jobs(Service):
         if levels and all(x in ("low", "high") for x in levels):
             if ("low" if priority <= 1 else "high") not in levels:
                 raise ValidationError("Requested priority is incompatible with this quota tier.")
-        from inspire.services.datasets import parse_dataset_specs, resolve_dataset_info
+        from inspire.services.catalog.datasets import parse_dataset_specs, resolve_dataset_info
 
         mounts = parse_dataset_specs(
             [
@@ -606,7 +606,7 @@ class Jobs(Service):
     def instances(
         self, ref: str | JobRef, *, workspace: str | WorkspaceRef | None = None
     ) -> tuple[JobInstance, ...]:
-        from inspire.services.job_events import list_all_job_instances
+        from inspire.services.job.job_events import list_all_job_instances
 
         resolved = self._resolve(ref, workspace)
         return tuple(
@@ -640,7 +640,7 @@ class Jobs(Service):
         workload_level: bool = False,
         limit: int = 100,
     ) -> EventResult:
-        from inspire.services.job_events import collect_job_events, matching_events
+        from inspire.services.job.job_events import collect_job_events, matching_events
 
         resolved = self._resolve(ref, workspace)
         selectors = (instance,) if isinstance(instance, str) else instance or ()
@@ -742,7 +742,7 @@ class Jobs(Service):
         limit: int = 100,
         max_chars: int | None = None,
     ) -> LogResult:
-        from inspire.services.job_logs import (
+        from inspire.services.job.job_logs import (
             window_to_minutes,
             web_log_time_range,
             fetch_job_logs,
@@ -798,7 +798,7 @@ class Jobs(Service):
     def follow_logs(
         self, ref: str | JobRef, *, interval: float = 2, **filters: Any
     ) -> Iterator[LogResult]:
-        from inspire.services.job_logs import web_log_identity, format_log_line
+        from inspire.services.job.job_logs import web_log_identity, format_log_line
 
         if not math.isfinite(interval) or interval <= 0:
             raise ValidationError("interval must be finite positive seconds")

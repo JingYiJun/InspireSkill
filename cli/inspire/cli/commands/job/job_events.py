@@ -14,10 +14,10 @@ from typing import Optional
 
 import click
 
-from inspire.services.job_events import (
+from inspire.services.job.job_events import (
     list_all_job_instances as _list_all_job_instances,
 )
-from inspire.services.job_events import collect_job_events
+from inspire.services.job.job_events import collect_job_events
 
 from inspire.cli.context import (
     Context,
@@ -29,7 +29,7 @@ from inspire.cli.context import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, event_sort_key, run_events_command
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.jobs import (

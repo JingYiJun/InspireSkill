@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from inspire.services.account_context import (
+from inspire.services.account.account_context import (
     collect_context as _collect_context,
     bound_context,
 )
@@ -18,8 +18,8 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils import json_formatter
+from inspire.services.utils.collections import (
     resolve_collection_limit,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error

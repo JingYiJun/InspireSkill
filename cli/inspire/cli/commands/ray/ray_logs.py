@@ -19,7 +19,7 @@ specific to Ray:
 
 from __future__ import annotations
 
-from inspire.services.ray_logs import (
+from inspire.services.ray.ray_logs import (
     clamped_window as _clamped_window,
     labelled_logs as _labelled_logs,
 )
@@ -54,7 +54,7 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.config import Config, ConfigError

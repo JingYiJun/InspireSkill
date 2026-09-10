@@ -7,12 +7,12 @@ from datetime import datetime
 
 from inspire.platform.web import browser_api
 from inspire.platform.web.browser_api import schedule_config
-from inspire.services import (
+from inspire.services.catalog import (
     resource_usage as usage_views,
     resource_availability as availability_views,
 )
-from inspire.services.job_events import event_sort_key, matching_events
-from inspire.services.collections import bound_collection
+from inspire.services.job.job_events import event_sort_key, matching_events
+from inspire.services.utils.collections import bound_collection
 from .exceptions import ValidationError
 from .models import WorkspaceRef, ComputeGroupRef, EventResult
 from .models_resources import ResourceAvailability, ResourceUsage, WorkloadSchedulePolicy

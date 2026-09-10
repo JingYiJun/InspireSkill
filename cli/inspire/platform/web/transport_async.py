@@ -118,7 +118,7 @@ class AsyncDriver:
 
     async def execute(self, action: Call) -> Any:
         """Interpret nested workflows without moving authentication into a worker."""
-        from inspire.services import remote_exec
+        from inspire.services.execution import remote_exec
         from inspire.platform.web.browser_api import jupyter_terminal
 
         from inspire.bridge.tunnel.ssh_exec import _stream_process
@@ -135,7 +135,7 @@ class AsyncDriver:
             return await stream_process(*action.args, **action.kwargs, deliver=deliver)
 
         if action.blocking:
-            from inspire.services.async_output import _finish_io
+            from inspire.services.execution.async_output import _finish_io
             from functools import partial
 
             return await _finish_io(partial(action.function, *action.args, **action.kwargs))

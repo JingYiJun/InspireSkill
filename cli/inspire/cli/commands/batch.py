@@ -23,9 +23,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils import job_submit
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -39,7 +39,7 @@ from inspire.cli.utils.dataset_mounts import (
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
-from inspire.cli.utils.image_resolver import (
+from inspire.services.catalog.image_resolution import (
     ImageCatalogCache,
     resolve_image_url,
 )
@@ -55,7 +55,7 @@ from inspire.cli.utils.quota_resolver import (
     parse_quota,
     resolve_quota,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,

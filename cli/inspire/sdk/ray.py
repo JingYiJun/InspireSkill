@@ -3,17 +3,17 @@
 from __future__ import annotations
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
-from inspire.services.remote_exec import ExecResult
+from inspire.services.execution.remote_exec import ExecResult
 from datetime import datetime
 from typing import Sequence
 from uuid import uuid4
-from inspire.services import ray_submission as core
+from inspire.services.ray import ray_submission as core
 from inspire.services.metrics import metric_group
-from inspire.services.ray_instances import RayInstanceView, fetch_ray_instances, ray_instance_views
+from inspire.services.ray.ray_instances import RayInstanceView, fetch_ray_instances, ray_instance_views
 from inspire.platform.web.browser_api import ray_jobs as api
-from inspire.services import ray_status as statuses, ray_logs as log_core
-from inspire.services.ray_output import public_ray_status
-from inspire.services.ray_instances import select_ray_instance_views
+from inspire.services.ray import ray_status as statuses, ray_logs as log_core
+from inspire.services.ray.ray_output import public_ray_status
+from inspire.services.ray.ray_instances import select_ray_instance_views
 from inspire.platform.web.browser_api.metrics import TASK_TYPE_BY_RESOURCE
 
 from .compute_jobs import WorkloadBinding, ComputeJobs
@@ -229,8 +229,8 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         workload_level: bool = False,
         limit: int = 100,
     ) -> EventResult:
-        from inspire.services.ray_events import fetch_recent_ray_events
-        from inspire.services.job_events import matching_events
+        from inspire.services.ray.ray_events import fetch_recent_ray_events
+        from inspire.services.job.job_events import matching_events
 
         if workload_level and instance:
             raise ValidationError("--workload-level and --instance cannot be used together.")
@@ -283,7 +283,7 @@ class Ray(ComputeJobs[RayJobRef, RayJob, RayInstanceView]):
         limit: int | None = None,
         workspace: str | WorkspaceRef | None = None,
     ) -> tuple[RayScalingEvent, ...]:
-        from inspire.services.ray_scaling import public_ray_scaling_events, event_time
+        from inspire.services.ray.ray_scaling import public_ray_scaling_events, event_time
 
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValidationError("limit must be a positive integer.")

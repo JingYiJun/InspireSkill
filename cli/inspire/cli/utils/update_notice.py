@@ -27,7 +27,7 @@ from typing import Any
 import click
 
 from inspire import __version__
-from inspire.cli.utils.detached import detached_creationflags
+from inspire.services.utils.processes import detached_creationflags
 
 REPO_SLUG = "realZillionX/InspireSkill"
 PACKAGE_NAME = "inspire-skill"

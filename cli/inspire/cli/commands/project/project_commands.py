@@ -8,7 +8,7 @@ an attribute rather than a scope. Nothing here takes `--workspace`.
 
 from __future__ import annotations
 
-from inspire.services.projects import (
+from inspire.services.catalog.projects import (
     project_to_dict,
     project_detail_view,
     owner_views,
@@ -23,9 +23,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -38,7 +38,7 @@ from inspire.cli.utils.id_resolver import (
     resolve_by_name,
     run_with_stale_handle_retry,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     require_web_session,

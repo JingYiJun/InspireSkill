@@ -34,13 +34,13 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from .serving_instances import (
+from inspire.services.serving.serving_instances import (
     ServingInstanceSelectionError,
 )
 from .serving_commands import (
@@ -206,7 +206,7 @@ def logs_serving(
     fetch_size = max(record_limit, tail or 0, head or 0)
 
     def _load(serving_id: str, live_session):  # noqa: ANN001
-        from inspire.services.serving_logs import fetch_logs
+        from inspire.services.serving.serving_logs import fetch_logs
         return fetch_logs(serving_id, session=live_session, selectors=instance_names,
                           since_minutes=since_minutes, fetch_size=fetch_size, all_output=all_output)
 

@@ -18,7 +18,7 @@ from .notebook_lookup import (
     _try_get_current_user_ids,
 )
 from .notebook_presenters import _print_notebook_detail, _print_notebook_list
-from .public_output import public_notebook, public_operation
+from inspire.services.notebook.notebook_output import public_notebook, public_operation
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -26,8 +26,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.utils.collection_output import (
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -51,7 +52,7 @@ from inspire.cli.utils.notebook_cli import (
     load_config,
     require_web_session,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import task_priority_option
 from inspire.cli.utils.notebook_post_start import (
     NO_WAIT_POST_START_WARNING,

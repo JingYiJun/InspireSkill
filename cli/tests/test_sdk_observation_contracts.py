@@ -18,7 +18,7 @@ def utc_display(monkeypatch):
         def fromtimestamp(cls, value, tz=None):
             return super().fromtimestamp(value, timezone.utc)
 
-    monkeypatch.setattr("inspire.services.text.datetime", UTCDateTime)
+    monkeypatch.setattr("inspire.services.utils.text.datetime", UTCDateTime)
 
 
 def test_serving_version_literal_projection(client, serving_runtime, monkeypatch):

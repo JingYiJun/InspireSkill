@@ -31,7 +31,7 @@ from inspire import (
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.projects import ProjectInfo
 from inspire.platform.web.browser_api.notebooks import ImageInfo
-from inspire.services.quotas import ResolvedQuota
+from inspire.services.catalog.quotas import ResolvedQuota
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def ref(client):
 def test_create_kwargs_equal_cli(client, catalog, monkeypatch, advanced):
     from inspire.cli.commands.notebook import notebook_create_flow as flow
     from inspire.cli.context import Context
-    from inspire.services import datasets
+    from inspire.services.catalog import datasets
 
     spec = catalog.spec
     if advanced:
@@ -275,7 +275,7 @@ def test_wait_terminal_and_failure(client, ref, monkeypatch, terminal):
     with pytest.raises(NotebookFailedError) as error:
         client.notebooks.wait(ref, raise_on_failure=True)
     from inspire.sdk import NotebookFailedError as SDKNotebookFailedError
-    from inspire.services.notebook_status import NotebookFailedError as CLINotebookFailedError
+    from inspire.services.notebook.notebook_status import NotebookFailedError as CLINotebookFailedError
 
     assert isinstance(error.value, InspireError)
     assert error.value.notebook.status == terminal
@@ -345,7 +345,7 @@ def test_discovery_status_and_cursor(client, catalog, monkeypatch):
 
 
 def test_detail_fields_match_cli_projection(client, ref, monkeypatch):
-    from inspire.services.notebook_output import public_notebook
+    from inspire.services.notebook.notebook_output import public_notebook
 
     row = {
         "name": "Example",

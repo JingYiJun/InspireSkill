@@ -1,4 +1,4 @@
-"""Interactive CLI adapters; transport symbols remain re-exported for compatibility."""
+"""Interactive CLI adapters for remote terminal sessions."""
 
 from __future__ import annotations
 import shutil
@@ -9,27 +9,14 @@ from inspire.cli.utils.terminal_io import write_stream_output
 from inspire.platform.web.browser_api.core import _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web import pty_socket
-from inspire.platform.web.pty_socket import (  # noqa: F401
-    WebSocketClient as WebSocketClient,
+from inspire.platform.web.pty_socket import (
     WebSocketClient as _WebSocketClient,
-    PTY_ROUTES as PTY_ROUTES,
-    PTY_ROUTES as _PTY_ROUTES,
-    JobShellError as JobShellError,
-    JobShellAuthError as JobShellAuthError,
-    JobInstance as JobInstance,
-    normalize_job_instances as normalize_job_instances,
-    ShellExitWatcher as ShellExitWatcher,
-    SHELL_BOOTSTRAP as SHELL_BOOTSTRAP,
-    SHELL_EXIT_MARKER as SHELL_EXIT_MARKER,
-    SHELL_ESCAPE_NOTE as SHELL_ESCAPE_NOTE,
-    CTRL_RIGHT_BRACKET as CTRL_RIGHT_BRACKET,
-    RUNNING_INSTANCE_STATUS as RUNNING_INSTANCE_STATUS,
-    REMOTE_CMD_PATH as REMOTE_CMD_PATH,
-    shell_exit_announce as shell_exit_announce,
-    instance_name as _instance_name,
-    instance_status as _instance_status,
-    instance_rank as _instance_rank,
-    cookie_value as _cookie_value,
+    JobShellAuthError,
+    JobInstance,
+    ShellExitWatcher,
+    SHELL_BOOTSTRAP,
+    CTRL_RIGHT_BRACKET,
+    RUNNING_INSTANCE_STATUS,
 )
 
 

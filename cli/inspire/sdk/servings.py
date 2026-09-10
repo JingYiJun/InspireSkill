@@ -3,7 +3,7 @@
 from __future__ import annotations
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
-from inspire.services.remote_exec import ExecResult
+from inspire.services.execution.remote_exec import ExecResult
 import time
 from inspire.platform.web.flow import call, perform_sync
 from dataclasses import replace
@@ -11,19 +11,19 @@ from uuid import uuid4
 from datetime import datetime
 from typing import Iterator, Sequence
 from inspire.platform.web import browser_api as api
-from inspire.services import serving_submission as core, serving_status as statuses
-from inspire.services import serving_logs as logs_core, serving_api_metrics as traffic
-from inspire.services.serving_output import public_serving, public_configs, sanitize_public_data
-from inspire.services.serving_views import public_serving_version, public_scale_history_entry
-from inspire.services.serving_instances import (
+from inspire.services.serving import serving_submission as core, serving_status as statuses
+from inspire.services.serving import serving_logs as logs_core, serving_api_metrics as traffic
+from inspire.services.serving.serving_output import public_serving, public_configs, sanitize_public_data
+from inspire.services.serving.serving_views import public_serving_version, public_scale_history_entry
+from inspire.services.serving.serving_instances import (
     ServingInstanceView,
     fetch_serving_instances,
     serving_instance_views,
     select_serving_instance_views,
 )
-from inspire.services.serving_access import invocation_info
-from inspire.services.serving_events import serving_events
-from inspire.services.workload_quota import ensure_priority_allowed
+from inspire.services.serving.serving_access import invocation_info
+from inspire.services.serving.serving_events import serving_events
+from inspire.services.catalog.workload_quota import ensure_priority_allowed
 from .compute_jobs import ComputeJobs, WorkloadBinding, duration
 from inspire.services.metrics import metric_group
 from .resources import operation, exact
@@ -213,7 +213,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             return None
 
     def _quota(self, ws, group, quota):
-        from inspire.services.workload_quota import allowed_priority_levels_for
+        from inspire.services.catalog.workload_quota import allowed_priority_levels_for
 
         resolved = super()._quota(ws, group, quota)
         return replace(
@@ -256,7 +256,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         if isinstance(spec.model, ModelRef):
             model = self.client.models.get(spec.model, workspace=ws.ref)
             model_id, model_label = model.ref.key, model.name
-            from inspire.services.models import version_number
+            from inspire.services.catalog.models import version_number
 
             latest = version_number(model.version)
         else:
@@ -547,7 +547,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         instance: str | Sequence[str] | None = None, workload_level: bool = False,
         limit: int = 100,
     ) -> EventResult:
-        from inspire.services.job_events import matching_events
+        from inspire.services.job.job_events import matching_events
 
         if workload_level and instance:
             raise ValidationError("--workload-level and --instance cannot be used together.")
@@ -573,7 +573,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         tail: int | None = None, head: int | None = None, limit: int | None = None,
     ) -> LogResult:
         from datetime import datetime, timezone
-        from inspire.services.job_logs import window_to_minutes, select_job_logs, format_log_line
+        from inspire.services.job.job_logs import window_to_minutes, select_job_logs, format_log_line
 
         if tail is not None and head is not None:
             raise ValidationError("--tail and --head cannot be used together.")

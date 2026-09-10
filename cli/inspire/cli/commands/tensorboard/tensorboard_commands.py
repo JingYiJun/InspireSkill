@@ -20,9 +20,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -40,16 +41,16 @@ from inspire.cli.utils.id_resolver import (
     resolve_by_name,
 )
 from inspire.cli.utils.job_submit import select_project_for_workspace
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from inspire.services.tensorboards import current_user_id as current_user_id
-from inspire.services.tensorboards import fetch_boards as fetch_boards
-from inspire.services.tensorboards import resolve_group_id as _resolve_group_id
-from inspire.services.tensorboards import find_created_board as _find_created_board
-from inspire.services.tensorboards import await_status as _await_status
+from inspire.services.tensorboard.tensorboards import current_user_id as current_user_id
+from inspire.services.tensorboard.tensorboards import fetch_boards as fetch_boards
+from inspire.services.tensorboard.tensorboards import resolve_group_id as _resolve_group_id
+from inspire.services.tensorboard.tensorboards import find_created_board as _find_created_board
+from inspire.services.tensorboard.tensorboards import await_status as _await_status
 
 
 
@@ -509,7 +510,7 @@ def _resolve_job_id(
     name: str,
     workspace_id: str,
 ) -> str:
-    from inspire.services.tensorboards import job_candidates
+    from inspire.services.tensorboard.tensorboards import job_candidates
     def _lister():
         return job_candidates(session=session, name=name, workspace_id=workspace_id)
 

@@ -14,7 +14,7 @@ handles and never cross the output boundary.
 
 from __future__ import annotations
 
-from inspire.services.hpc_events import (
+from inspire.services.hpc.hpc_events import (
     collapse_repeated_events as _collapse_repeated_events,
     labelled_events as _labelled_events,
 )

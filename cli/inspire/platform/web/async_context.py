@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Generator, cast
 
 from inspire.accounts import cache_lock
-from inspire.services.async_output import _finish_io
+from inspire.services.execution.async_output import _finish_io
 
 
 @asynccontextmanager

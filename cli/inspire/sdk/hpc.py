@@ -3,17 +3,17 @@
 from __future__ import annotations
 from inspire.exec_output import DEFAULT_MAX_OUTPUT_BYTES, OutputTarget
 from typing import Callable
-from inspire.services.remote_exec import ExecResult
+from inspire.services.execution.remote_exec import ExecResult
 from datetime import datetime
 from typing import Sequence
 from uuid import uuid4
-from inspire.services import hpc_submission as core
-from inspire.services.hpc_instances import HPCInstanceView, fetch_hpc_instances, hpc_instance_views
-from inspire.services.quotas import build_resource_spec_price
+from inspire.services.hpc import hpc_submission as core
+from inspire.services.hpc.hpc_instances import HPCInstanceView, fetch_hpc_instances, hpc_instance_views
+from inspire.services.catalog.quotas import build_resource_spec_price
 from inspire.platform.web.browser_api import hpc_jobs as api
-from inspire.services import hpc_status as statuses, hpc_logs as log_core
-from inspire.services.hpc_output import public_hpc_status
-from inspire.services.hpc_instances import select_hpc_instance_views
+from inspire.services.hpc import hpc_status as statuses, hpc_logs as log_core
+from inspire.services.hpc.hpc_output import public_hpc_status
+from inspire.services.hpc.hpc_instances import select_hpc_instance_views
 from inspire.platform.web.browser_api.metrics import TASK_TYPE_BY_RESOURCE
 
 from .compute_jobs import WorkloadBinding, ComputeJobs, duration
@@ -128,7 +128,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
 
     @operation
     def plan(self, spec: HPCJobCreateSpec) -> HPCJobPlan:
-        from inspire.services.datasets import parse_dataset_specs, resolve_dataset_info
+        from inspire.services.catalog.datasets import parse_dataset_specs, resolve_dataset_info
 
         if not isinstance(spec, HPCJobCreateSpec):
             raise ValidationError("Pass a HPCJobCreateSpec.")
@@ -267,9 +267,9 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         workload_level: bool = False,
         limit: int = 100,
     ) -> EventResult:
-        from inspire.services.hpc_events import collapse_repeated_events, labelled_events
-        from inspire.services.hpc_instances import select_hpc_instance_views
-        from inspire.services.job_events import matching_events, event_sort_key
+        from inspire.services.hpc.hpc_events import collapse_repeated_events, labelled_events
+        from inspire.services.hpc.hpc_instances import select_hpc_instance_views
+        from inspire.services.job.job_events import matching_events, event_sort_key
 
         if workload_level and instance:
             raise ValidationError("--workload-level and --instance cannot be used together.")

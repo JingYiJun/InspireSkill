@@ -30,7 +30,7 @@ from inspire.cli.commands.notebook.ssh_config_cmd import (
 )
 from inspire.cli.commands.uninstall import _playwright_cache_dir
 from inspire.cli.console_bootstrap import configure_console_encoding
-from inspire.cli.utils.detached import detached_creationflags, process_is_alive
+from inspire.services.utils.processes import detached_creationflags, process_is_alive
 
 
 @pytest.fixture

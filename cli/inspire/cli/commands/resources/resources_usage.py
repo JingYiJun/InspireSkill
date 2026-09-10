@@ -32,7 +32,7 @@ are TensorBoards, which hold no GPU at all.
 
 from __future__ import annotations
 
-from inspire.services.resource_usage import (
+from inspire.services.catalog.resource_usage import (
     display_name,
     fair_scheduling_or_unknown,
     project_user_rows,
@@ -54,9 +54,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,

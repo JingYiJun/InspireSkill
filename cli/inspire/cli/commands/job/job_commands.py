@@ -11,8 +11,8 @@ from typing import Any, Optional
 
 import click
 
-from inspire.services.job_status import RAW_TERMINAL_STATUSES as _JOB_TERMINAL_STATUSES
-from inspire.services.job_status import (
+from inspire.services.job.job_status import RAW_TERMINAL_STATUSES as _JOB_TERMINAL_STATUSES
+from inspire.services.job.job_status import (
     STATUS_ALIAS_MAP,
     STATUS_API_ALIAS_MAP,
     JOB_ACTIVE_API_STATUSES,
@@ -31,9 +31,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -51,14 +52,10 @@ from inspire.cli.utils.id_resolver import (
     reject_id_at_boundary,
     run_with_stale_handle_retry,
 )
-from inspire.cli.utils.job_shell import (
-    JobShellError,
-    normalize_job_instances,
-    open_job_shell,
-    select_job_instance,
-)
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.platform.web.pty_socket import JobShellError, normalize_job_instances
+from inspire.cli.utils.job_shell import open_job_shell, select_job_instance
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -70,11 +67,8 @@ from inspire.config.workspaces import resolve_workspace_query_scope, select_work
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
-from .public_output import (
-    format_job_status,
-    public_job_list_item,
-    public_job_status,
-)
+from inspire.cli.commands.job.public_output import format_job_status
+from inspire.services.job.job_output import public_job_list_item, public_job_status
 
 logger = logging.getLogger(__name__)
 

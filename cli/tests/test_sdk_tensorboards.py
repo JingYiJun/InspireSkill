@@ -14,7 +14,7 @@ from inspire import (
 )
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.tensorboards import TensorboardInfo
-from inspire.services import tensorboards as core
+from inspire.services.tensorboard import tensorboards as core
 
 
 @pytest.fixture

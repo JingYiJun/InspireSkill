@@ -26,7 +26,7 @@ from inspire.sdk import (
     AuthenticationError,
     WaitTimeoutError,
 )
-from inspire.sdk.transport import Transport
+from inspire.platform.web.transport import Transport
 from inspire.platform.web.session.models import WebSession, SessionExpiredError, TransientAPIError
 
 
@@ -66,19 +66,19 @@ def test_imports_are_lazy():
 import inspire.sdk
 for module in pkgutil.iter_modules(inspire.sdk.__path__):
     importlib.import_module("inspire.sdk." + module.name)
-import inspire.services.notebooks
-import inspire.services.notebook_status
-import inspire.services.notebook_output
-import inspire.services.workload_quota
-import inspire.services.job_output
+import inspire.services.notebook.notebooks
+import inspire.services.notebook.notebook_status
+import inspire.services.notebook.notebook_output
+import inspire.services.catalog.workload_quota
+import inspire.services.job.job_output
 for kind in ("hpc", "ray"):
     for module in ("submission", "status", "instances", "logs", "events", "output"):
-        importlib.import_module(f"inspire.services.{kind}_{module}")
-import inspire.services.ray_scaling
-for module in ("serving_submission", "serving_status", "serving_instances", "serving_events", "serving_logs", "serving_views", "serving_access", "serving_output", "serving_api_metrics", "tensorboards", "tensorboard_data", "image_writes", "model_writes"):
+        importlib.import_module(f"inspire.services.{kind}.{kind}_{module}")
+import inspire.services.ray.ray_scaling
+for module in ("serving.serving_submission", "serving.serving_status", "serving.serving_instances", "serving.serving_events", "serving.serving_logs", "serving.serving_views", "serving.serving_access", "serving.serving_output", "serving.serving_api_metrics", "tensorboard.tensorboards", "tensorboard.tensorboard_data", "catalog.image_writes", "catalog.model_writes"):
     importlib.import_module("inspire.services." + module)
-import inspire.services.image_resolution
-import inspire.services.task_priority
+import inspire.services.catalog.image_resolution
+import inspire.services.catalog.task_priority
 assert not any(x.startswith(("playwright", "click")) for x in sys.modules)
 '''
     subprocess.run([sys.executable, "-c", script], check=True)
@@ -99,7 +99,7 @@ def test_thread_and_process_guards(client, monkeypatch):
         future = pool.submit(client._transport.check)
         with pytest.raises(ClientThreadError):
             future.result()
-    monkeypatch.setattr("inspire.sdk.transport.os.getpid", lambda: -1)
+    monkeypatch.setattr("inspire.platform.web.transport.os.getpid", lambda: -1)
     with pytest.raises(ClientThreadError):
         client._transport.check()
     monkeypatch.undo()
@@ -156,7 +156,7 @@ def test_envelope_read_retries_but_create_does_not(client, monkeypatch):
         ]
     )
     monkeypatch.setattr(client._transport, "_once", lambda *a, **k: next(replies))
-    monkeypatch.setattr("inspire.sdk.transport.time.sleep", lambda _: None)
+    monkeypatch.setattr("inspire.platform.web.transport.time.sleep", lambda _: None)
     with client._transport.scope():
         assert client._transport.request("POST", "/api/v2/train?Action=ListJobs")["Result"]["ok"]
     calls = []
@@ -318,7 +318,7 @@ def test_sdk_and_cli_payloads_match(client, planned, monkeypatch):
     from inspire.platform.web.browser_api.datasets import DatasetValidation
 
     monkeypatch.setattr(
-        "inspire.services.datasets.validate_dataset_mounts",
+        "inspire.services.catalog.datasets.validate_dataset_mounts",
         lambda *a, **kw: [DatasetValidation(dataset="data", version="v1", ok=True, path="/data")],
     )
     spec = replace(
@@ -460,7 +460,7 @@ def planned(client, monkeypatch):
         QuotaRef,
         QuotaOption,
     )
-    from inspire.services.quotas import ResolvedQuota
+    from inspire.services.catalog.quotas import ResolvedQuota
 
     ws = Resource(
         "workspace", client.workspaces._make_ref(WorkspaceRef, "workspace", "ws-test", "ws-test")
@@ -660,7 +660,7 @@ def test_cursor_encodes_query_by_plain_equality(client):
 
 @pytest.mark.parametrize("window,minutes", [("30m", 30), ("2h", 120), ("1d", 1440), (" 2H ", 120)])
 def test_window_parsing_shared(window, minutes):
-    from inspire.services.job_logs import window_to_minutes
+    from inspire.services.job.job_logs import window_to_minutes
     from inspire.cli.commands.job.job_logs import window_to_minutes as cli_window
 
     assert window_to_minutes(window) == cli_window(window) == minutes
@@ -668,7 +668,7 @@ def test_window_parsing_shared(window, minutes):
 
 @pytest.mark.parametrize("window", ["0m", "oops", "-2h", "1s"])
 def test_invalid_log_window(window):
-    from inspire.services.job_logs import window_to_minutes
+    from inspire.services.job.job_logs import window_to_minutes
 
     with pytest.raises(ValueError):
         window_to_minutes(window)
@@ -999,7 +999,7 @@ def test_unknown_read_retries_and_browser_requires_opt_in(client, monkeypatch):
         return ["v1", "body"]
 
     monkeypatch.setattr(client._transport, "_once", once)
-    monkeypatch.setattr("inspire.sdk.transport.time.sleep", lambda _: None)
+    monkeypatch.setattr("inspire.platform.web.transport.time.sleep", lambda _: None)
     assert client._transport.request("POST", "/unregistered/v1") == ["v1", "body"]
     assert calls == [False, False]
     client._transport.allow_browser = True
@@ -1018,7 +1018,7 @@ def test_read_refreshes_session_only_once(client, monkeypatch):
 
     monkeypatch.setattr(client._transport, "_once", fail)
     monkeypatch.setattr(client._transport, "_refresh", lambda: refreshes.append(1))
-    monkeypatch.setattr("inspire.sdk.transport.time.sleep", lambda _: None)
+    monkeypatch.setattr("inspire.platform.web.transport.time.sleep", lambda _: None)
     with pytest.raises(AuthenticationError, match="expired again"):
         client._transport.request("POST", "/read")
     assert len(calls) == 2 and refreshes == [1]
@@ -1103,7 +1103,7 @@ def test_read_retries_json_decode_failure(client, monkeypatch, allow_browser):
         return payload
 
     monkeypatch.setattr(client._transport, "_once", once)
-    monkeypatch.setattr("inspire.sdk.transport.time.sleep", lambda _: None)
+    monkeypatch.setattr("inspire.platform.web.transport.time.sleep", lambda _: None)
     assert client._transport.request("POST", "/api/v2/train?Action=ListJobs") == payload
     assert len(calls) == 2
     assert calls[0][4] is False
@@ -1131,7 +1131,7 @@ def renewal(client, monkeypatch):
                   storage_state={"cookies": [{"name": "x", "value": "renewed"}]})
     monkeypatch.setattr(WebSession, "load", lambda **kw: old)
     monkeypatch.setattr(auth, "get_web_session", lambda **kw: pytest.fail("browser login invoked"))
-    monkeypatch.setattr("inspire.sdk.transport.time.sleep", lambda _: None)
+    monkeypatch.setattr("inspire.platform.web.transport.time.sleep", lambda _: None)
     return auth, old, new
 
 
@@ -1268,7 +1268,7 @@ def test_browser_free_verification_error(client, monkeypatch, renewal, allow_bro
 
 @pytest.mark.parametrize("idle", [None, 61, 60, 59])
 def test_single_send_probes_only_when_idle(client, monkeypatch, idle):
-    monkeypatch.setattr("inspire.sdk.transport.time.monotonic", lambda: 1000)
+    monkeypatch.setattr("inspire.platform.web.transport.time.monotonic", lambda: 1000)
     client._transport._last_success = None if idle is None else 1000 - idle
     probe = idle is None or idle >= 60
     calls = fake_platform(client, monkeypatch, [200, 200] if probe else [200])

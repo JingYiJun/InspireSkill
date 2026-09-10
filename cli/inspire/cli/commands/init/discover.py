@@ -13,7 +13,7 @@ from inspire.platform.web.browser_api.core import _set_base_url
 from inspire.platform.web.session import AuthenticationError
 from inspire.platform.web.session.browser_launch import is_playwright_browser_runtime_error
 
-from inspire.services.account_config import (
+from inspire.services.account.account_config import (
     toml_dumps as _toml_dumps,
     sanitize_account_config as _sanitize_account_config,
     atomic_write_text,

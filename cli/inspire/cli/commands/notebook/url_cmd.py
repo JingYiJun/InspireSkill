@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING
 import click
 
 from inspire.cli.context import Context, pass_context
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 from .transport import preflight_notebook_transport_policy
 

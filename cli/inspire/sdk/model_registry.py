@@ -5,8 +5,8 @@ from __future__ import annotations
 import builtins
 from typing import Any, Sequence
 from inspire.platform.web import browser_api
-from inspire.services import models as views
-from inspire.services.collections import bound_collection
+from inspire.services.catalog import models as views
+from inspire.services.utils.collections import bound_collection
 from .exceptions import ResourceNotFoundError, ValidationError
 from .models import Page, WorkspaceRef, ProjectRef
 from .models_resources import ModelRef, ModelInfo, ModelStatus, ModelVersion, ModelDeployConfig
@@ -200,7 +200,7 @@ class Models(Service):
         operation_id: str | None = None,
     ) -> ModelRegisterHandle:
         from uuid import uuid4
-        from inspire.services.model_writes import created_model_id
+        from inspire.services.catalog.model_writes import created_model_id
         from .exceptions import SubmissionUncertainError
 
         identifier = uuid4().hex if operation_id is None else operation_id
@@ -235,7 +235,7 @@ class Models(Service):
         workspace: str | WorkspaceRef | None = None,
         project: str | ProjectRef | None = None,
     ) -> None:
-        from inspire.services.model_writes import model_usage
+        from inspire.services.catalog.model_writes import model_usage
 
         if isinstance(ref, ModelRef):
             ws = self.client.workspaces.get(workspace).ref.key if workspace is not None else None
@@ -252,7 +252,7 @@ class Models(Service):
                 resolved.key, session=session, workspace_id=resolved.workspace_id
             )
             if references or pending:
-                from inspire.services.model_writes import in_use_message
+                from inspire.services.catalog.model_writes import in_use_message
 
                 raise ValidationError(in_use_message(resolved.name, references, pending=pending))
         with self.client._transport.single_send():

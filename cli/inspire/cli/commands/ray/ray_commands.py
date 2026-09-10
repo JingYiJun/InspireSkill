@@ -1,16 +1,16 @@
 """Ray (弹性计算) job commands for Inspire CLI."""
 
 from __future__ import annotations
-from inspire.services.ray_submission import created_ray_job_id as _created_ray_job_id
+from inspire.services.ray.ray_submission import created_ray_job_id as _created_ray_job_id
 
-from inspire.services.ray_events import (
+from inspire.services.ray.ray_events import (
     fetch_recent_ray_events as _fetch_recent_ray_events,
 )
 
-from inspire.services.ray_status import matches_status, normalize_status
+from inspire.services.ray.ray_status import matches_status, normalize_status
 
 
-from inspire.services.ray_instances import (
+from inspire.services.ray.ray_instances import (
     public_ray_instance_text as _public_ray_instance_text,
     ray_instance_rank as _ray_instance_rank,
     RayInstanceSelectionError as RayInstanceSelectionError,
@@ -35,9 +35,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -64,7 +65,7 @@ from inspire.cli.utils.project_resolver import (
     project_display_name,
     resolve_project_id as resolve_project_id_by_name,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -77,11 +78,12 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
-from inspire.cli.utils.job_shell import JobShellError, open_job_shell
+from inspire.platform.web.pty_socket import JobShellError
+from inspire.cli.utils.job_shell import open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
-from .public_output import (
+from inspire.services.ray.ray_output import (
     format_ray_status,
     public_ray_list_item,
     public_ray_status,
@@ -768,12 +770,12 @@ def _project_label(config: Config, requested: Optional[str]) -> str:
 
 
 def _resolve_image_id(raw: str, *, session, ctx: Context, workspace_id: str) -> str:
-    from inspire.services.ray_submission import resolve_image_id
+    from inspire.services.ray.ray_submission import resolve_image_id
     return resolve_image_id(raw, session=session, workspace_id=workspace_id, debug=ctx.debug, log=logger)
 
 
 def _parse_worker_spec(raw: str) -> dict[str, Any]:
-    from inspire.services.ray_submission import parse_worker_spec
+    from inspire.services.ray.ray_submission import parse_worker_spec
     try:
         return parse_worker_spec(raw)
     except ValueError as exc:
@@ -930,7 +932,7 @@ def create_ray(
         )
 
         if dry_run:
-            from inspire.services.ray_submission import ray_plan_payload
+            from inspire.services.ray.ray_submission import ray_plan_payload
             from inspire.cli.utils.quota_resolver import parse_quota
             head_spec = parse_quota(cast(str, quota))
             plan = ray_plan_payload(
@@ -1037,7 +1039,7 @@ def _assemble_create_body(
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool] = None,
 ) -> dict[str, Any]:
-    from inspire.services.ray_submission import assemble_create_body
+    from inspire.services.ray.ray_submission import assemble_create_body
     from inspire.cli.utils.quota_resolver import parse_quota, resolve_quota, SCHEDULE_TYPE_RAY
 
     workspace_id = select_workspace_id(explicit_workspace_name=workspace, session=session)

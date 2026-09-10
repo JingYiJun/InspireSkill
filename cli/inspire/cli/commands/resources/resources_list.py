@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from inspire.services.resource_availability import (
+from inspire.services.catalog.resource_availability import (
     ordered_availability,
     display_name,
     public_availability_row as _public_availability_row,
@@ -20,9 +20,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,

@@ -130,7 +130,7 @@ class CatalogCache:
     def _invalidate(self, kind: str, account: str, base_url: str, *scope: Any) -> None:
         """Discard a catalog kind, optionally restricted by a scope prefix."""
         if kind == "images" and self._identity_invalidation is not None:
-            from inspire.services.resource_index import resource_index_path
+            from inspire.services.catalog.resource_index import resource_index_path
             path = resource_index_path(account)
             if path is not None and perform_sync(blocking_call(path.exists)):
                 self._identity_invalidation.invalidate_images()

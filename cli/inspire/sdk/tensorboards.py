@@ -5,8 +5,8 @@ import time
 from inspire.platform.web.flow import call, perform_sync
 from typing import Sequence
 from uuid import uuid4
-from inspire.services import tensorboards as core
-from inspire.services import tensorboard_data as data_core
+from inspire.services.tensorboard import tensorboards as core
+from inspire.services.tensorboard import tensorboard_data as data_core
 from inspire.platform.web import browser_api as api
 from inspire.platform.web.browser_api.tensorboards import tensorboard_app_url
 from .resources import Service, operation, exact

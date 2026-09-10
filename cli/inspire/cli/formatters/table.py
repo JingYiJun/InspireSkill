@@ -16,8 +16,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.services.text import display_width as display_width, clip_display as clip_display
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.text import display_width as display_width, clip_display as clip_display
 
 def _cell_text(value: object, *, scrub: bool = True) -> str:
     return scrub_raw_ids(value) if scrub else str(value)

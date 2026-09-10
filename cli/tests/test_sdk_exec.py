@@ -20,7 +20,7 @@ from inspire.sdk import (
     ValidationError,
     AuthenticationError,
 )
-from inspire.services import remote_exec as core
+from inspire.services.execution import remote_exec as core
 from inspire.platform.web import pty_socket
 from inspire.platform.web.browser_api import jupyter_terminal as jt
 
@@ -172,7 +172,7 @@ def test_pty_callback_error_closes_without_retry(client, sockets):
 @pytest.mark.parametrize("always_fail", [False, True])
 def test_sdk_renews_once_before_sending(client, sockets, monkeypatch, always_fail):
     monkeypatch.setattr(
-        "inspire.services.job_events.list_all_job_instances", lambda *a, **kw: job_rows()
+        "inspire.services.job.job_events.list_all_job_instances", lambda *a, **kw: job_rows()
     )
     original = core.WebSocketClient
 
@@ -209,7 +209,7 @@ WORKLOADS = [
         "jobs",
         "job",
         JobRef,
-        "inspire.services.job_events.list_all_job_instances",
+        "inspire.services.job.job_events.list_all_job_instances",
         job_rows(),
         "worker-0",
         "/api/v2/train_job/remote_cmd",
@@ -521,7 +521,7 @@ def test_new_layers_do_not_import_cli_or_ui():
         Path("inspire/platform/web/jupyter_urls.py"),
         Path("inspire/platform/web/browser_api/jupyter_terminal.py"),
     ]
-    paths += list(Path("inspire/services").glob("*.py")) + list(Path("inspire/sdk").glob("*.py"))
+    paths += list(Path("inspire/services").rglob("*.py")) + list(Path("inspire/sdk").glob("*.py"))
     for path in paths:
         for node in ast.walk(ast.parse(path.read_text())):
             names = (
@@ -664,7 +664,7 @@ def test_sdk_does_not_retry_auth_error_after_output(client, sockets, monkeypatch
     from inspire.platform.web.session.models import SessionExpiredError
 
     monkeypatch.setattr(
-        "inspire.services.job_events.list_all_job_instances", lambda *a, **kw: job_rows()
+        "inspire.services.job.job_events.list_all_job_instances", lambda *a, **kw: job_rows()
     )
     monkeypatch.setattr(client._transport, "_refresh", lambda: pytest.fail("replayed after output"))
 
@@ -862,7 +862,7 @@ def test_pty_connect_timeout_is_incomplete(client, sockets, monkeypatch, through
 
     monkeypatch.setattr(FakeSocket, "connect", timeout)
     monkeypatch.setattr(
-        "inspire.services.job_events.list_all_job_instances", lambda *a, **kw: job_rows(),
+        "inspire.services.job.job_events.list_all_job_instances", lambda *a, **kw: job_rows(),
     )
     if through_facade:
         result = client.jobs.exec(job_ref(client), command="echo hi", timeout=5)

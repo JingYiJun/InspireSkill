@@ -24,7 +24,7 @@ from inspire.platform.web.session import auth
 from inspire.platform.web.session.models import WebSession
 from inspire.sdk.cache import CatalogCache
 from inspire.sdk.catalog_store import CatalogStore
-from inspire.services import remote_exec, notebook_transfer
+from inspire.services.execution import remote_exec, notebook_transfer
 from inspire.sdk import notebook_transfer as sdk_transfer
 
 pytestmark = pytest.mark.timeout(15, method="thread")
@@ -566,7 +566,7 @@ def test_public_async_output_callback(tmp_path, monkeypatch, local_ssh, stream, 
     from inspire.sdk import InspireAsyncClient
     from inspire.sdk.notebooks import Notebooks
     from inspire.sdk import _async_runtime
-    from inspire.services.async_output import deliver_output
+    from inspire.services.execution.async_output import deliver_output
 
     base = owner()
     # Use the real public facade/runtime with an isolated account and cached session.
@@ -658,7 +658,7 @@ def test_native_ssh_capture_matches_sync(local_ssh, limit, capture):
 
 
 def test_shared_index_io_keeps_event_loop_running(tmp_path, monkeypatch):
-    from inspire.services.resource_index import ResourceIndex, ResourceIdentity, ResourceScope
+    from inspire.services.catalog.resource_index import ResourceIndex, ResourceIdentity, ResourceScope
     ticker = Ticker()
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = ResourceScope("https://example.invalid", "user", "job")

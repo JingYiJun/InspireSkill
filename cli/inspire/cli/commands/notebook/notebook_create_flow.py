@@ -16,7 +16,8 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.dataset_mounts import (
     DatasetSpecError,
     dataset_mount_views,
@@ -48,7 +49,7 @@ from inspire.cli.utils.quota_resolver import (
     parse_quota,
     resolve_quota,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import TaskPriorityError, resolve_task_priority
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
@@ -63,10 +64,10 @@ from .notebook_lookup import (
     _list_notebooks_for_workspace,
     _try_get_current_user_ids,
 )
-from .public_output import public_operation
+from inspire.services.notebook.notebook_output import public_operation
 
-from inspire.services import notebooks as notebook_services
-from inspire.services.notebooks import (
+from inspire.services.notebook import notebooks as notebook_services
+from inspire.services.notebook.notebooks import (
     build_notebook_create_kwargs,
     first_non_empty_str as first_non_empty_str,
     extract_notebook_id as extract_notebook_id,

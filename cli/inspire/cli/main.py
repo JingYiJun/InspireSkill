@@ -273,7 +273,8 @@ def cli() -> None:
         # exceptions. The full traceback still lands in the debug log
         # (configured by `--debug`), which is where it belongs.
         logging.getLogger(__name__).exception("Unhandled exception in inspire CLI")
-        from inspire.cli.formatters import human_formatter, json_formatter
+        from inspire.cli.formatters import human_formatter
+        from inspire.services.utils import json_formatter
 
         public_message = json_formatter.sanitize_text(
             str(e) or type(e).__name__,

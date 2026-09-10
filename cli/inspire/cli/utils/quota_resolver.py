@@ -19,19 +19,19 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from typing import Any, Callable, Iterable, Optional
-from inspire.services.quotas import (
+from inspire.services.catalog.quotas import (
     QuotaParseError, QuotaMatchError, QuotaCatalogUnavailable, QuotaSpec,
     ResolvedQuota, parse_quota, build_resource_spec_price,
 )
 from inspire.cli.utils.id_resolver import is_stale_handle_error
-from inspire.cli.utils.quota_cache import (
+from inspire.services.catalog.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
     group_supports_workload,
     workload_for_schedule_type,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -41,7 +41,7 @@ from inspire.cli.utils.resource_index import (
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.availability import QUOTA_PRIORITY_SPEC_FIELDS
 from inspire.platform.web.session import WebSession, is_transient_api_error
-from inspire.services.workload_quota import (
+from inspire.services.catalog.workload_quota import (
     workload_publishes_priority_levels as workload_publishes_priority_levels,
     allowed_priority_levels_for as allowed_priority_levels_for,
     describe_priority_levels as describe_priority_levels,
@@ -50,7 +50,7 @@ from inspire.services.workload_quota import (
     match_quota_rows,
     format_row_catalog as format_row_catalog,
 )
-from inspire.services.quotas import validate_compute_group_name as validate_compute_group_name
+from inspire.services.catalog.quotas import validate_compute_group_name as validate_compute_group_name
 
 
 

@@ -21,7 +21,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from inspire.services import datasets as dataset_service
+from inspire.services.catalog import datasets as dataset_service
 from inspire import config as config_module
 from inspire.cli.commands.hpc import hpc_commands
 from inspire.cli.context import EXIT_VALIDATION_ERROR

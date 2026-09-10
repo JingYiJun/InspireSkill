@@ -20,7 +20,7 @@ import requests
 from test_sdk import client as client
 from test_sdk_exec import job_ref
 from inspire import InspireAsyncClient, NotebookRef, TransferResult, ValidationError
-from inspire.services import notebook_transfer as core, remote_exec
+from inspire.services.execution import notebook_transfer as core, remote_exec
 from inspire.sdk import notebook_transfer as sdk
 
 

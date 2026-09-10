@@ -15,7 +15,7 @@ metadata an Agent can act on. The differences are all forced by the platform:
 
 from __future__ import annotations
 
-from inspire.services.hpc_logs import (
+from inspire.services.hpc.hpc_logs import (
     log_time_range as _log_time_range,
     labelled_logs as _labelled_logs,
 )
@@ -50,7 +50,7 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.config import Config, ConfigError

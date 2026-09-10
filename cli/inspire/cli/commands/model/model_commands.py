@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from inspire.services.models import (
+from inspire.services.catalog.models import (
     model_deploy_config_view,
     current_user_id,
     status_label,
@@ -24,13 +24,13 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.human_formatter import (
     format_epoch,
     format_mutation_success,
 )
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -49,7 +49,7 @@ from inspire.cli.utils.id_resolver import (
     run_with_stale_handle_retry,
 )
 from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import (
     resolve_workspace_query_scope,
@@ -58,8 +58,8 @@ from inspire.config.workspaces import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from inspire.services.model_writes import created_model_id as _created_model_id
-from inspire.services.model_writes import in_use_message as _in_use_message
+from inspire.services.catalog.model_writes import created_model_id as _created_model_id
+from inspire.services.catalog.model_writes import in_use_message as _in_use_message
 
 
 
@@ -1041,7 +1041,7 @@ def delete_model_cmd(
 
     if not force:
         try:
-            from inspire.services.model_writes import model_usage
+            from inspire.services.catalog.model_writes import model_usage
             references, has_pending = model_usage(model_id, session=session, workspace_id=workspace_id)
         except SessionExpiredError as e:
             _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)

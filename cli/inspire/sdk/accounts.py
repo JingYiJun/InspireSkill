@@ -9,7 +9,7 @@ from typing import Iterator
 
 from inspire.accounts import storage
 from inspire.config import DEFAULT_BASE_URL, Config
-from inspire.services.account_config import render_account_config, atomic_write_text, toml_dumps
+from inspire.services.account.account_config import render_account_config, atomic_write_text, toml_dumps
 from .exceptions import ValidationError
 
 

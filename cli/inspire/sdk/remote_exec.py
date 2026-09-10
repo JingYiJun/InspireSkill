@@ -8,7 +8,7 @@ from typing import Callable, Any
 from inspire.config.env import build_env_exports
 from inspire.platform.web.pty_socket import JobShellError, build_remote_cmd_ws_url
 from inspire.platform.web.session.models import SessionExpiredError
-from inspire.services import remote_exec as core
+from inspire.services.execution import remote_exec as core
 from .compute_jobs import duration
 from .exceptions import AuthenticationError, ValidationError
 from .resources import Service

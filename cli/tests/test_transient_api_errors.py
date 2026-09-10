@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from inspire.sdk.transport import Transport
+from inspire.platform.web.transport import Transport
 
 from inspire.cli.utils.id_resolver import is_stale_handle_error
 from inspire.platform.web import session as ws

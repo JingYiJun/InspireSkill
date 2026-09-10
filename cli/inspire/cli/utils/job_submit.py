@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from inspire.services import job_submission as shared_submission
-from inspire.services.job_submission import (
+from inspire.services.job import job_submission as shared_submission
+from inspire.services.job.job_submission import (
     JobSubmission,
     JobSubmissionPlan,
     wrap_in_bash,
@@ -22,7 +22,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import ProjectInfo
 from inspire.cli.utils.id_resolver import _looks_like_platform_id
-from inspire.cli.utils.image_resolver import (
+from inspire.services.catalog.image_resolution import (
     ImageCatalogCache,
     resolve_image_url,
 )

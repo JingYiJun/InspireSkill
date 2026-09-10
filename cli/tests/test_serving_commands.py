@@ -26,10 +26,10 @@ from inspire.cli.commands.serving.serving_commands import (
     _format_list_rows,
     _serving_resource_label,
 )
-from inspire.cli.commands.serving.public_output import public_serving
+from inspire.services.serving.serving_output import public_serving
 from inspire.cli.context import EXIT_VALIDATION_ERROR
 from inspire.cli.main import main as cli_main
-from inspire.cli.utils.collection_output import DEFAULT_COLLECTION_LIMIT
+from inspire.services.utils.collections import DEFAULT_COLLECTION_LIMIT
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.servings import ServingInfo
 
@@ -1599,7 +1599,7 @@ def test_serving_create_never_doubles_a_tag_already_in_the_image_name() -> None:
     `--dry-run` and the JSON echo reported an image reference that resolves to
     nothing, which is the string someone copies into a script.
     """
-    from inspire.cli.commands.serving.serving_commands import _with_tag
+    from inspire.services.serving.serving_submission import with_tag as _with_tag
 
     assert _with_tag("sandbox-base:u24", "u24") == "sandbox-base:u24"
     # A bare name still gets its tag.

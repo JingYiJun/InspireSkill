@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from inspire.services.account_check import (
+from inspire.services.account.account_check import (
     find_placeholder_host_issues,
     format_placeholder_issue_message,
     validate_required_credentials,
@@ -21,9 +21,10 @@ from inspire.cli.context import (
     EXIT_GENERAL_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import (
     Config,
     ConfigError,

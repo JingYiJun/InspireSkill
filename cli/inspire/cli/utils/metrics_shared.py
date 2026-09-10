@@ -39,14 +39,14 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     reject_id_at_boundary,
     resolve_by_name,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web.browser_api.metrics import (

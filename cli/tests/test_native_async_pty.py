@@ -9,7 +9,7 @@ import pytest
 
 from inspire.platform.web import pty_socket as wire
 from inspire.platform.web.session import WebSession
-from inspire.services import remote_exec as remote
+from inspire.services.execution import remote_exec as remote
 from inspire.platform.web.browser_api import jupyter_terminal as terminal
 
 

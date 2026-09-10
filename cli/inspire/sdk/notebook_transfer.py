@@ -9,7 +9,7 @@ from typing import Any, TYPE_CHECKING
 from inspire.platform.web.browser_api.jupyter_terminal import _notebook_jupyter_url
 from inspire.platform.web.jupyter_urls import jupyter_server_base
 from inspire.platform.web.flow import call, perform_sync, blocking_io
-from inspire.services import remote_exec, notebook_transfer as core
+from inspire.services.execution import remote_exec, notebook_transfer as core
 from .exceptions import ValidationError, TransportError
 if TYPE_CHECKING:
     from .notebooks import Notebooks

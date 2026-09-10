@@ -8,12 +8,12 @@ import sqlite3
 import time
 from typing import Any
 
-from inspire.services.catalog_codec import encode_catalog, decode_catalog, validate_catalog
-from inspire.services.resource_index import (
+from inspire.services.catalog.catalog_codec import encode_catalog, decode_catalog, validate_catalog
+from inspire.services.catalog.resource_index import (
     ResourceIdentity, ResourceIndex, ResourceScope, scope_for_session, DEFAULT_TTL_SECONDS,
 )
-from inspire.services.resource_refresh import FetchResult, refresh_scope
-from inspire.services.quota_cache import (
+from inspire.services.catalog.resource_refresh import FetchResult, refresh_scope
+from inspire.services.catalog.quota_cache import (
     CachedPricesLoader, fetch_quota_catalog, workload_for_schedule_type,
 )
 from .exceptions import ResolutionIncompleteError
@@ -31,7 +31,7 @@ def _identity(kind: str, row: Any) -> tuple[str, str]:
     key = next((fields.get(k) for k in ("image_id", "project_id", "id", "logic_compute_group_id") if fields.get(k)), "")
     name = fields.get("name") or fields.get("logic_compute_group_name") or key
     if kind == "images":
-        from inspire.services.images import image_label
+        from inspire.services.catalog.images import image_label
         name = image_label(row)
     return str(key), str(name)
 
@@ -192,7 +192,7 @@ class IdentityCache:
         if catalog:
             if not catalog[0].complete:
                 raise ResolutionIncompleteError(catalog[0].error)
-            from inspire.services.quota_cache import prices_from_records
+            from inspire.services.catalog.quota_cache import prices_from_records
             return prices_from_records([r for r in catalog[0].records if r.owner_id == group]), False
         return load(), False
 

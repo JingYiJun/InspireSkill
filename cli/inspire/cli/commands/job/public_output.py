@@ -1,11 +1,10 @@
-"""Terminal rendering and compatibility exports for training-job output."""
+"""Terminal rendering for training-job output."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from inspire.cli.formatters.human_formatter import format_epoch
-from inspire.services.job_output import public_job_list_item, public_job_status
 
 
 def _format_resource(resource: Any) -> str:
@@ -80,6 +79,4 @@ def format_job_status(view: dict[str, Any]) -> str:
 
 __all__ = [
     "format_job_status",
-    "public_job_list_item",
-    "public_job_status",
 ]

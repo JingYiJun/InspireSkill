@@ -17,14 +17,14 @@ from test_sdk_cache import catalog as catalog
 from test_sdk_disk_cache import worker
 from inspire.sdk import AmbiguousResourceError, JobRef, ResourceNotFoundError
 from inspire.sdk.identity_cache import IdentityCache
-from inspire.services.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
+from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 
 
 @pytest.mark.parametrize("state", ["present", "absent", "stale", "corrupt"])
 @pytest.mark.parametrize("names", [["Target"], ["Target-extra"], ["Target", "TARGET"]])
 def test_exact_resolution_is_independent_of_index_state(client, monkeypatch, tmp_path, state, names):
     path = tmp_path / "shared.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "job", "ws-test", "self")
     index = ResourceIndex(path)
@@ -65,7 +65,7 @@ def test_exact_resolution_is_independent_of_index_state(client, monkeypatch, tmp
 
 def test_index_hit_with_renamed_live_handle_falls_back(client, monkeypatch, tmp_path):
     path = tmp_path / "index.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "job", "ws-test", "self")
     index = ResourceIndex(path)
@@ -79,7 +79,7 @@ def test_index_hit_with_renamed_live_handle_falls_back(client, monkeypatch, tmp_
 
 def test_unicode_casefold_ambiguity_is_not_sqlite_nocase(client, monkeypatch, tmp_path):
     path = tmp_path / "index.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "job", "ws-test", "self")
     index = ResourceIndex(path)
@@ -95,8 +95,8 @@ WRITER = r"""
 import json, sys, time
 from pathlib import Path
 from types import SimpleNamespace
-from inspire.services.resource_index import ResourceIndex, ResourceScope, ResourceIdentity
-from inspire.services.resource_refresh import FetchResult
+from inspire.services.catalog.resource_index import ResourceIndex, ResourceScope, ResourceIdentity
+from inspire.services.catalog.resource_refresh import FetchResult
 import requests
 requests.sessions.Session.send = lambda *a, **k: (_ for _ in ()).throw(AssertionError("No HTTP"))
 path, role, ready, release = map(Path, sys.argv[1:])
@@ -117,7 +117,7 @@ if str(role) == "cli":
     print(json.dumps({"outcome": result.outcome}), flush=True)
 else:
     from inspire.sdk.identity_cache import IdentityCache
-    import inspire.services.resource_index as module
+    import inspire.services.catalog.resource_index as module
     module.resource_index_path = lambda account=None: path
     value, shared = IdentityCache("alpha", 60, session.base_url).get(session, "compute_groups", ("ws",), load)
     print(json.dumps({"value": value, "shared": shared}), flush=True)
@@ -180,15 +180,15 @@ def test_sdk_catalog_rows_and_quota_are_not_json_blobs(tmp_path):
     assert second["calls"] == {}
     directory = tmp_path / ".inspire/accounts/alpha"
     data = json.loads((directory / "sdk-catalog-v1.json").read_text())
-    from inspire.services.catalog_codec import decode_catalog
+    from inspire.services.catalog.catalog_codec import decode_catalog
     assert {decode_catalog(json.loads(key))[0] for key in data["entries"]} == {"fair_scheduling", "priority_levels"}
     with sqlite3.connect(directory / "resource-index.sqlite3") as connection:
         assert {row[0] for row in connection.execute("SELECT DISTINCT resource_type FROM resource_identity")} == {"workspace", "project", "compute-group", "image", "quota-job"}
 
 
 def test_cli_and_sdk_share_module_objects_and_helpers():
-    from inspire.cli.utils import resource_index, quota_cache
-    from inspire.services import resource_index as shared_index, quota_cache as shared_quota
+    from inspire.services.catalog import resource_index, quota_cache
+    from inspire.services.catalog import resource_index as shared_index, quota_cache as shared_quota
     assert resource_index is shared_index
     assert quota_cache is shared_quota
 
@@ -199,7 +199,7 @@ def test_name_resolution_platform_request_counts(client, monkeypatch, tmp_path):
     from inspire.platform.web.browser_api import jobs
 
     path = tmp_path / "requests.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "job", "ws-test", "self")
     index = ResourceIndex(path)
@@ -233,9 +233,9 @@ def test_name_resolution_platform_request_counts(client, monkeypatch, tmp_path):
 
 
 def test_quota_reader_uses_cli_scope_without_a_blob(client, catalog, monkeypatch, tmp_path):
-    from inspire.services.quota_cache import quota_records
+    from inspire.services.catalog.quota_cache import quota_records
     path = tmp_path / "quota.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "quota-job", "ws-test", "self")
     index = ResourceIndex(path)
@@ -249,7 +249,7 @@ def test_quota_reader_uses_cli_scope_without_a_blob(client, catalog, monkeypatch
 def test_incomplete_sdk_catalog_keeps_cli_snapshot(client, monkeypatch, tmp_path):
     from inspire.sdk.exceptions import ResolutionIncompleteError
     path = tmp_path / "incomplete.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "compute-group", "ws-test")
     index = ResourceIndex(path)
@@ -270,7 +270,7 @@ def test_concurrent_openers_repair_corruption_once(tmp_path):
     code = """
 import sys
 from pathlib import Path
-module = "inspire.cli.utils.resource_index" if int(sys.argv[2]) % 2 else "inspire.services.resource_index"
+module = "inspire.services.catalog.resource_index" if int(sys.argv[2]) % 2 else "inspire.services.catalog.resource_index"
 from importlib import import_module
 m = import_module(module)
 index = m.ResourceIndex(Path(sys.argv[1]))
@@ -287,9 +287,9 @@ index.upsert(m.ResourceScope("https://example.invalid", "user", "job", "ws", "se
 
 
 def test_sdk_refresh_keeps_cli_ttl(client, catalog, monkeypatch, tmp_path):
-    from inspire.services.resource_index import DEFAULT_TTL_SECONDS
+    from inspire.services.catalog.resource_index import DEFAULT_TTL_SECONDS
     path = tmp_path / "ttl.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     client.cache._identity = IdentityCache(client.account, .001, client.base_url)
     client.jobs.plan(catalog.spec)
     with sqlite3.connect(path) as connection:
@@ -315,7 +315,7 @@ def test_multi_group_cold_plan_request_tradeoff(client, catalog):
 
 def test_index_mutation_during_detail_cannot_hide_new_ambiguity(client, monkeypatch, tmp_path):
     path = tmp_path / "race.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     scope = ResourceScope(client.base_url, "login:" + session.login_username, "job", "ws-test", "self")
     index = ResourceIndex(path)
@@ -334,7 +334,7 @@ def test_index_mutation_during_detail_cannot_hide_new_ambiguity(client, monkeypa
 def test_shared_quota_scope_parameters_round_trip(client, monkeypatch, tmp_path):
     from inspire.platform.web import browser_api
     path = tmp_path / "scope-keys.sqlite3"
-    monkeypatch.setattr("inspire.services.resource_index.resource_index_path", lambda account=None: path)
+    monkeypatch.setattr("inspire.services.catalog.resource_index.resource_index_path", lambda account=None: path)
     session = client._transport._session
     calls = []
     def price(**kwargs):

@@ -2969,7 +2969,7 @@ def test_credentials_do_not_influence_account_resolution(
 
 @pytest.fixture
 def transport():
-    from inspire.sdk.transport import Transport
+    from inspire.platform.web.transport import Transport
 
     transport = Transport(None, "https://example.test", username="", allow_browser=True,
                           cli_compat=True)

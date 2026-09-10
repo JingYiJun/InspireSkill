@@ -14,9 +14,9 @@ from uuid import uuid4
 
 from inspire.accounts.cache_lock import exclusive_cache_lock
 from inspire.accounts.storage import account_dir
-from inspire.services.account_config import atomic_write_text
+from inspire.services.account.account_config import atomic_write_text
 
-from inspire.services.catalog_codec import (
+from inspire.services.catalog.catalog_codec import (
     encode_catalog as _encode,
     decode_catalog as _decode,
     validate_catalog as _validate_value,

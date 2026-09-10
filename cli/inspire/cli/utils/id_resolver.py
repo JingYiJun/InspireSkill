@@ -8,8 +8,8 @@ import re
 from typing import Any, Callable, Iterable, Optional, TypeVar
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR
 from inspire.cli.utils.errors import exit_with_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -21,9 +21,9 @@ from inspire.platform.web.session.models import (
     TRANSIENT_HTTP_STATUSES,
     is_transient_api_error,
 )
-from inspire.services.identifiers import is_full_uuid as is_full_uuid
-from inspire.services.identifiers import is_partial_id as is_partial_id
-from inspire.services.identifiers import looks_like_platform_id as _looks_like_platform_id
+from inspire.services.utils.identifiers import is_full_uuid as is_full_uuid
+from inspire.services.utils.identifiers import is_partial_id as is_partial_id
+from inspire.services.utils.identifiers import looks_like_platform_id as _looks_like_platform_id
 
 
 

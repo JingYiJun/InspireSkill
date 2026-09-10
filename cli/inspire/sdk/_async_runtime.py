@@ -212,7 +212,7 @@ class AsyncRuntime:
                 callback = kwargs.get("on_output")
 
                 async def publish(chunk: str) -> None:
-                    from inspire.services.async_output import deliver_output
+                    from inspire.services.execution.async_output import deliver_output
 
                     if callback is not None:
                         await deliver_output(callback, chunk)

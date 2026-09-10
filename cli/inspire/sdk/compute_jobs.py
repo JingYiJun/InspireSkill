@@ -10,8 +10,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Callable, Generic, Iterator, Protocol, Sequence, TypeVar
 from inspire.platform.web import browser_api
-from inspire.services.quotas import parse_quota
-from inspire.services.workload_quota import selected_groups, match_quota_rows, quota_values
+from inspire.services.catalog.quotas import parse_quota
+from inspire.services.catalog.workload_quota import selected_groups, match_quota_rows, quota_values
 from .resources import Service, operation, exact, positive, platform_page
 from .models import (
     ResourceRef,
@@ -415,7 +415,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         ws = self.client.workspaces.get(workspace)
         if isinstance(group, ComputeGroupRef):
             self.client._validate_ref(group, ComputeGroupRef, ws.ref.key)
-        from inspire.services.workload_quota import query_workspace_quotas, sort_quota_rows
+        from inspire.services.catalog.workload_quota import query_workspace_quotas, sort_quota_rows
 
         groups = self._groups(ws)
         if isinstance(group, ComputeGroupRef):
@@ -531,7 +531,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
     ):
         from datetime import timezone
         from .models import LogResult
-        from inspire.services.job_logs import window_to_minutes, select_job_logs, format_log_line
+        from inspire.services.job.job_logs import window_to_minutes, select_job_logs, format_log_line
 
         if tail is not None and head is not None:
             raise ValidationError("--tail and --head cannot be used together.")

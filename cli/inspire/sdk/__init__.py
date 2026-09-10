@@ -1,7 +1,7 @@
 """Experimental synchronous and asynchronous SDK. CLI installation requirements are unchanged."""
 
-from inspire.services.notebook_transfer import TransferResult
-from inspire.services.remote_exec import ExecResult
+from inspire.services.execution.notebook_transfer import TransferResult
+from inspire.services.execution.remote_exec import ExecResult
 from inspire.exec_output import iter_output_file
 
 from .models_compute import (
@@ -16,8 +16,8 @@ from .models_compute import (
     RayJobPlan,
     RayJobHandle,
 )
-from inspire.services.hpc_instances import HPCInstanceView
-from inspire.services.ray_instances import RayInstanceView
+from inspire.services.hpc.hpc_instances import HPCInstanceView
+from inspire.services.ray.ray_instances import RayInstanceView
 from .exceptions import HPCJobFailedError, RayJobFailedError
 from inspire.platform.web.browser_api.notebooks import (
     NotebookImageSizeEstimate,
@@ -121,7 +121,7 @@ from .models_serving import (
     ImageRegisterHandle,
     ModelRegisterHandle,
 )
-from inspire.services.serving_instances import ServingInstanceView
+from inspire.services.serving.serving_instances import ServingInstanceView
 from .exceptions import ServingFailedError, TensorboardFailedError
 
 

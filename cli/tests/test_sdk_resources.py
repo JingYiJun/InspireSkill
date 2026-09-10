@@ -26,7 +26,7 @@ from inspire.platform.web.browser_api import api_keys, datasets as mounts_api, s
 from inspire.platform.web.browser_api.models import ModelInfo as PlatformModel
 from inspire.platform.web.browser_api.projects import ProjectInfo as PlatformProject
 from inspire.platform.web.browser_api.images import CustomImageInfo
-from inspire.services import resource_usage
+from inspire.services.catalog import resource_usage
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def cli_json(*args):
 
 
 def test_account_metadata_check_context_permissions(client, catalog, monkeypatch):
-    from inspire.services import account_context
+    from inspire.services.account import account_context
 
     calls = []
 
@@ -604,7 +604,7 @@ def test_unscoped_refs_accept_any_workspace(client, kind):
 
 
 def test_dataset_validation_parses_strings_once_and_preserves_mounts(client, catalog, monkeypatch):
-    from inspire.services import datasets
+    from inspire.services.catalog import datasets
 
     calls = []
     original = datasets.parse_dataset_spec

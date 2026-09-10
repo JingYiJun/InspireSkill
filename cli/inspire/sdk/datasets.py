@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from inspire.platform.web import plaza
 from inspire.platform.web.browser_api import datasets as mounts_api
-from inspire.services import dataset_catalog as views
+from inspire.services.catalog import dataset_catalog as views
 from .models import DatasetMount, Page, WorkspaceRef
 from .models_resources import (
     DatasetInfo,
@@ -130,7 +130,7 @@ class Datasets(Service):
         *,
         workspace: str | WorkspaceRef,
     ) -> tuple[DatasetValidation, ...]:
-        from inspire.services.datasets import DatasetSpecError, parse_dataset_spec
+        from inspire.services.catalog.datasets import DatasetSpecError, parse_dataset_spec
 
         mounts = []
         seen = set()

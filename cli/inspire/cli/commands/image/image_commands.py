@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from inspire.services.images import (
+from inspire.services.catalog.images import (
     load_image_sources,
     image_label,
     image_summary,
@@ -22,10 +22,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.human_formatter import format_mutation_success
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -46,11 +46,11 @@ from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     require_web_session,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.services.image_writes import parse_visibility_value as _parse_visibility_value
+from inspire.services.catalog.image_writes import parse_visibility_value as _parse_visibility_value
 
 
 

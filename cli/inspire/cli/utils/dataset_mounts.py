@@ -15,7 +15,7 @@ from typing import Callable, Iterable, Optional, Sequence
 
 import click
 
-from inspire.services.datasets import (
+from inspire.services.catalog.datasets import (
     DatasetSpecError as DatasetSpecError,
     dataset_mount_views as dataset_mount_views,
     parse_dataset_spec as parse_dataset_spec,

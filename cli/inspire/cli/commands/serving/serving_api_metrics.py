@@ -25,18 +25,18 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.metrics import INTERVAL_CHOICES
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from inspire.services.serving_api_metrics import parse_window
-from inspire.services.serving_api_metrics import resolve_api_metrics
-from inspire.services.serving_api_metrics import group_summary as _group_summary
+from inspire.services.serving.serving_api_metrics import parse_window
+from inspire.services.serving.serving_api_metrics import resolve_api_metrics
+from inspire.services.serving.serving_api_metrics import group_summary as _group_summary
 
 
 

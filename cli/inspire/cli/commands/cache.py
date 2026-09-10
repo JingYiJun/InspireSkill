@@ -15,7 +15,7 @@ from inspire.cli.context import (
     Context,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.commands.notebook.gpu_model import (
     clear_gpu_model_cache,
     gpu_model_cache_status,
@@ -23,8 +23,8 @@ from inspire.cli.commands.notebook.gpu_model import (
 from inspire.cli.utils.errors import exit_with_error, require_confirmation
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     DEFAULT_TTL_SECONDS,
     ResourceIndex,
     ResourceIndexDatabaseError,

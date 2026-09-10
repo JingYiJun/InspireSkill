@@ -17,11 +17,11 @@ from inspire.accounts import (
     validate_name,
 )
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.output import emit_success
 from inspire.config import DEFAULT_BASE_URL
-from inspire.services.account_config import render_account_config as _render_config
+from inspire.services.account.account_config import render_account_config as _render_config
 
 
 @click.command("add")

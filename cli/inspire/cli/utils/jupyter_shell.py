@@ -23,12 +23,12 @@ def _run_jupyter_terminal_shell(
     stdin=None,  # noqa: ANN001
     stdout=None,  # noqa: ANN001
 ) -> int:
-    from inspire.cli.utils.job_shell import (
+    from inspire.platform.web.pty_socket import (
         CTRL_RIGHT_BRACKET,
         ShellExitWatcher,
-        _WebSocketClient,
-        _stty_command,
+        WebSocketClient as _WebSocketClient,
     )
+    from inspire.cli.utils.job_shell import _stty_command
 
     from inspire.cli.utils.interactive_console import (
         ShellStreams,
