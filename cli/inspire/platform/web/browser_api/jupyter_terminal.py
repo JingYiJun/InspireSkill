@@ -385,7 +385,7 @@ def _capture_terminal_output(
             if callback_failed or sent or output.buffer.total:
                 raise
             raise SessionExpiredError(str(error)) from error
-        except (EOFError, OSError):
+        except Exception:
             if callback_failed:
                 raise
             logger.debug("JupyterTerminal WebSocket failed", exc_info=True)
@@ -449,6 +449,10 @@ def _run_command_capture_in_notebook_sync(
         session = get_web_session()
 
     effective_marker = marker or new_completion_marker()
+    from inspire.platform.web.runtime import active_transport
+
+    owner = active_transport.get()
+    cli_compat = owner is None or owner.cli_compat
     deadline = time.monotonic() + timeout
 
     def _unfinished() -> JupyterCommandResult:
@@ -459,10 +463,11 @@ def _run_command_capture_in_notebook_sync(
             marker=effective_marker,
         )
 
-    with _jupyter_terminal(session, notebook_id, timeout_s=max(timeout, 0.001)) as term:
+    creation_timeout = max(int(timeout), 10) if cli_compat else max(timeout, 0.001)
+    with _jupyter_terminal(session, notebook_id, timeout_s=creation_timeout) as term:
         if term is None:
             return _unfinished()
-        if time.monotonic() >= deadline:
+        if not cli_compat and time.monotonic() >= deadline:
             return _unfinished()
         options: dict[str, Any] = {}
         if on_output is not None:
@@ -473,7 +478,11 @@ def _run_command_capture_in_notebook_sync(
             ws_url=term.ws_url,
             session=session,
             stdin_data=build_jupyter_exec_command(command, marker=effective_marker),
-            timeout_ms=max(1, int((deadline - time.monotonic()) * 1000)),
+            timeout_ms=(
+                max(int(timeout * 1000), 1000)
+                if cli_compat
+                else max(1, int((deadline - time.monotonic()) * 1000))
+            ),
             marker=effective_marker,
             **options,
         )

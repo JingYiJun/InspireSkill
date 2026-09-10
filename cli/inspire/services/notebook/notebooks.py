@@ -239,9 +239,9 @@ def resolve_saved_image_id(result, *, name, version, workspace_id, session, api=
             for img in api.list_images_by_source(
                 source="private", session=session, workspace_id=workspace_id
             )
-            if (img.name.strip() == name and (img.version or "").strip() == version)
-            or img.name.strip() == f"{name}:{version}"
-            or img.url.strip().endswith(f"/{name}:{version}")
+            if ((img.name or "").strip() == name and (img.version or "").strip() == version)
+            or (img.name or "").strip() == f"{name}:{version}"
+            or (img.url or "").strip().endswith(f"/{name}:{version}")
         ]
         if matches:
             return sorted(matches, key=lambda img: img.created_at or "", reverse=True)[0].image_id

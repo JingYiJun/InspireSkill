@@ -601,7 +601,7 @@ def list_hpc(
         for job in page.items:
             row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
-                "status": normalize_status(job.status),
+                "status": scrub_raw_ids(job.status or "N/A"),
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "entrypoint": scrub_raw_ids(job.entrypoint or ""),
                 "project_name": scrub_raw_ids(job.project_name or ""),

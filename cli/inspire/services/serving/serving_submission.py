@@ -114,27 +114,15 @@ def resolve_model_for_create(
     session,
     resolve,
 ) -> tuple[str, Optional[int], str]:
-    items = []
-    seen: set[str] = set()
-    for page in range(1, 101):
-        rows, total = browser_api_module.list_models(
-            workspace_id=workspace_id,
-            keyword=name,
-            project_ids=[project_id] if project_id else None,
-            user_id=user_id,
-            page=page,
-            page_size=100,
-            session=session,
-        )
-        fresh = [row for row in rows if row.model_id not in seen]
-        items.extend(fresh)
-        seen.update(row.model_id for row in fresh)
-        if len(items) >= total:
-            break
-        if not fresh:
-            raise ValueError("Model catalog enumeration is incomplete.")
-    else:
-        raise ValueError("Model catalog enumeration is incomplete.")
+    items, _total = browser_api_module.list_models(
+        workspace_id=workspace_id,
+        keyword=name,
+        project_ids=[project_id] if project_id else None,
+        user_id=user_id,
+        page=1,
+        page_size=100,
+        session=session,
+    )
     candidates = [
         {
             "name": item.name,

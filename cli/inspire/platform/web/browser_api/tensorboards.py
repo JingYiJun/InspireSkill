@@ -305,7 +305,20 @@ def _tensorboard_get(
     if session is None:
         session = get_web_session()
     base = tensorboard_app_url(url)
-    with get_transport(session).application_connection(base) as http:
+    owner = get_transport(session)
+    if owner.cli_compat:
+        from inspire.platform.web.session.requests import build_requests_session
+
+        # The CLI historically follows redirects and reports the original HTTP error.
+        with build_requests_session(session, base) as http:
+            response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
+            if response.status_code >= 400:
+                raise ValueError(
+                    f"TensorBoard returned {response.status_code} for {path}: "
+                    f"{response.text[:200]}"
+                )
+            return response.json()
+    with owner.application_connection(base) as http:
         response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
         return response.json()
 

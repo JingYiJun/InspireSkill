@@ -6,7 +6,6 @@ import re
 from typing import Any
 
 from inspire.services.utils.raw_ids import scrub_raw_ids
-from inspire.services.ray.ray_status import normalize_status
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
 _PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
@@ -237,7 +236,7 @@ def public_ray_status(item: object, *, fallback_name: str = "") -> dict[str, Any
     return _compact(
         {
             "name": name or "N/A",
-            "status": normalize_status(str(_value(item, "status") or "")),
+            "status": _text(_value(item, "status")) or "N/A",
             "project": _nested_name(
                 item,
                 ("project", "project_info", "project_name"),
@@ -300,7 +299,7 @@ def public_ray_list_item(
     """Project one Ray list row onto the shared workload schema."""
     return {
         "name": _nested_name(item, ("name", "job_name")) or "N/A",
-        "status": normalize_status(str(_value(item, "status") or "")),
+        "status": _text(_value(item, "status")) or "N/A",
         "project": _nested_name(item, ("project", "project_name")),
         "workspace": (_nested_name(item, ("workspace", "workspace_name")) or _text(workspace)),
         "compute_group": _list_compute_group(item),

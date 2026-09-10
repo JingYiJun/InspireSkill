@@ -73,6 +73,34 @@ def parse_worker_spec(raw: str) -> dict[str, Any]:
     return out
 
 
+def validate_create_inputs(
+    *, name: Optional[str], command: Optional[str], image: Optional[str],
+    group: Optional[str], quota: Optional[str], workspace: Optional[str],
+    project: Optional[str], image_type: str, workers: tuple[str, ...],
+) -> None:
+    if not name:
+        raise ValueError("--name is required.")
+    if not command:
+        raise ValueError("--command is required; it is the Ray driver startup command.")
+    for field_name, value in (
+        ("image", image),
+        ("group", group),
+        ("quota", quota),
+        ("workspace", workspace),
+        ("project", project),
+    ):
+        if not value:
+            raise ValueError(f"--{field_name} is required.")
+    image_type_value = image_type.strip()
+    if image_type_value not in IMAGE_TYPE_CHOICES:
+        raise ValueError(f"--image-type must be one of: {', '.join(IMAGE_TYPE_CHOICES)}")
+    if not workers:
+        raise ValueError(
+            "At least one --worker is required. Format: "
+            "'name=<g>;image=<u>;group=<g>;quota=<gpu,cpu,mem>;min=<n>;max=<n>'"
+        )
+
+
 def assemble_create_body(
     *,
     workspace_id: str,
@@ -95,30 +123,14 @@ def assemble_create_body(
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool] = None,
 ) -> dict[str, Any]:
-    if not name:
-        raise ValueError("--name is required.")
-    if not command:
-        raise ValueError("--command is required; it is the Ray driver startup command.")
-    for field_name, value in (
-        ("image", image),
-        ("group", group),
-        ("quota", quota),
-        ("workspace", workspace),
-        ("project", project),
-    ):
-        if not value:
-            raise ValueError(f"--{field_name} is required.")
+    validate_create_inputs(
+        name=name, command=command, image=image, group=group, quota=quota,
+        workspace=workspace, project=project, image_type=image_type, workers=workers,
+    )
     image_value = cast(str, image)
     image_type_value = image_type.strip()
-    if image_type_value not in IMAGE_TYPE_CHOICES:
-        raise ValueError(f"--image-type must be one of: {', '.join(IMAGE_TYPE_CHOICES)}")
     group_value = cast(str, group)
     quota_value = cast(str, quota)
-    if not workers:
-        raise ValueError(
-            "At least one --worker is required. Format: "
-            "'name=<g>;image=<u>;group=<g>;quota=<gpu,cpu,mem>;min=<n>;max=<n>'"
-        )
 
     head_resolved = head_quota or resolve_quota(quota_value, group_value)
     head_node: dict[str, Any] = {

@@ -6,7 +6,6 @@ import re
 from typing import Any
 
 from inspire.services.utils.raw_ids import scrub_raw_ids
-from inspire.services.hpc.hpc_status import normalize_status
 from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
@@ -245,7 +244,7 @@ def public_hpc_status(item: object, *, fallback_name: str = "") -> dict[str, Any
     return _compact(
         {
             "name": name or "N/A",
-            "status": normalize_status(str(_value(item, "status") or "")),
+            "status": _text(_value(item, "status")) or "N/A",
             "steps": _steps(item),
             "project": _nested_name(
                 item,
@@ -276,7 +275,7 @@ def public_hpc_list_item(
     """Project one HPC list row onto the shared workload schema."""
     return {
         "name": _nested_name(item, ("name", "job_name")) or "N/A",
-        "status": normalize_status(str(_value(item, "status") or "")),
+        "status": _text(_value(item, "status")) or "N/A",
         "project": _nested_name(item, ("project", "project_name")),
         "workspace": (_nested_name(item, ("workspace", "workspace_name")) or _text(workspace)),
         "compute_group": _nested_name(

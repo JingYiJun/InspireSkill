@@ -7,7 +7,7 @@ from inspire.services.ray.ray_events import (
     fetch_recent_ray_events as _fetch_recent_ray_events,
 )
 
-from inspire.services.ray.ray_status import matches_status, normalize_status
+from inspire.services.ray.ray_status import matches_status
 
 
 from inspire.services.ray.ray_instances import (
@@ -492,7 +492,7 @@ def list_ray(
         for job in page.items:
             row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
-                "status": normalize_status(job.status),
+                "status": scrub_raw_ids(job.status or "N/A"),
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "created_by_name": scrub_raw_ids(job.created_by_name or "N/A"),
                 "project_name": scrub_raw_ids(job.project_name or ""),
@@ -1039,8 +1039,16 @@ def _assemble_create_body(
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool] = None,
 ) -> dict[str, Any]:
-    from inspire.services.ray.ray_submission import assemble_create_body
+    from inspire.services.ray.ray_submission import assemble_create_body, validate_create_inputs
     from inspire.cli.utils.quota_resolver import parse_quota, resolve_quota, SCHEDULE_TYPE_RAY
+
+    try:
+        validate_create_inputs(
+            name=name, command=command, image=image, group=group, quota=quota,
+            workspace=workspace, project=project, image_type=image_type, workers=workers,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     workspace_id = select_workspace_id(explicit_workspace_name=workspace, session=session)
     if workspace_id is None:
