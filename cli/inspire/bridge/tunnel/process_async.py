@@ -15,7 +15,10 @@ from __future__ import annotations
 import asyncio
 import codecs
 import subprocess
+import sys
 from typing import Any, Callable
+
+from inspire.platform.errors import ConfigurationError
 
 
 async def _finish(task: asyncio.Task[Any]) -> Any:
@@ -36,6 +39,15 @@ async def _spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
     task = asyncio.create_task(asyncio.create_subprocess_exec(*args, **kwargs))
     try:
         return await asyncio.shield(task)
+    except NotImplementedError as error:
+        if sys.platform != "win32":
+            raise
+        raise ConfigurationError(
+            "Async SSH execution and transfer on Windows require a ProactorEventLoop; "
+            "the current event loop does not support subprocesses. Configure your framework "
+            "to use ProactorEventLoop (or WindowsProactorEventLoopPolicy before starting "
+            "the loop), then create the async client inside that loop."
+        ) from error
     except asyncio.CancelledError:
 
         async def finish_spawn() -> None:

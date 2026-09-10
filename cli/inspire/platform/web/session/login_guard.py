@@ -24,11 +24,12 @@ this module exists to stop.
 
 from __future__ import annotations
 
+from inspire.local_files import atomic_write_text
+
 import hashlib
 import json
 import logging
 import math
-import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -229,15 +230,7 @@ def _store(path: Path | None, block: _LoginBlock) -> None:
         "credential_rejection": block.credential_rejection,
     }
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.name}.tmp")
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle)
-        os.replace(temporary, path)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        atomic_write_text(path, json.dumps(payload), private=True)
     except OSError:
         # The attempt in this process still stops. Losing the marker only costs
         # the cross-process part of the guard, and must not replace the real

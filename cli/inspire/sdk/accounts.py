@@ -159,5 +159,5 @@ def ensure_credentials(
                     data[section][key] = value
                     changed = True
         if changed:
-            atomic_write_text(path, toml_dumps(data))
+            atomic_write_text(path, toml_dumps(data), private=True)
         return name

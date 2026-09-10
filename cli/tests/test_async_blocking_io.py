@@ -116,6 +116,18 @@ def test_fixed_paths_keep_event_loop_running(tmp_path, monkeypatch, local_ssh):
 
     monkeypatch.setattr(builtins, "open", session_file)
 
+    # Session publication now writes through an already-private descriptor;
+    # delaying builtins.open alone no longer exercises the write-side leaf.
+    from inspire.platform.web.session import models as session_models
+
+    original_session_write = session_models.atomic_write_text
+
+    def session_write(*a, **kw):
+        ticker.slow("session_write")
+        return original_session_write(*a, **kw)
+
+    monkeypatch.setattr(session_models, "atomic_write_text", session_write)
+
     def read(path, *a, **kw):
         ticker.slow("read_text")
         return original_read(path, *a, **kw)

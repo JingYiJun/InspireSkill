@@ -24,6 +24,12 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar
 from pathlib import Path
 
+from inspire.local_files import (
+    atomic_write_text as _atomic_write_text,
+    ensure_private_directory,
+    repair_inspire_path,
+)
+
 from .cache_lock import exclusive_cache_lock
 
 CONFIG_FILENAME = "config.toml"
@@ -53,22 +59,6 @@ def account_scope(account: str | None) -> AbstractContextManager[None]:
     """
     return _AccountScope(account)
 
-
-def _atomic_write_text(target: Path, content: str) -> None:
-    """Write *content* to *target* atomically (temp file + ``os.replace``).
-
-    Matches the pattern already used by
-    ``inspire.platform.web.session.models.WebSession.save`` — keep partial
-    writes out of the target path so concurrent ``account use`` or a crash
-    mid-write never leaves a half-written ``current`` / ``config.toml``.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, target)
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -122,8 +112,18 @@ def account_config_path(name: str) -> Path:
 
 
 def ensure_inspire_home() -> None:
-    inspire_home().mkdir(parents=True, exist_ok=True)
-    accounts_dir().mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(inspire_home())
+    ensure_private_directory(accounts_dir())
+    try:
+        for path in accounts_dir().iterdir():
+            repair_inspire_path(path)
+            # The directory becoming private already puts the config out of
+            # reach, but a config written before that carries a mode saying
+            # otherwise, and it would be exposed again by a copy or a move.
+            repair_inspire_path(path / CONFIG_FILENAME)
+    except OSError:
+        # Unreadable old directories must not turn permission repair into a failure.
+        pass
 
 
 def list_accounts() -> list[str]:
@@ -206,8 +206,8 @@ def create_account(name: str, config_content: str, *, overwrite: bool = False) -
     ensure_inspire_home()
     if target.exists() and overwrite:
         shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(target / CONFIG_FILENAME, config_content)
+    ensure_private_directory(target)
+    _atomic_write_text(target / CONFIG_FILENAME, config_content, private=True)
     if current_account() == validated:
         _clear_process_account_caches()
     return target

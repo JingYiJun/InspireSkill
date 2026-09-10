@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import PureWindowsPath
 
 import pytest
@@ -113,12 +114,26 @@ def test_ssh_config_proxy_command_uses_windows_quoting(as_windows: None) -> None
     # shlex.quote wraps every non-ASCII token in single quotes, and Chinese
     # workspace names make that the norm rather than the exception.
     command = _quote_proxy_command(
-        [r"C:\Users\me\.local\bin\inspire.exe", "notebook", "ssh-proxy", "%h", "--workspace", "弹性计算"]
+        [
+            r"C:\Users\me\.local\bin\inspire.exe",
+            "notebook",
+            "ssh-proxy",
+            "%h",
+            "--workspace",
+            "弹性计算",
+        ]
     )
 
     assert "'" not in command
     assert command == subprocess.list2cmdline(
-        [r"C:\Users\me\.local\bin\inspire.exe", "notebook", "ssh-proxy", "%h", "--workspace", "弹性计算"]
+        [
+            r"C:\Users\me\.local\bin\inspire.exe",
+            "notebook",
+            "ssh-proxy",
+            "%h",
+            "--workspace",
+            "弹性计算",
+        ]
     )
 
 
@@ -240,3 +255,232 @@ def test_liveness_probe_never_reaches_os_kill_on_windows(
     else:
         with pytest.raises(AttributeError):
             process_is_alive(os.getpid())
+
+
+@pytest.mark.parametrize("failures", [0, 2, 5])
+def test_atomic_replace_retries_windows_sharing_violation(
+    as_windows, monkeypatch, tmp_path, failures
+):
+    from inspire import local_files
+
+    target = tmp_path / "current"
+    target.write_text("old")
+    real_replace = os.replace
+    attempts = []
+    pauses = []
+
+    def replace(source, destination):
+        attempts.append(source)
+        if len(attempts) <= failures:
+            raise PermissionError("fixture sharing violation")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(local_files.time, "sleep", pauses.append)
+    if failures == 5:
+        with pytest.raises(PermissionError, match="sharing violation"):
+            local_files.atomic_write_text(target, "new")
+        assert target.read_text() == "old"
+    else:
+        local_files.atomic_write_text(target, "new")
+        assert target.read_text() == "new"
+    assert len(attempts) == min(failures + 1, 5)
+    assert len(pauses) == min(failures, 4)
+    assert sum(pauses) <= 0.5
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_windows_private_writer_protects_empty_temporary(as_windows, monkeypatch, tmp_path):
+    from pathlib import Path
+    from inspire import local_files
+
+    protected = []
+
+    def protect(path, **kwargs):
+        if not kwargs.get("repair"):
+            assert Path(path).read_bytes() == b""
+            protected.append(path)
+
+    monkeypatch.setattr(local_files, "restrict_windows_file", protect)
+    target = tmp_path / "private.json"
+    local_files.atomic_write_text(target, "fixture payload", private=True)
+    assert len(protected) == 1
+    assert target.read_text() == "fixture payload"
+
+
+@pytest.mark.parametrize("reason", ["missing PowerShell", "ACL verification failed"])
+def test_windows_cache_acl_failure_is_reported_once_and_session_still_saves(
+    as_windows, monkeypatch, tmp_path, caplog, reason
+):
+    from pathlib import Path
+    from inspire import local_files
+    from inspire.platform.web.session.models import WebSession
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    def fail(path, **kwargs):
+        if not Path(path).is_dir():
+            raise ValueError(reason)
+
+    monkeypatch.setattr(local_files, "restrict_windows_file", fail)
+    session = WebSession(
+        storage_state={"cookies": [], "origins": []}, account="fixture", created_at=time.time()
+    )
+    session.save()
+    session.save()
+    path = tmp_path / ".inspire/accounts/fixture/web_session.json"
+    records = [record for record in caplog.records if str(path) in record.getMessage()]
+    assert len(records) == 1
+    assert reason in records[0].getMessage()
+    assert WebSession.load(account="fixture") is not None
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "denied", "verification"])
+def test_windows_acl_errors_are_safe_and_actionable(as_windows, monkeypatch, tmp_path, failure):
+    from inspire import local_files
+
+    monkeypatch.setattr(
+        local_files.shutil, "which", lambda name: None if failure == "missing" else name
+    )
+
+    def run(*args, **kwargs):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired("fixture", 30)
+        if failure == "denied":
+            raise PermissionError("fixture denied")
+        return subprocess.CompletedProcess([], 1, b"", b"untrusted subprocess diagnostic")
+
+    monkeypatch.setattr(local_files.subprocess, "run", run)
+    with pytest.raises(ValueError) as caught:
+        local_files.restrict_windows_file(str(tmp_path / "empty"))
+    assert "PowerShell" in str(caught.value) or "private Windows file permissions" in str(
+        caught.value
+    )
+    assert "untrusted subprocess diagnostic" not in str(caught.value)
+
+
+def test_windows_repair_uses_non_widening_acl_branch(as_windows, monkeypatch, tmp_path):
+    from inspire import local_files
+
+    target = tmp_path / "old"
+    target.touch()
+    calls = []
+    monkeypatch.setattr(local_files, "restrict_windows_file", lambda *a, **k: calls.append((a, k)))
+    local_files.restrict_private_path(target)
+    assert calls == [((str(target),), {"repair": True})]
+    repair_script = local_files._WINDOWS_ACL_SCRIPT.split("if ($env:INSPIRE_PRIVATE_REPAIR", 1)[
+        1
+    ].split("$acl = if", 1)[0]
+    assert "RemoveAccessRuleSpecific" in repair_script
+    assert "AddAccessRule" not in repair_script
+    assert "SetOwner" not in repair_script
+    assert "Get-Acl" in repair_script
+
+
+@pytest.mark.parametrize("operation", ["exec", "transfer", "stream"])
+def test_async_subprocess_requires_proactor_without_changing_policy(
+    as_windows, monkeypatch, operation
+):
+    import asyncio
+    from inspire.bridge.tunnel import process_async
+    from inspire.platform.errors import ConfigurationError, InspireError
+
+    async def unsupported(*args, **kwargs):
+        raise NotImplementedError
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("SDK must not change the caller's loop policy")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", unsupported)
+    policy = asyncio.get_event_loop_policy()
+    monkeypatch.setattr(asyncio, "set_event_loop_policy", forbidden)
+
+    async def exercise():
+        with pytest.raises(InspireError, match="ProactorEventLoop") as caught:
+            if operation == "stream":
+                await process_async.stream_process(
+                    ["ssh"],
+                    None,
+                    lambda text: None,
+                    None,
+                    None,
+                    None,
+                    "fixture",
+                    deliver=lambda *args: None,
+                )
+            else:
+                await process_async.run_process(["scp" if operation == "transfer" else "ssh"])
+        assert isinstance(caught.value, ConfigurationError)
+        assert isinstance(caught.value.__cause__, NotImplementedError)
+        assert "before starting" in str(caught.value)
+
+    asyncio.run(exercise())
+    assert asyncio.get_event_loop_policy() is policy
+
+
+@pytest.mark.parametrize("kind", ["guard", "ide", "rtunnel", "catalog", "index", "bridges"])
+def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, tmp_path, kind):
+    from pathlib import Path
+    from inspire import local_files
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    files = []
+
+    def protect(path, **kwargs):
+        candidate = Path(path)
+        if candidate.is_file():
+            files.append(candidate)
+            # New state must be protected before its first byte is written.
+            if not kwargs.get("repair") or kind == "index" and len(files) == 1:
+                assert candidate.stat().st_size == 0
+
+    monkeypatch.setattr(local_files, "restrict_windows_file", protect)
+    path = tmp_path / "fixture.json"
+    if kind == "guard":
+        from inspire.platform.web.session.login_guard import _LoginBlock, _store
+
+        _store(path, _LoginBlock(1, 2, 1, "fixture-derived", None, False))
+    elif kind == "ide":
+        from inspire.platform.web.browser_api.playwright_notebooks import _save_ide_url_cache
+
+        _save_ide_url_cache(path, {"notebooks": {}})
+    elif kind == "rtunnel":
+        from inspire.platform.web.browser_api.rtunnel import _save_state_file
+
+        _save_state_file(path, {"notebooks": {}})
+    elif kind == "catalog":
+        from inspire.sdk.catalog_store import CatalogStore
+
+        store = CatalogStore("fixture", "https://example.invalid")
+        store.path = path
+        store._write({"entries": {}})
+    elif kind == "index":
+        from inspire.services.catalog.resource_index import ResourceIndex
+
+        ResourceIndex(path)
+    else:
+        from inspire.bridge.tunnel.config import save_tunnel_config
+
+        config = TunnelConfig(config_dir=tmp_path)
+        path = config.config_file
+        save_tunnel_config(config)
+    assert files
+    assert path.stat().st_size > 0
+
+
+def test_windows_unrepairable_acl_is_left_unchanged_with_a_reason(
+    as_windows, monkeypatch, tmp_path, caplog
+):
+    from inspire import local_files
+
+    target = tmp_path / "old"
+    target.touch()
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        local_files.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess([], 3),
+    )
+    local_files.restrict_private_path(target)
+    assert "left unchanged to avoid removing your access" in caplog.text
+    assert str(target) in caplog.text

@@ -1084,6 +1084,37 @@ SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_sen
 
 维护接口时，在 `cli/` 运行 `uv run python scripts/generate_sdk_async.py` 更新已签入的显式包装方法。`tests/test_sdk_async.py` 比较所有实例 facade、方法签名和返回类型，并检查生成文件完全一致；新增同步方法未生成异步版本会导致测试失败，mypy 可直接检查真实签名。异步提交返回 Async 句柄，以及异步独有的 `bind_ref`／`bind_image_ref`，均在签名对等测试中明确列为有意差异；句柄 wait 的关键字签名仍必须与门面一致。
 
+## Windows 支持与本地私有文件
+
+Windows 是 SDK 的受支持平台；同步与异步入口沿用同一平台接口。异步 SSH exec
+和 SCP upload/download 使用 asyncio 子进程，要求 `ProactorEventLoop`。Windows 的
+默认事件循环通常已经满足；若宿主框架改用了 `SelectorEventLoop`，调用会抛出
+`ConfigurationError`（属于 `InspireError`），说明需要由应用或框架启用 Proactor。
+可在启动循环前配置 `WindowsProactorEventLoopPolicy`，或由框架创建 Proactor 循环；
+SDK 不会替调用方切换事件循环策略。SSH/SCP 通道仍需本机 OpenSSH 与已可用的桥接，
+这项支持不等于在远端 Windows 容器中验证了命令、Linux 路径或 shell 脚本。
+
+账号配置可含明文密码，session 可含 cookie／CAS ticket，桥接及 IDE 缓存地址也可能
+带认证参数。它们由共享原子写入器发布：POSIX 临时文件创建时即为 `0600`，Inspire
+目录和账号目录使用 `0700`；Windows 在空临时文件上通过 PowerShell 设置仅当前用户
+可访问的 ACL，并读回验证，之后才写入内容。`chmod(0600)` 在 Windows 上不构成访问
+控制。现有账号配置在读取／写入时尽力收紧，现有目录在使用时修复；修复不扩大已有
+权限，不沿符号链接／reparse point 修改外部目标，失败不阻止原命令。Windows 短暂的
+文件占用可能阻止替换，因此共享写入器最多尝试五次，总退避为 0.5 秒；仍失败时保留
+旧文件并抛出原文件系统错误，调用者原有的可选缓存降级规则继续适用。
+
+自动状态写入若缺少 PowerShell、ACL 设置或验证失败，会继续执行，并对每个目标路径
+在进程内警告一次，包含路径和原因；不新增状态文件，也不把可选缓存加固变成登录的
+前置条件。此时无法承诺已建立额外的仅当前用户 ACL。显式 `api-key export` 仍严格
+失败，且不会把密钥写入未验证的临时文件。默认 `%USERPROFILE%` ACL 已排除其他标准
+用户，因此 Windows ACL 加固属于纵深防御；POSIX 上旧的 `0664` 密码文件则确实可被
+其他本地用户读取。上述保护不是加密，不防管理员、同一用户权限的进程、备份／同步
+副本或应用自行输出的凭证，也不保证自定义共享目录／文件系统的默认 ACL 安全。
+
+Windows CI 包含 ruff、mypy、单元测试、打包及 CLI 重定向 smoke test；通过 Linux 上
+模拟 Windows 分支的测试不等于完成 Windows 原生验证。本次兼容性修复未调用真实平台，
+也未验证 Windows 上真实登录、浏览器认证或远端 SSH/SCP 的端到端行为。
+
 ## CLI-only 范围
 
 - 交互初始化提示、Playwright 安装、ssh-keygen，以及 `config *`、`update`、`uninstall`、CLI 的磁盘资源缓存命令 `cache *`（SDK 的 `client.cache` 可选择与 CLI 共用身份／配额缓存实现）；非交互账号管理和初始化由 `Accounts`、`client.login()`、`client.init()` 提供。

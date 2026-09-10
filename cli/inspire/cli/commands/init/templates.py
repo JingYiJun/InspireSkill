@@ -38,7 +38,7 @@ def _init_template_mode(
         if not click.confirm("\nOverwrite existing config?"):
             return
 
-    _atomic_write_text(config_path, ACCOUNT_CONFIG_TEMPLATE)
+    _atomic_write_text(config_path, ACCOUNT_CONFIG_TEMPLATE, private=True)
 
 
 def _write_single_file(
@@ -70,7 +70,7 @@ def _write_single_file(
             merged[section].update(value)
         else:
             merged[section] = value
-    _atomic_write_text(output_path, _toml_dumps(merged))
+    _atomic_write_text(output_path, _toml_dumps(merged), private=True)
 
 def _init_smart_mode(
     detected: list[tuple[ConfigOption, str]],

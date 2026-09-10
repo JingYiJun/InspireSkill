@@ -14,7 +14,6 @@ from inspire.platform.web.flow import blocking_io
 
 import json
 import math
-import os
 from pathlib import Path
 import time
 from typing import Any
@@ -104,13 +103,7 @@ class CatalogStore:
             if len(content) <= MAX_BYTES:
                 break
             del entries[next(iter(entries))]
-        # The fixed temporary file is protected by the same lock and reused
-        # after crashes, so temporary files and lock files cannot accumulate.
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-        os.close(fd)
-        os.chmod(tmp, 0o600)
-        atomic_write_text(self.path, content)
+        atomic_write_text(self.path, content, private=True)
 
     @blocking_io
     def read(self, key: tuple[Any, ...]) -> tuple[str, dict[str, Any] | None]:

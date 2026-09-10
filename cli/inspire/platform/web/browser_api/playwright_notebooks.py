@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from inspire.local_files import atomic_write_text
+
 import contextlib
 import json
 import logging
-import os
 import shlex
 import time
 import uuid
@@ -409,14 +410,9 @@ def _load_ide_url_cache(path: Path) -> dict[str, Any]:
 
 def _save_ide_url_cache(path: Path, payload: dict[str, Any]) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        atomic_write_text(
+            path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", private=True
+        )
     except OSError:
         return
 

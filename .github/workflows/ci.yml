@@ -87,6 +87,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev --locked
 
+      - name: Ruff
+        run: uv run ruff check inspire tests
+
+      - name: Build package
+        run: uv build
+
       - name: mypy
         run: uv run mypy
 

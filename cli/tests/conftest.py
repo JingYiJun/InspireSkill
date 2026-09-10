@@ -10,8 +10,11 @@ the name-only contract.
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
+
+from inspire import local_files
 
 # Captured on the first autouse setup, before that fixture replaces it.
 _REAL_SESSION_ACCOUNT_RESOLVER = None
@@ -248,3 +251,30 @@ def _block_real_web_requests(monkeypatch):
     monkeypatch.setattr(playwright.sync_api, "sync_playwright", blocked)
     monkeypatch.setattr(playwright.async_api, "async_playwright", blocked)
     monkeypatch.setattr(httpx.AsyncClient, "send", blocked)
+
+
+@pytest.fixture(autouse=True)
+def _keep_tests_out_of_the_real_inspire_home():
+    """Fail a test that reads or writes the home of whoever runs pytest.
+
+    `set_fake_home` exists so tests never reach real account state, but nothing
+    enforced it: a fixture that forgot the call only misbehaved when the code it
+    exercised happened to touch storage, and the first symptom was a developer's
+    ~/.inspire quietly changing mode.
+    """
+    real = pathlib.Path(os.path.expanduser("~")).resolve() / ".inspire"
+    original = local_files.restrict_private_path
+
+    def guarded(path, *args, **kwargs):
+        resolved = pathlib.Path(path).resolve()
+        if resolved == real or real in resolved.parents:
+            raise AssertionError(
+                f"This test reached the real {real}; isolate it with set_fake_home."
+            )
+        return original(path, *args, **kwargs)
+
+    local_files.restrict_private_path = guarded
+    try:
+        yield
+    finally:
+        local_files.restrict_private_path = original

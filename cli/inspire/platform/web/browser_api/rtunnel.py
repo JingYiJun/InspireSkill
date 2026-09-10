@@ -5,6 +5,8 @@ around the sync flow).
 """
 
 from __future__ import annotations
+
+from inspire.local_files import atomic_write_text
 from inspire.platform.web.jupyter_urls import (  # noqa: F401
     build_terminal_websocket_url as _build_terminal_websocket_url,
     extract_jupyter_token as _extract_jupyter_token,
@@ -13,7 +15,6 @@ from inspire.platform.web.jupyter_urls import (  # noqa: F401
 
 import contextlib
 import json
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -405,17 +406,9 @@ def _load_state_file(path: Path) -> dict[str, Any]:
 
 
 def _save_state_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    atomic_write_text(
+        path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", private=True
     )
-    os.replace(tmp_path, path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
 
 
 def get_cached_rtunnel_proxy_candidates(

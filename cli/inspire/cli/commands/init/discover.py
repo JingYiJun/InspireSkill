@@ -367,12 +367,7 @@ def _persist_account_config(
 
     _progress(verbose, "Writing account configuration...")
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, _toml_dumps(account_data))
-    if prompted_credentials:
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+    atomic_write_text(path, _toml_dumps(account_data), private=True)
     _ensure_ssh_key(non_interactive=non_interactive)
 
 

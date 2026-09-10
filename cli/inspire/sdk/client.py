@@ -176,6 +176,7 @@ class InspireClient:
         Force drops those sections, like inspire init --force.
         """
         from inspire.platform.web.session import DEFAULT_WORKSPACE_ID
+        from inspire.local_files import repair_inspire_path
         from inspire.services.account.account_config import (
             ACCOUNT_CONFIG_TEMPLATE,
             sanitize_account_config,
@@ -198,9 +199,11 @@ class InspireClient:
                     "Re-run `inspire init` with an account that can see at least one workspace."
                 )
             path = Accounts.config_path(self.account)
-            before = perform_sync(blocking_call(
-                lambda: path.read_text(encoding="utf-8") if path.exists() else None
-            ))
+            def read_existing() -> str | None:
+                repair_inspire_path(path)
+                return path.read_text(encoding="utf-8") if path.exists() else None
+
+            before = perform_sync(blocking_call(read_existing))
             existing = tomllib.loads(before) if before is not None else {}
             data = (
                 sanitize_account_config(tomllib.loads(ACCOUNT_CONFIG_TEMPLATE))
@@ -217,7 +220,7 @@ class InspireClient:
                 api["base_url"] = self.base_url
             changed = data != existing
             if changed:
-                perform_sync(blocking_call(atomic_write_text, path, toml_dumps(data)))
+                perform_sync(blocking_call(atomic_write_text, path, toml_dumps(data), private=True))
             return InitResult(path, changed)
 
     @property

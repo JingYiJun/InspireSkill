@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import re
 from datetime import date, datetime, time
-from pathlib import Path
 from typing import Any
+from inspire.local_files import atomic_write_text as atomic_write_text
 from inspire.config import DEFAULT_BASE_URL
 
 _TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -136,22 +135,6 @@ def sanitize_account_config(raw_data: dict[str, Any]) -> dict[str, Any]:
         if table:
             cleaned[key] = table
     return cleaned
-
-
-def atomic_write_text(target: Path, content: str) -> None:
-    """Write *content* to *target* atomically (same-dir temp + ``os.replace``).
-
-    ``inspire init`` writes config.toml files users will later edit by hand.
-    A half-written config would be worse than a missed write, so fsync to
-    disk before renaming over the target.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, target)
 
 
 ACCOUNT_CONFIG_TEMPLATE = f"""# Inspire CLI Account Configuration

@@ -13,6 +13,8 @@ tokens protect publication; a missing or unusable snapshot must allow a live rea
 
 from __future__ import annotations
 
+from inspire.local_files import ensure_private_directory, restrict_private_path
+
 import contextlib
 import os
 import sqlite3
@@ -289,11 +291,7 @@ class ResourceIndex:
     @blocking_io
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.path.parent.chmod(0o700)
-        except OSError:
-            pass
+        ensure_private_directory(self.path.parent)
         with exclusive_cache_lock(self.path, timeout=5):
             try:
                 self._initialize()
@@ -334,6 +332,13 @@ class ResourceIndex:
             connection.close()
 
     def _initialize(self) -> None:
+        try:
+            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(descriptor)
+        restrict_private_path(self.path)
         if not self.path.exists() or self.path.stat().st_size == 0:
             # Auto-vacuum must be chosen before WAL creates the database header.
             with contextlib.closing(sqlite3.connect(self.path)) as connection:
@@ -513,10 +518,7 @@ class ResourceIndex:
             if integrity is None or str(integrity[0] or "").strip().lower() != "ok":
                 detail = str(integrity[0] if integrity is not None else "unknown error")
                 raise _CorruptResourceIndexError(detail)
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        restrict_private_path(self.path)
 
     @staticmethod
     def _is_corruption_error(error: BaseException) -> bool:
