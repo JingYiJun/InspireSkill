@@ -407,7 +407,10 @@ def list_ray(
     limit: Optional[int],
     show_all: bool,
 ) -> None:
-    """List Ray (弹性计算) jobs in one or every visible workspace."""
+    """List Ray (弹性计算) jobs in one or every visible workspace.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+    """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -492,7 +495,7 @@ def list_ray(
         for job in page.items:
             row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
-                "status": scrub_raw_ids(job.status or "N/A"),
+                "status": public_ray_list_item(job)["status"],
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "created_by_name": scrub_raw_ids(job.created_by_name or "N/A"),
                 "project_name": scrub_raw_ids(job.project_name or ""),
@@ -545,6 +548,8 @@ def list_ray(
 @pass_context
 def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
     """Show details for a Ray (弹性计算) job.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
 
     NAME is the Ray job name shown in `inspire ray list`. Plain output shows
     the compact public status view; ``--json`` returns the same stable fields

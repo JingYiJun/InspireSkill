@@ -114,15 +114,43 @@ def resolve_model_for_create(
     session,
     resolve,
 ) -> tuple[str, Optional[int], str]:
-    items, _total = browser_api_module.list_models(
-        workspace_id=workspace_id,
-        keyword=name,
-        project_ids=[project_id] if project_id else None,
-        user_id=user_id,
-        page=1,
-        page_size=100,
-        session=session,
-    )
+    # Complete the filtered catalogue before resolving: later pages can contain
+    # another exact match, which must still participate in --pick ambiguity.
+    items: list[browser_api_module.ModelInfo] = []
+    seen: set[str] = set()
+    for page in range(1, 101):
+        batch, total = browser_api_module.list_models(
+            workspace_id=workspace_id,
+            keyword=name,
+            project_ids=[project_id] if project_id else None,
+            user_id=user_id,
+            page=page,
+            page_size=100,
+            session=session,
+        )
+        ids = [item.model_id for item in batch]
+        if any(not key or key in seen for key in ids) or len(set(ids)) != len(ids):
+            raise ConfigError(
+                "Could not finish model lookup: the platform returned duplicate models "
+                "or missing model identities while paging. Retry serving create; if this "
+                "persists, ask the platform administrator to check model catalogue pagination."
+            )
+        items.extend(batch)
+        seen.update(ids)
+        if len(items) >= total:
+            break
+        if not batch:
+            raise ConfigError(
+                "Could not finish model lookup: the platform returned an empty page "
+                "before all models were read. Retry serving create; if this persists, "
+                "ask the platform administrator to check model catalogue pagination."
+            )
+    else:
+        raise ConfigError(
+            "Could not finish model lookup after 100 pages (100 models requested per page). "
+            "Use a more specific --model name or select a workspace with fewer matching "
+            "models, then retry serving create."
+        )
     candidates = [
         {
             "name": item.name,

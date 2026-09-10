@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from inspire.services.notebook.notebook_status import normalize_status
+
 from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
@@ -73,6 +75,14 @@ def sanitize_public_text(value: object, *, omit_urls: bool = False) -> str:
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\s+([,;:.])", r"\1", text)
     return text.strip()
+
+
+def sanitize_status_text(value: object) -> str:
+    """Scrub before case folding; paths and URLs are not lifecycle states."""
+    text = sanitize_public_text(value, omit_urls=True)
+    if re.search(r"(?:^|\s)(?:/|~[/\\]|[A-Za-z]:[/\\])", text):
+        return ""
+    return text
 
 
 def sanitize_public_data(value: Any, *, omit_urls: bool = False) -> Any:
@@ -272,7 +282,7 @@ def public_notebook(
     return _compact_mapping(
         {
             "name": _first_public_text(item.get("name"), fallback_name),
-            "status": sanitize_public_text(item.get("status") or "", omit_urls=True),
+            "status": normalize_status(sanitize_status_text(item.get("status"))),
             "project": _nested_name(item, "project", "project_name"),
             "workspace": _nested_name(item, "workspace", "workspace_name"),
             "compute_group": _nested_name(
@@ -346,4 +356,5 @@ __all__ = [
     "public_runs",
     "sanitize_public_data",
     "sanitize_public_text",
+    "sanitize_status_text",
 ]

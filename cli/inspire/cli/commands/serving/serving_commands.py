@@ -559,6 +559,8 @@ def list_serving(
 ) -> None:
     """List the current user's inference servings.
 
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+
     \b
     Examples:
         inspire serving list --workspace 分布式训练空间 --project <project>
@@ -722,6 +724,8 @@ def status_serving(
     pick: Optional[int],
 ) -> None:
     """Show detail for one inference serving by name.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
 
     Detail includes status, project, model, image, resource, startup command,
     port, replicas, endpoint, and timestamps when the platform returns them.
@@ -1718,7 +1722,8 @@ def configs_serving(
     "model_name",
     required=True,
     metavar="NAME",
-    help="Registered model name",
+    help="Registered model name; scans up to 100 pages of 100 models. "
+    "Incomplete lookup fails before creation; use a more specific name or workspace.",
 )
 @click.option(
     "--model-version",

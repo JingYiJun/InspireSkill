@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+
+from inspire.services.serving.serving_status import normalize_status
 from inspire.services.notebook.notebook_output import (
     sanitize_public_data as sanitize_public_data,
+    sanitize_status_text,
     sanitize_public_text as sanitize_public_text,
 )
 
@@ -156,10 +159,7 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
         _compact(
             {
                 "name": sanitize_public_text(name, omit_urls=True),
-                "status": sanitize_public_text(
-                    _value(item, "status") or "",
-                    omit_urls=True,
-                ),
+                "status": normalize_status(sanitize_status_text(_value(item, "status"))),
                 "type": sanitize_public_text(
                     _value(
                         item,

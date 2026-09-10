@@ -512,6 +512,8 @@ def list_hpc(
 ) -> None:
     """List the current user's HPC jobs.
 
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+
     \b
     Examples:
         inspire hpc list --workspace CPU资源空间 --status RUNNING
@@ -601,7 +603,7 @@ def list_hpc(
         for job in page.items:
             row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
-                "status": scrub_raw_ids(job.status or "N/A"),
+                "status": public_hpc_list_item(job)["status"],
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "entrypoint": scrub_raw_ids(job.entrypoint or ""),
                 "project_name": scrub_raw_ids(job.project_name or ""),
@@ -1245,6 +1247,8 @@ def status_hpc(
     pick: Optional[int],
 ) -> None:
     """Show the compact public status view for one or more HPC job names.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
 
     Several names are answered with one batched request per 20 jobs instead of
     one request each.

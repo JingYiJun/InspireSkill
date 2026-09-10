@@ -58,9 +58,9 @@ def test_r1_handshake_failure_keeps_cli_timeout_and_hint(monkeypatch, capsys, st
 
 @pytest.mark.parametrize("kind", ["hpc", "ray"])
 @pytest.mark.parametrize("operation", ["list", "status"])
-@pytest.mark.parametrize("status,expected", [("", "N/A"), ("Running", "Running")])
+@pytest.mark.parametrize("status,expected", [("", "UNKNOWN"), ("Running", "RUNNING")])
 @pytest.mark.parametrize("as_json", [False, True])
-def test_r2_cli_status_is_not_normalized(monkeypatch, kind, operation, status, expected, as_json):
+def test_ad1_cli_status_is_normalized(monkeypatch, kind, operation, status, expected, as_json):
     mod = importlib.import_module(f"inspire.cli.commands.{kind}.{kind}_commands")
     monkeypatch.setattr(
         Config,
@@ -101,8 +101,7 @@ def test_r2_cli_status_is_not_normalized(monkeypatch, kind, operation, status, e
         assert data["status"] == expected
     else:
         assert expected in result.output
-        assert "UNKNOWN" not in result.output
-        assert "RUNNING" not in result.output
+        assert "Running" not in result.output
 
 
 @pytest.mark.parametrize("kind", ["hpc", "ray"])
@@ -113,7 +112,7 @@ def test_r2_cli_status_is_not_normalized(monkeypatch, kind, operation, status, e
 def test_r2_public_status_scrubs_urls_and_ids(kind, operation, status):
     mod = importlib.import_module(f"inspire.services.{kind}.{kind}_output")
     result = getattr(mod, f"public_{kind}_{operation}")({"name": "demo", "status": status})
-    assert result["status"] == "N/A"
+    assert result["status"] == "UNKNOWN"
     assert status not in result["status"]
 
 
@@ -174,13 +173,13 @@ def test_r3_tensorboard_application_http_contract(monkeypatch, path, status):
 _REQUESTS_SEND = requests.Session.send
 
 
-def test_r4_serving_model_resolution_uses_only_first_page(monkeypatch):
+def test_ad2_serving_model_resolution_reads_complete_single_page(monkeypatch):
     from inspire.services.serving import serving_submission as service
 
     row = SimpleNamespace(
         model_id="model-test", name="demo", status="Ready", created_at="", latest_version="3"
     )
-    listing = Mock(return_value=([row], 1000))
+    listing = Mock(return_value=([row], 1))
     monkeypatch.setattr(service.browser_api_module, "list_models", listing)
     result = service.resolve_model_for_create(
         name="demo",
@@ -283,3 +282,115 @@ def test_r7_save_image_skips_null_catalog_fields(field):
         )
         == "found"
     )
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, "UNKNOWN"),
+        ("", "UNKNOWN"),
+        ("   ", "UNKNOWN"),
+        ("rUnNiNg", "RUNNING"),
+        ("job_running", "JOB_RUNNING"),
+        ("job_creating", "JOB_CREATING"),
+        ("Stopped", "STOPPED"),
+        ("Running job-12345678-1234-1234-1234-123456789abc", "RUNNING"),
+        ("https://example.invalid/private/token", "UNKNOWN"),
+        ("/private/runtime/token", "UNKNOWN"),
+        (r"C:\private\runtime", "UNKNOWN"),
+        ("Unrecognised", "UNRECOGNISED"),
+    ],
+)
+def test_ad1_all_five_workloads_share_public_status_contract(raw, expected, capsys):
+    """One contract exercises both projections and the human list/detail paths."""
+    for kind in ("hpc", "ray", "job", "serving", "notebook"):
+        output = importlib.import_module(f"inspire.services.{kind}.{kind}_output")
+        row = {"name": "demo", "status": raw, "created_at": ""}
+        wanted = expected
+        if kind == "job":
+            wanted = {
+                "JOB_RUNNING": "RUNNING", "JOB_CREATING": "PENDING",
+                "STOPPED": "CANCELLED", "UNRECOGNISED": "UNKNOWN",
+            }.get(expected, expected)
+        project_list = getattr(output, f"public_{kind}_list_item")
+        project_detail = getattr(output, f"public_{kind}" if kind in ("serving", "notebook")
+                                 else f"public_{kind}_status")
+        assert project_list(row)["status"] == wanted, kind
+        detail = project_detail(row)
+        assert detail["status"] == wanted, kind
+        if kind == "notebook":
+            from inspire.cli.commands.notebook import notebook_presenters as presenter
+            presenter._print_notebook_list([row], False)
+            assert wanted in capsys.readouterr().out
+            presenter._print_notebook_detail(detail)
+            assert f"Status: {wanted}" in capsys.readouterr().out
+        elif kind == "job":
+            from inspire.cli.commands.job.job_commands import _format_job_list
+            from inspire.cli.commands.job.public_output import format_job_status
+            assert wanted in _format_job_list([row])
+            assert f"Status: {wanted}" in format_job_status(detail)
+        elif kind in ("hpc", "ray"):
+            assert f"Status: {wanted}" in getattr(output, f"format_{kind}_status")(detail)
+        else:
+            from inspire.cli.commands.serving.serving_commands import _format_list_rows
+            assert wanted in _format_list_rows([project_list(row)], 1)
+
+
+@pytest.mark.parametrize("failure", ["duplicate", "empty", "limit", "missing_id"])
+def test_ad2_incomplete_model_catalogue_has_actionable_error(monkeypatch, failure):
+    from inspire.config import ConfigError
+    from inspire.services.serving import serving_submission as service
+
+    def page(**kwargs):
+        number = kwargs["page"]
+        if failure == "empty":
+            return [], 2
+        key = "" if failure == "missing_id" else str(number if failure == "limit" else 1)
+        return [SimpleNamespace(model_id=key)], 10001
+
+    listing = Mock(side_effect=page)
+    resolver = Mock(side_effect=AssertionError("Must not resolve an incomplete catalogue"))
+    monkeypatch.setattr(service.browser_api_module, "list_models", listing)
+    with pytest.raises(ConfigError) as error:
+        service.resolve_model_for_create(
+            name="demo", workspace_id="ws-test", project_id=None,
+            user_id="user-test", session=object(), resolve=resolver,
+        )
+    message = str(error.value)
+    assert "Could not finish model lookup" in message
+    assert "serving create" in message
+    assert "Model catalog enumeration is incomplete." not in message
+    if failure == "limit":
+        assert listing.call_count == 100
+        assert "more specific --model name" in message
+    else:
+        assert "platform administrator" in message
+        assert listing.call_count == (2 if failure == "duplicate" else 1)
+    resolver.assert_not_called()
+
+
+def test_ad2_exact_match_does_not_hide_later_same_name(monkeypatch):
+    from inspire.platform.web.browser_api.models import ModelInfo
+    from inspire.services.serving import serving_submission as service
+
+    first = ModelInfo(model_id="model-first", name="demo", latest_version="1")
+    second = ModelInfo(model_id="model-second", name="demo", latest_version="2")
+    listing = Mock(side_effect=[([first], 2), ([second], 2)])
+    monkeypatch.setattr(service.browser_api_module, "list_models", listing)
+
+    def resolve(candidates):
+        assert [item["id"] for item in candidates] == ["model-first", "model-second"]
+        return candidates[1]["id"]
+
+    session = object()
+    result = service.resolve_model_for_create(
+        name="demo", workspace_id="ws-test", project_id="project-test",
+        user_id="user-test", session=session, resolve=resolve,
+    )
+    assert result == ("model-second", 2, "demo")
+    assert listing.call_count == 2
+    for page, call in enumerate(listing.call_args_list, 1):
+        assert call.kwargs == dict(
+            workspace_id="ws-test", keyword="demo", project_ids=["project-test"],
+            user_id="user-test", page=page, page_size=100, session=session,
+        )

@@ -873,7 +873,7 @@ def _format_job_list(rows: list[dict]) -> str:
         {
             **r,
             "name": scrub_raw_ids(r.get("name", "")),
-            "status": scrub_raw_ids(r.get("status", "")),
+            "status": public_job_list_item(r)["status"],
             "resource": scrub_raw_ids(resource_text(r)),
             "created_at": scrub_raw_ids(human_formatter.format_epoch(r.get("created_at"))),
             "workspace_name": scrub_raw_ids(r.get("workspace_name", "")),
@@ -1151,6 +1151,10 @@ def list_jobs(
 ) -> None:
     """List training jobs from the platform.
 
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+    Job aliases map job_running to RUNNING, CREATING to PENDING, and STOPPED
+    to CANCELLED; unrecognised values become UNKNOWN.
+
     Requires ``--workspace <name|all>``. Use ``all`` to fan out across every
     visible workspace.
 
@@ -1330,6 +1334,10 @@ def status(
     pick: Optional[int],
 ) -> None:
     """Check the status of one or more training jobs.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+    Job aliases map job_running to RUNNING, CREATING to PENDING, and STOPPED
+    to CANCELLED; unrecognised values become UNKNOWN.
 
     NAME is shown in `inspire job list`. Several names are answered with one
     batched request per 20 jobs instead of one request each, and a name that

@@ -159,7 +159,7 @@ def _print_notebook_list(
         return
 
     name_strings = [scrub_raw_ids(item.get("name") or "N/A") for item in items]
-    status_strings = [scrub_raw_ids(item.get("status") or "Unknown") for item in items]
+    status_strings = [public_notebook_list_item(item)["status"] for item in items]
     project_strings = [_format_notebook_project(item) for item in items]
     workspace_strings = [_format_notebook_workspace(item) for item in items]
     gpu_strings = [scrub_raw_ids(_format_notebook_gpu(item)) for item in items]

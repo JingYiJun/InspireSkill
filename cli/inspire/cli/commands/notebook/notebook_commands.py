@@ -657,6 +657,8 @@ def notebook_status(
 ) -> None:
     """Get status of a notebook instance.
 
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+
     \b
     Examples:
         inspire notebook status my-notebook --workspace 分布式训练空间
@@ -767,6 +769,8 @@ def list_notebooks(
     show_all: bool,
 ) -> None:
     """List notebook/interactive instances.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
 
     \b
     Examples:

@@ -1,5 +1,52 @@
 # Python SDK（实验性）
 
+## CLI compatibility changes in Unreleased
+
+The shared workload output projections now scrub status text **before** applying
+that workload's own `normalize_status`. This affects JSON and human output from
+`job`, `hpc`, `ray`, `serving`, and `notebook` `list` / `status`, including
+Job/HPC batch status and `job list --watch`. The final detail from `job wait`
+and the status field in `serving api` reuse these projections too. Mixed case (`Running`, `rUnNiNg`)
+becomes `RUNNING`, and blank or fully scrubbed status becomes `UNKNOWN`.
+
+| Workload | Previous blank JSON (list / status) | Previous blank human output (list / status) | New blank value |
+| --- | --- | --- | --- |
+| Job | `N/A` / `N/A` | `N/A` or empty / `N/A` | `UNKNOWN` |
+| HPC, Ray | `N/A` / `N/A` | `N/A` / `N/A` | `UNKNOWN` |
+| Serving | empty string / field omitted | `-` / `N/A` | `UNKNOWN` |
+| Notebook | empty string / field omitted | `Unknown` / `N/A` | `UNKNOWN` |
+
+Job retains its specific vocabulary: `job_running` → `RUNNING`,
+`CREATING` / `job_creating` → `PENDING`, `STOPPED` / `job_stopped` → `CANCELLED`,
+and unrecognised values → `UNKNOWN`. The other four workloads uppercase
+unrecognised scrubbed values and retain `STOPPED`. They do not acquire Job's
+`JOB_` prefix mapping. URLs, paths and raw IDs must not reach public status
+output; normalising first would leave unknown sensitive strings intact in four
+of the five normalisers. Operation acknowledgements such as `created` and
+`stopped`, instance/node statuses and run-history records are separate fields,
+not workload lifecycle projections covered by this change.
+
+`serving create --model NAME` (including `--dry-run`) now enumerates all filtered
+model pages before resolving the name. Each request asks for 100 models and
+keeps the keyword, workspace, user and optional project filters. The limit is
+100 requests / 10,000 rows with full pages. A stable catalogue with M matches
+costs `max(1, ceil(M / 100))` requests up to that limit and O(M) memory; latency
+adds sequential network round trips. A first exact match does not end the scan:
+a later exact match must participate in the existing ambiguity / `--pick` rules.
+The wrapper documents that `page_size=-1` is rejected; no larger page size is
+assumed supported without platform evidence.
+
+An empty page before the reported total, repeated/missing model identities, or
+the page limit produces `ConfigError` (CLI exit 10) before submission. Errors
+state the cause and recommend retrying / asking the platform administrator to
+check pagination, or using a more specific model name / a workspace with fewer
+matches when the limit is reached. The old single-page lookup could incorrectly
+report a model absent beyond the first 100 matches. SDK resource pagination
+and typed status models retain their existing contracts. SDK workload `.view`
+mappings that reuse these public projections also receive the normalised
+`status` values (including batch Job `.view`); callers inspecting those mappings
+must update old raw-status comparisons too.
+
 ## 接入
 
 同一个 `inspire-skill` 包提供两个受支持的实验性入口：`InspireClient` 用于同步脚本和同步 worker；`InspireAsyncClient` 用于 asyncio 应用、Agent runtime 和异步 Web 服务，在调用方事件循环执行原生异步 I/O。两者均可从 `inspire` 或 `inspire.sdk` 导入，使用相同的资源模型、引用、异常和平台能力；异步入口的并发与取消边界见下文。

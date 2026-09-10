@@ -13,11 +13,21 @@
 评估确认是有价值的改进，**已决定直接采纳**，因此不再列为候选，改为按有意的行为变更
 处理（见 CHANGELOG 的破坏性变更条目）：
 
-- 工作负载状态值归一化（`hpc`/`ray` 的 `list`、`status`）
-- 模型目录翻页（`serving create --model`）
+- 工作负载状态值归一化（扩展至 `job` / `hpc` / `ray` / `serving` / `notebook` 的 `list`、`status`，覆盖 JSON、人类表格及 Job/HPC 批量状态；先清洗再归一化）
+- 模型目录翻页（`serving create --model`，每页 100 条、最多 100 页，保留跨页同名消歧，并提供可操作的不完整查询错误）
 
 采纳它们意味着 `--json` 的 `status` 取值与 `serving create` 的请求行为发生变化，
 需要发版说明点名，详见 CHANGELOG。
+
+## 五项保留旧行为的修复记录
+
+这五项仍为已回滚的重构副作用，本次采纳不改变它们：
+
+1. R1：Notebook exec 握手失败继续捕获 `JobShellError`，保留结构化错误、退出码 14 和排查提示。
+2. R3：TensorBoard runs/tags/scalars 继续跟随跳转，并保留旧 HTTP 错误上下文。
+3. R5：Notebook exec 的终端创建与命令采集保留独立预算、创建 10 秒及采集 1 秒下限。
+4. R6：Ray create 在网络请求前校验参数，保留 `click.UsageError` 与退出码 2。
+5. R7：Notebook save-image 保留私有镜像 name/url 的空值防护。
 
 ## 当前无待决候选
 

@@ -738,7 +738,7 @@ def test_status_batch_and_command(client, monkeypatch):
     assert [j.name for j in result] == ["second", "first", "second"]
     assert batch_calls == [(["second", "first", "second"], "ws-test")]
     for job in result:
-        assert job.view == {"name": job.name, "status": "job_running", "priority": 6}
+        assert job.view == {"name": job.name, "status": "RUNNING", "priority": 6}
         assert job.to_dict() == job.view
         assert job.raw["command"] == "echo hello"
     assert client.jobs.command(refs[0]) == "echo hello"
