@@ -733,3 +733,57 @@ def test_shared_index_io_keeps_event_loop_running(tmp_path, monkeypatch):
             await asyncio.gather(pulse, return_exceptions=True)
             transport.close()
     asyncio.run(run())
+
+
+def test_a_pipe_torn_down_mid_drain_is_the_end_of_the_stream():
+    """A child exiting while its output is read must not raise at the caller.
+
+    Under load the child can close its pipe between two reads, and asyncio
+    surfaces that as ConnectionResetError. It reached the caller as a bare OSError
+    outside the InspireError hierarchy, and only ever showed up as a rare red
+    build. The exit status, not the pipe, decides whether the command worked.
+    """
+    import asyncio
+    from inspire.bridge.tunnel import process_async
+
+    chunks: list[str] = []
+
+    class TornStream:
+        def __init__(self):
+            self.reads = 0
+
+        async def read(self, _size):
+            self.reads += 1
+            if self.reads == 1:
+                return b"partial output"
+            raise ConnectionResetError("Connection lost")
+
+    async def run():
+        process = SimpleNamespace(
+            stdout=TornStream(), stderr=None, stdin=None,
+            returncode=0, wait=_immediate_zero, kill=lambda: None,
+        )
+
+        async def spawn(*args, **kwargs):
+            return process
+
+        original = process_async._spawn
+        process_async._spawn = spawn
+        try:
+            return await process_async.stream_process(
+                ["irrelevant"], None, chunks.append, None, None, None, "bridge",
+                deliver=_deliver_now,
+            )
+        finally:
+            process_async._spawn = original
+
+    assert asyncio.run(run()) == 0
+    assert "".join(chunks) == "partial output"
+
+
+async def _immediate_zero():
+    return 0
+
+
+async def _deliver_now(callback, chunk):
+    callback(chunk)

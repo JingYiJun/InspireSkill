@@ -14,15 +14,20 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 _warned_paths: set[str] = set()
+# Cache attempts, including failures: unavailable PowerShell must not turn every
+# session save/read into another process launch. Restart to retry after ACL repair.
+_windows_directory_attempts: set[str] = set()
+_windows_directory_lock = threading.Lock()
 
 
 # Only paths and the repair flag enter PowerShell; credential contents never
-# enter its arguments or diagnostics. Existing files are repaired without reading them.
+# enter its arguments or diagnostics. ACL repair never reads file contents.
 _WINDOWS_ACL_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 # Python may inherit PS7's module path when launching Windows PowerShell.
@@ -53,6 +58,11 @@ if ($env:INSPIRE_PRIVATE_REPAIR -eq '1') {
             [void]$acl.RemoveAccessRuleSpecific($entry)
         }
     }
+    if ($item.PSIsContainer) {
+        # Files created here inherit this grant; never repair individual caches.
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        $acl.AddAccessRule($rule)
+    }
     Set-Acl -LiteralPath $path -AclObject $acl
     $actual = Get-Acl -LiteralPath $path
     if (!$actual.AreAccessRulesProtected) { throw 'Private ACL verification failed' }
@@ -60,6 +70,14 @@ if ($env:INSPIRE_PRIVATE_REPAIR -eq '1') {
         if ($entry.AccessControlType -eq 'Allow' -and $entry.IdentityReference.Value -ne $sid.Value) {
             throw 'Private ACL verification failed'
         }
+    }
+    if ($item.PSIsContainer) {
+        $inheriting = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) |
+            Where-Object { $_.IdentityReference.Value -eq $sid.Value -and
+                $_.AccessControlType -eq 'Allow' -and
+                $_.FileSystemRights -eq 'FullControl' -and
+                ($_.InheritanceFlags -band 3) -eq 3 -and $_.PropagationFlags -eq 'None' })
+        if ($inheriting.Count -eq 0) { throw 'Private directory inheritance verification failed' }
     }
     return
 }
@@ -142,13 +160,39 @@ def _no_symlinks(path: Path) -> bool:
     return True
 
 
-def restrict_private_path(path: Path) -> None:
-    """Best-effort repair which removes access and never follows symlinks."""
-    try:
-        if not _no_symlinks(path):
+def _restrict_windows_directory(path: Path) -> None:
+    """Establish inheriting ACLs once per directory per process, best effort.
+
+    Existing explicit file grants, disabled inheritance, moved-in files and
+    hard links are not repaired by a parent ACL. Atomic writes create a new
+    inheriting file in this directory; explicit key exports verify their own ACL.
+    Cached directories must not be replaced or have their ACL changed externally
+    during the process lifetime. Failures are warned once and retried on restart.
+    """
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        return
+    directory = path if stat.S_ISDIR(info.st_mode) else path.parent
+    key = os.path.normcase(str(directory.absolute()))
+    with _windows_directory_lock:
+        if key in _windows_directory_attempts:
             return
+        if not _no_symlinks(directory):
+            return
+        _windows_directory_attempts.add(key)
+        try:
+            restrict_windows_file(str(directory), repair=True)
+        except (OSError, ValueError) as error:
+            _warn_once(directory, str(error))
+
+
+def restrict_private_path(path: Path) -> None:
+    """Narrow POSIX permissions or protect a Windows directory once per process."""
+    try:
         if sys.platform == "win32":
-            restrict_windows_file(str(path), repair=True)
+            _restrict_windows_directory(path)
+            return
+        if not _no_symlinks(path):
             return
         # Opening every component relative to its parent closes the symlink
         # substitution race between checking a path and changing permissions.
@@ -220,7 +264,7 @@ def replace_with_retry(source: Path, target: Path) -> None:
 
 
 def atomic_write_text(target: Path, content: str, *, private: bool = False) -> None:
-    """Publish a complete file; private temporaries are protected before writing."""
+    """Publish a complete file; Windows temporaries inherit the directory ACL."""
     if private:
         ensure_private_directory(target.parent)
         repair_inspire_path(target)
@@ -232,24 +276,18 @@ def atomic_write_text(target: Path, content: str, *, private: bool = False) -> N
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            if private:
-                if sys.platform == "win32":
-                    try:
-                        restrict_windows_file(name)
-                    except ValueError as error:
-                        _warn_once(target, str(error))
-                else:
-                    if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & ~0o600:
-                        raise OSError(
-                            "The destination filesystem did not enforce private 0600 permissions."
-                        )
-                    # Replacing an already narrower file must not grant access.
-                    try:
-                        info = target.lstat()
-                        if stat.S_ISREG(info.st_mode):
-                            os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode) & 0o600)
-                    except FileNotFoundError:
-                        pass
+            if private and sys.platform != "win32":
+                if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & ~0o600:
+                    raise OSError(
+                        "The destination filesystem did not enforce private 0600 permissions."
+                    )
+                # Replacing an already narrower file must not grant access.
+                try:
+                    info = target.lstat()
+                    if stat.S_ISREG(info.st_mode):
+                        os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode) & 0o600)
+                except FileNotFoundError:
+                    pass
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())

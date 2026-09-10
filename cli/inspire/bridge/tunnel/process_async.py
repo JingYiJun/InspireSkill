@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import subprocess
 import sys
 from typing import Any, Callable
@@ -130,17 +131,25 @@ async def stream_process(
     decoders = [codecs.getincrementaldecoder("utf-8")("replace") for _ in streams]
 
     async def read(index: int, stream: Any) -> None:
-        while data := await stream.read(4096):
-            await pending.put((index, data))
+        try:
+            while data := await stream.read(4096):
+                await pending.put((index, data))
+        except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
+            # A child that exits while its pipe is being drained tears the pipe
+            # down. That is the end of the stream, not a failure the caller can
+            # act on; the exit status still decides whether the command worked.
+            pass
         await pending.put((index, None))
 
     readers = [asyncio.create_task(read(i, stream)) for i, stream in enumerate(streams)]
 
     async def consume() -> int:
         if script is not None and process.stdin is not None:
-            process.stdin.write(script.encode("utf-8"))
-            await process.stdin.drain()
-            process.stdin.close()
+            # A command that fails before reading its script closes stdin first.
+            with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+                process.stdin.write(script.encode("utf-8"))
+                await process.stdin.drain()
+                process.stdin.close()
         ended = 0
         line = ""
         while ended < len(streams):

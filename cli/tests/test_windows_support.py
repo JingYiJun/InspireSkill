@@ -290,16 +290,18 @@ def test_atomic_replace_retries_windows_sharing_violation(
     assert list(tmp_path.iterdir()) == [target]
 
 
-def test_windows_private_writer_protects_empty_temporary(as_windows, monkeypatch, tmp_path):
+def test_windows_private_writer_protects_directory_before_creating_temporary(
+    as_windows, monkeypatch, tmp_path
+):
     from pathlib import Path
     from inspire import local_files
 
     protected = []
 
     def protect(path, **kwargs):
-        if not kwargs.get("repair"):
-            assert Path(path).read_bytes() == b""
-            protected.append(path)
+        assert Path(path).is_dir()
+        assert list(Path(path).iterdir()) == []
+        protected.append(path)
 
     monkeypatch.setattr(local_files, "restrict_windows_file", protect)
     target = tmp_path / "private.json"
@@ -319,8 +321,8 @@ def test_windows_cache_acl_failure_is_reported_once_and_session_still_saves(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     def fail(path, **kwargs):
-        if not Path(path).is_dir():
-            raise ValueError(reason)
+        assert Path(path).is_dir()
+        raise ValueError(reason)
 
     monkeypatch.setattr(local_files, "restrict_windows_file", fail)
     session = WebSession(
@@ -329,7 +331,7 @@ def test_windows_cache_acl_failure_is_reported_once_and_session_still_saves(
     session.save()
     session.save()
     path = tmp_path / ".inspire/accounts/fixture/web_session.json"
-    records = [record for record in caplog.records if str(path) in record.getMessage()]
+    records = [record for record in caplog.records if str(path.parent) in record.getMessage()]
     assert len(records) == 1
     assert reason in records[0].getMessage()
     assert WebSession.load(account="fixture") is not None
@@ -359,7 +361,7 @@ def test_windows_acl_errors_are_safe_and_actionable(as_windows, monkeypatch, tmp
     assert "untrusted subprocess diagnostic" not in str(caught.value)
 
 
-def test_windows_repair_uses_non_widening_acl_branch(as_windows, monkeypatch, tmp_path):
+def test_windows_directory_repair_preserves_owner_access_and_enables_inheritance(as_windows, monkeypatch, tmp_path):
     from inspire import local_files
 
     target = tmp_path / "old"
@@ -367,12 +369,13 @@ def test_windows_repair_uses_non_widening_acl_branch(as_windows, monkeypatch, tm
     calls = []
     monkeypatch.setattr(local_files, "restrict_windows_file", lambda *a, **k: calls.append((a, k)))
     local_files.restrict_private_path(target)
-    assert calls == [((str(target),), {"repair": True})]
+    assert calls == [((str(target.parent),), {"repair": True})]
     repair_script = local_files._WINDOWS_ACL_SCRIPT.split("if ($env:INSPIRE_PRIVATE_REPAIR", 1)[
         1
     ].split("$acl = if", 1)[0]
     assert "RemoveAccessRuleSpecific" in repair_script
-    assert "AddAccessRule" not in repair_script
+    assert "ContainerInherit,ObjectInherit" in repair_script
+    assert "Private directory inheritance verification failed" in repair_script
     assert "SetOwner" not in repair_script
     assert "Get-Acl" in repair_script
 
@@ -424,15 +427,14 @@ def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, t
     from inspire import local_files
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    files = []
+    directories = []
 
     def protect(path, **kwargs):
         candidate = Path(path)
-        if candidate.is_file():
-            files.append(candidate)
-            # New state must be protected before its first byte is written.
-            if not kwargs.get("repair") or kind == "index" and len(files) == 1:
-                assert candidate.stat().st_size == 0
+        assert candidate.is_dir()
+        directories.append(candidate)
+        # The parent is protected before any cache file is created.
+        assert not list(candidate.iterdir())
 
     monkeypatch.setattr(local_files, "restrict_windows_file", protect)
     path = tmp_path / "fixture.json"
@@ -464,7 +466,7 @@ def test_windows_private_cache_paths_reach_shared_acl(as_windows, monkeypatch, t
         config = TunnelConfig(config_dir=tmp_path)
         path = config.config_file
         save_tunnel_config(config)
-    assert files
+    assert directories == [path.parent]
     assert path.stat().st_size > 0
 
 
@@ -483,4 +485,128 @@ def test_windows_unrepairable_acl_is_left_unchanged_with_a_reason(
     )
     local_files.restrict_private_path(target)
     assert "left unchanged to avoid removing your access" in caplog.text
-    assert str(target) in caplog.text
+    assert str(target.parent) in caplog.text
+
+
+@pytest.mark.parametrize("operations", [1, 10, 100])
+def test_windows_private_io_acl_cost_is_bounded(as_windows, monkeypatch, tmp_path, operations):
+    """Count real ACL launch requests, not calls to a mocked permission helper."""
+    from collections import Counter
+    from pathlib import Path
+    from inspire import local_files
+    from inspire.config.toml import _load_toml
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    calls = []
+
+    def run(args, **kwargs):
+        assert args[0] == "powershell.exe"
+        directory = Path(kwargs["env"]["INSPIRE_KEY_EXPORT_PATH"])
+        assert directory.is_dir()
+        calls.append(directory)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(local_files.subprocess, "run", run)
+    root = tmp_path / ".inspire"
+    target = root / "accounts/fixture/config.toml"
+    for _ in range(operations):
+        local_files.atomic_write_text(target, 'title = "fixture"\n', private=True)
+        assert _load_toml(target) == {"title": "fixture"}
+        local_files.restrict_private_path(target)
+        local_files.restrict_private_path(target.parent)
+    assert Counter(calls) == {root: 1, root / "accounts": 1, target.parent: 1}
+    # A second account needs just its own directory; the shared parents are cached.
+    other = root / "accounts/other/config.toml"
+    local_files.atomic_write_text(other, 'title = "fixture"\n', private=True)
+    _load_toml(other)
+    assert calls[-1] == other.parent
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("returncode", [1, 3])
+def test_windows_directory_acl_failure_is_not_retried_per_operation(
+    as_windows, monkeypatch, tmp_path, caplog, returncode
+):
+    from inspire import local_files
+
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, returncode)
+
+    monkeypatch.setattr(local_files.subprocess, "run", run)
+    for _ in range(10):
+        local_files.atomic_write_text(tmp_path / "fixture.toml", "", private=True)
+    assert len(calls) == 1
+    assert len(caplog.records) == 1
+
+
+def test_windows_missing_inspire_home_does_not_restrict_parent(as_windows, monkeypatch, tmp_path):
+    from pathlib import Path
+    from inspire import local_files
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("A missing Inspire path must not change the user's home ACL")
+
+    monkeypatch.setattr(local_files.subprocess, "run", forbidden)
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    local_files.repair_inspire_path(tmp_path / ".inspire/config.toml")
+
+
+def test_windows_concurrent_directory_initialization_launches_once(
+    as_windows, monkeypatch, tmp_path
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from inspire import local_files
+
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        time.sleep(0.01)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(local_files.subprocess, "run", run)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(local_files.restrict_private_path, [tmp_path] * 16))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_windows_export_still_verifies_file_in_cached_directory(
+    as_windows, monkeypatch, tmp_path, returncode
+):
+    from pathlib import Path
+    from inspire import local_files
+    from inspire.cli.commands.account.key_export import export_private_key
+
+    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
+    calls = []
+
+    def run(args, **kwargs):
+        path = Path(kwargs["env"]["INSPIRE_KEY_EXPORT_PATH"])
+        calls.append(path)
+        if path.is_dir():
+            return subprocess.CompletedProcess(args, 0)
+        assert path.read_bytes() == b""
+        assert kwargs["env"]["INSPIRE_PRIVATE_REPAIR"] == "0"
+        return subprocess.CompletedProcess(args, returncode)
+
+    monkeypatch.setattr(local_files.subprocess, "run", run)
+    local_files.ensure_private_directory(tmp_path)
+    output = tmp_path / "export.txt"
+    if returncode:
+        with pytest.raises(ValueError, match="Could not verify"):
+            export_private_key("fixture payload", output)
+        assert not output.exists()
+    else:
+        export_private_key("fixture payload", output)
+        assert output.read_text() == "fixture payload"
+    assert len(calls) == 2
+    assert not list(tmp_path.glob(".inspire-key-*"))
