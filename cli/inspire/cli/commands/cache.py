@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
+
+from inspire.cli.utils.sizes import format_size_bytes
 from typing import Sequence
 
 import click
@@ -159,6 +161,7 @@ def _status_payload(
         )
         if not selected or status.resource_type in selected
     ]
+    counts = index.distinct_identity_counts(base_url=base_url, subject_id=subject_id, now=now)
     for status in statuses:
         row: dict[str, object] = {
             "resource": status.resource_type,
@@ -199,10 +202,7 @@ def _status_payload(
             for status in statuses
             if status.resource_type == resource and (touched := _touched_at(status)) > 0
         ]
-        item_counts = [
-            value for row in rows if isinstance((value := row.get("cached_names")), int)
-        ]
-        cached_names = sum(item_counts)
+        cached_names = counts.get(resource, 0)
         if state == "ready" and not cached_names:
             # Refreshed, in date, and holding nothing anywhere. `ready` read as
             # the healthiest state there is, which is how a quota catalog that
@@ -216,11 +216,13 @@ def _status_payload(
             state = "empty"
         summary: dict[str, object] = {
             "resource": resource,
+            "scopes": len(rows),
             "cached_names": cached_names,
             "state": state,
             "updated": _age(min(refresh_times), now=now) if refresh_times else "never",
         }
-        workspace_count = sum(bool(row.get("workspace")) for row in rows)
+        workspace_count = len({status.workspace_id for status in statuses
+                               if status.resource_type == resource and status.workspace_id})
         if workspace_count:
             summary["workspaces"] = workspace_count
         error_count = sum(bool(row.get("error")) for row in rows)
@@ -264,7 +266,7 @@ def _status_payload(
         )
     items.sort(key=lambda item: str(item["resource"]))
 
-    return {"items": items}
+    return {"items": items, "size_bytes": index.size_bytes()}
 
 
 def _refresh_payload(
@@ -524,8 +526,13 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
         return
     for row in rows:
         label = str(row["resource"])
+        # One parenthetical, so a kind cached per workspace and per source does
+        # not print two of them side by side.
+        detail = [f"{row['scopes']} scopes"] if int(row.get("scopes") or 0) > 1 else []
         if row.get("workspaces"):
-            label += f" ({row['workspaces']} workspaces)"
+            detail.append(f"{row['workspaces']} workspaces")
+        if detail:
+            label += f" ({', '.join(detail)})"
         click.echo(
             f"{label}: {row['cached_names']} names, {row['state']}, {row['updated']}"
         )
@@ -541,6 +548,10 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
                 f"Error{suffix}: {_public_error(failure.get('error'))}",
                 err=True,
             )
+    # Last, as a footer: the cache is answered by its rows, and the file it
+    # occupies is the one thing those rows never showed while it grew.
+    size = payload.get("size_bytes")
+    click.echo(f"Index size: {format_size_bytes(size if isinstance(size, int) else 0)}")
 
 
 @cache.command("clear")

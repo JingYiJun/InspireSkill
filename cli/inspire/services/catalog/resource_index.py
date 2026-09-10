@@ -334,6 +334,10 @@ class ResourceIndex:
             connection.close()
 
     def _initialize(self) -> None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            # Auto-vacuum must be chosen before WAL creates the database header.
+            with contextlib.closing(sqlite3.connect(self.path)) as connection:
+                connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -1519,11 +1523,56 @@ class ResourceIndex:
                     """,
                     (threshold,),
                 )
-                return int(cursor.rowcount)
+                deleted = int(cursor.rowcount)
+            if deleted:
+                self.reclaim_pages()
+            return deleted
         except (OSError, sqlite3.Error):
             # Tombstone cleanup is disposable maintenance.  A cache failure
             # must not affect the last successful identity snapshot.
             return 0
+
+    @blocking_io
+    def reclaim_pages(self) -> None:
+        """Bound cleanup work; existing non-incremental databases keep reusable pages."""
+        try:
+            with self._connect() as connection:
+                if connection.execute("PRAGMA auto_vacuum").fetchone()[0] == 2:
+                    connection.execute("PRAGMA incremental_vacuum(256)").fetchall()
+        except (OSError, sqlite3.Error):
+            pass
+
+    @blocking_io
+    def size_bytes(self) -> int:
+        """Count the index and its SQLite sidecars, which also occupy disk space."""
+        total = 0
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            try:
+                total += Path(str(self.path) + suffix).stat().st_size
+            except FileNotFoundError:
+                pass
+        return total
+
+    @blocking_io
+    def distinct_identity_counts(
+        self, *, base_url: str = "", subject_id: str = "", now: float | None = None,
+    ) -> dict[str, int]:
+        """Count each active identity once across owners and workspaces."""
+        identity = (str(base_url or "").strip().rstrip("/"), str(subject_id or "").strip())
+        where = "AND base_url = ? AND subject_id = ?" if all(identity) else ""
+        timestamp = time.time() if now is None else now
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT resource_type, COUNT(*) AS count FROM (
+                    SELECT DISTINCT base_url, subject_id, resource_type, resource_id
+                    FROM resource_identity
+                    WHERE tombstoned_at IS NULL AND expires_at > ? {where}
+                ) GROUP BY resource_type
+                """,
+                (timestamp, *identity) if where else (timestamp,),
+            ).fetchall()
+        return {str(row["resource_type"]): int(row["count"]) for row in rows}
 
     @contextlib.contextmanager
     def refresh_lease(

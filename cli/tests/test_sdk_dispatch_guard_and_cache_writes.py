@@ -1,4 +1,4 @@
-"""Phase-one review regressions, using isolated accounts and fake transports."""
+"""Dispatch, login-guard and cache-write regressions, with isolated accounts and fake transports."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def refused(client, monkeypatch):
     return logins
 
 
-def test_h1_async_refused_login_is_not_rebuilt_per_operation(tracked, refused):
+def test_async_refused_login_is_not_rebuilt_per_operation(tracked, refused):
     async def run():
         async with InspireAsyncClient("alpha") as sdk:
             for _ in range(5):
@@ -83,7 +83,7 @@ def test_h1_async_refused_login_is_not_rebuilt_per_operation(tracked, refused):
     assert len(refused) == 1
 
 
-def test_m4_guard_refusal_is_authentication_error(client, refused):
+def test_guard_refusal_is_authentication_error(client, refused):
     for _ in range(3):
         with pytest.raises(AuthenticationError):
             client.workspaces.list()
@@ -104,7 +104,7 @@ def test_m4_guard_refusal_is_authentication_error(client, refused):
         (200, "Throttling", True),
     ],
 )
-def test_h2_write_outcome_matches_http_and_envelope(
+def test_write_outcome_matches_http_and_envelope(
     client, monkeypatch, create, status, code, retryable
 ):
     sent = []
@@ -137,7 +137,7 @@ def test_h2_write_outcome_matches_http_and_envelope(
 
 @pytest.mark.parametrize("phase", ["before", "after"])
 @pytest.mark.parametrize("mutation", ["delete", "register"])
-def test_h3_cache_failure_preserves_image_mutation(client, monkeypatch, phase, mutation):
+def test_cache_failure_preserves_image_mutation(client, monkeypatch, phase, mutation):
     from inspire.platform.web import browser_api
 
     calls = []
@@ -176,7 +176,7 @@ def test_h3_cache_failure_preserves_image_mutation(client, monkeypatch, phase, m
     assert client.cache.stats()["entries"] == 0
 
 
-def test_h4_sdk_resolution_preserves_cli_pick_order_and_columns(client, monkeypatch, tmp_path):
+def test_sdk_resolution_preserves_cli_pick_order_and_columns(client, monkeypatch, tmp_path):
     from inspire.sdk.identity_cache import IdentityCache
     from inspire.services.catalog.resource_index import (
         ResourceIndex,
@@ -253,7 +253,7 @@ def test_h4_sdk_resolution_preserves_cli_pick_order_and_columns(client, monkeypa
         assert cli_pick() == ("zzz-new", "ws-test", "gpu")
 
 
-def test_h5_logs_single_instance_is_one_pod(client, monkeypatch):
+def test_logs_single_instance_is_one_pod(client, monkeypatch):
     from inspire.services.job import job_logs
 
     ref = JobRef("job", client.account, client.base_url, "job-1", "ws-test")
@@ -269,7 +269,7 @@ def test_h5_logs_single_instance_is_one_pod(client, monkeypatch):
     assert captured == [["worker-0"]]
 
 
-def test_m5_cooldown_keeps_actionable_login_guard_message(client, refused, monkeypatch):
+def test_cooldown_keeps_actionable_login_guard_message(client, refused, monkeypatch):
     message = "Account alpha blocked until 12:00; run inspire account set --password."
     blocked = auth.AuthenticationError(message)
     blocked.retry_at = time.time() + 300
@@ -292,7 +292,7 @@ def test_m5_cooldown_keeps_actionable_login_guard_message(client, refused, monke
         TransientAPIError("secret-backend", status=503, retry_after=7),
     ],
 )
-def test_m8_api_key_errors_keep_type_and_metadata_without_secret(client, monkeypatch, error):
+def test_api_key_errors_keep_type_and_metadata_without_secret(client, monkeypatch, error):
     from inspire.platform.web.browser_api import api_keys
 
     def request(*args, **kwargs):
@@ -306,7 +306,7 @@ def test_m8_api_key_errors_keep_type_and_metadata_without_secret(client, monkeyp
     assert "secret-" not in "".join(traceback.format_exception(caught.value))
 
 
-def test_m9_deadline_does_not_claim_remote_state_unchanged(client):
+def test_deadline_does_not_claim_remote_state_unchanged(client):
     client._transport.deadline = time.monotonic() - 1
     with pytest.raises(WaitTimeoutError) as caught:
         client._transport.check_deadline()
@@ -317,7 +317,7 @@ def test_m9_deadline_does_not_claim_remote_state_unchanged(client):
 @pytest.mark.parametrize(
     "code,expected", [("Throttling", TransportError), ("InternalError", TransportError)]
 )
-def test_m8_api_key_read_envelope_keeps_retryable_sdk_error(client, monkeypatch, code, expected):
+def test_api_key_read_envelope_keeps_retryable_sdk_error(client, monkeypatch, code, expected):
     from inspire.platform.web.browser_api import api_keys
 
     monkeypatch.setattr(
@@ -348,7 +348,7 @@ def test_sequence_only_dataset_specs_reject_bare_string_before_io(client):
         client.datasets.validate("dataset:1", workspace="ws")
 
 
-def test_h1_operation_views_share_generation_evidence_but_not_write_claims(client):
+def test_operation_views_share_generation_evidence_but_not_write_claims(client):
     from inspire.sdk._async_runtime import AsyncRuntime
 
     runtime = AsyncRuntime({}, None)
@@ -377,7 +377,7 @@ def test_async_bulk_status_rejects_bare_string_before_io(tracked, facade):
     asyncio.run(run())
 
 
-def test_h3_real_cache_wiring_degrades_when_existing_index_is_unwritable(
+def test_real_cache_wiring_degrades_when_existing_index_is_unwritable(
     client, monkeypatch, tmp_path
 ):
     from inspire.platform.web import browser_api
@@ -406,7 +406,7 @@ def test_h3_real_cache_wiring_degrades_when_existing_index_is_unwritable(
     assert client.cache.stats()["entries"] == 0
 
 
-def test_h3_cache_failure_preserves_original_mutation_error(client, monkeypatch):
+def test_cache_failure_preserves_original_mutation_error(client, monkeypatch):
     from inspire.platform.web import browser_api
 
     def invalidation():
@@ -437,7 +437,7 @@ def test_h3_cache_failure_preserves_original_mutation_error(client, monkeypatch)
         "too_many_requests",
     ],
 )
-def test_h2_throttling_envelope_remains_safe_to_retry(client, monkeypatch, code):
+def test_throttling_envelope_remains_safe_to_retry(client, monkeypatch, code):
     sent = []
 
     def request(*args, **kwargs):
@@ -458,7 +458,7 @@ def test_h2_throttling_envelope_remains_safe_to_retry(client, monkeypatch, code)
 
 
 @pytest.mark.parametrize("code,retryable", [("Throttling", True), ("InternalError", False)])
-def test_h2_envelope_classification_survives_message_replacement(code, retryable):
+def test_envelope_classification_survives_message_replacement(code, retryable):
     from inspire.platform.web.transport_core import _classify_after_dispatch
 
     with pytest.raises(TransientAPIError) as caught:

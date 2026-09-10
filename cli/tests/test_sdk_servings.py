@@ -266,7 +266,7 @@ def test_list_get_wait_and_missing_identity(client, catalog, monkeypatch):
     with pytest.raises(ServingFailedError):
         client.servings.wait(ref, raise_on_failure=True)
     monkeypatch.setattr(api, "create_serving", lambda **kw: {})
-    with pytest.raises(SubmissionUncertainError):
+    with pytest.raises(SubmissionUncertainError, match="inspect servings"):
         client.servings.create(catalog.serving)
 
 

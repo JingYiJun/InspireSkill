@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.errors import SubmissionUncertainError
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +31,12 @@ def _call(action: str, body: dict[str, Any], session: WebSession) -> dict[str, A
         )
     except SessionExpiredError:
         raise SessionExpiredError("API key operation requires a valid account session.") from None
+    except SubmissionUncertainError as error:
+        error.inspect = "API keys"
+        error.args = (str(SubmissionUncertainError(error.operation_id, inspect="API keys")),)
+        error.__cause__ = None
+        error.__context__ = None
+        raise error from None
     except Exception as error:
         # Preserve classification and metadata, but never expose server text or
         # its cause chain: either can contain plaintext keys/internal handles.

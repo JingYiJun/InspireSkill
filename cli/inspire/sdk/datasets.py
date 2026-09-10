@@ -138,11 +138,11 @@ class Datasets(Service):
         mounts = []
         seen = set()
         for spec in specs:
-            mount = parse_dataset_spec(spec) if isinstance(spec, str) else spec
+            mount = parse_dataset_spec(spec, field="specs") if isinstance(spec, str) else spec
             key = (mount.dataset, mount.version)
             if key in seen:
                 raise DatasetSpecError(
-                    f"--dataset {mount.dataset}:{mount.version} was given more than once"
+                    f"specs {mount.dataset}:{mount.version} was given more than once"
                 )
             seen.add(key)
             mounts.append(mount)

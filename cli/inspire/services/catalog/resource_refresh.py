@@ -13,7 +13,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass, replace
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.services.catalog.resource_index import (
@@ -111,6 +111,7 @@ def refresh_scope(
     prefetched_revision: int | None = None,
     prefetched_generation: int | None = None,
     prefetched_attempted_at: float | None = None,
+    prefetched_child_revisions: Mapping[ResourceScope, int] | None = None,
 ) -> RefreshResult:
     scope = scope or scope_for_session(
         session,
@@ -160,6 +161,12 @@ def refresh_scope(
                     expected_revision = prefetched_revision
                 else:
                     expected_generation, expected_revision = index.snapshot_token(scope)
+                child_revisions = prefetched_child_revisions
+                if resource_type == "workspace" and not exact_name and prefetched is None:
+                    try:
+                        _, _, child_revisions = index.snapshot_workspace_refresh(scope)
+                    except Exception:
+                        child_revisions = None
                 fetched = (
                     prefetched
                     if prefetched is not None
@@ -215,6 +222,22 @@ def refresh_scope(
                         expected_generation=expected_generation,
                         attempted_at=attempted_at,
                     )
+                if not exact_name:
+                    # Cleanup must never change the outcome of a published snapshot.
+                    if resource_type == "workspace" and child_revisions is not None:
+                        try:
+                            index.prune_orphan_workspace_scopes(
+                                scope, (record.resource_id for record in records),
+                                expected_generation=expected_generation,
+                                expected_workspace_revision=expected_revision + 1,
+                                expected_child_revisions=child_revisions,
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        index.purge_tombstones()
+                    except Exception:
+                        pass
                 return RefreshResult(resource_type, workspace_name, count, "refreshed")
             except StaleResourceIndexRefresh:
                 return RefreshResult(resource_type, workspace_name, 0, "stale")

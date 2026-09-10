@@ -8,7 +8,7 @@ from .models_resources import AccountInfo
 from collections.abc import Awaitable, Callable
 from ._async_runtime import AsyncFacade, AsyncRuntime
 from . import async_handles as _handles
-from .exceptions import ValidationError
+from .exceptions import ValidationError, ConfigurationError
 import inspire.sdk.resources as _m0
 import inspire.sdk.jobs as _m1
 import inspire.sdk.models_compute as _m2
@@ -2490,13 +2490,13 @@ class InspireAsyncClient(AsyncRuntime):
     @property
     def account(self) -> str:
         if self._account is None:
-            raise RuntimeError("Enter the async context or await a call before reading account.")
+            raise ConfigurationError("account is available after the first operation or entering async with client.")
         return self._account
 
     @property
     def base_url(self) -> str:
         if self._base_url is None:
-            raise RuntimeError("Enter the async context or await a call before reading base_url.")
+            raise ConfigurationError("base_url is available after the first operation or entering async with client.")
         return self._base_url
 
     async def login(self, *, force: bool = False) -> AccountInfo:

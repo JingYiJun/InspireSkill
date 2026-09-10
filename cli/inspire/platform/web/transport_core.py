@@ -147,7 +147,7 @@ def claim_write(state: dict[str, Any] | None) -> None:
 
 def uncertain(state: dict[str, Any], error: Exception) -> NoReturn:
     if state["create"]:
-        raise SubmissionUncertainError(state["operation_id"]) from error
+        raise SubmissionUncertainError(state["operation_id"], inspect=state.get("inspect", "jobs")) from error
     raise MutationUncertainError("Mutation may have succeeded; inspect state.") from error
 
 

@@ -136,8 +136,18 @@ class TerminalScanner:
 
 def iter_output_file(path: str | os.PathLike[str], *, chunk_size: int = 65536) -> Iterator[str]:
     """Read a UTF-8 capture in at most chunk_size characters per page."""
+    from inspire.platform.errors import ValidationError, TransportError
+
     if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
-        raise ValueError("chunk_size must be a positive integer.")
-    with open(path, encoding="utf-8", newline="") as stream:
-        while chunk := stream.read(chunk_size):
-            yield chunk
+        raise ValidationError("chunk_size must be a positive integer.")
+    try:
+        with open(path, encoding="utf-8", newline="") as stream:
+            while chunk := stream.read(chunk_size):
+                yield chunk
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError,
+            PermissionError, UnicodeError) as error:
+        # Absent, unreadable or undecodable is permanent for this path: the same
+        # call cannot start working, so it must not arrive marked retryable.
+        raise ValidationError(f"Cannot read output file: {error}") from error
+    except OSError as error:
+        raise TransportError(f"Cannot read output file: {error}") from error

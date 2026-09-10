@@ -870,39 +870,8 @@ def refresh_resource_index(
                 prefetched_revision=workspace_revision,
                 prefetched_generation=workspace_generation,
                 prefetched_attempted_at=workspace_attempted_at,
+                prefetched_child_revisions=workspace_child_revisions,
             )
-            if (
-                workspace_result.outcome == "refreshed"
-                and workspace_fetched
-                and workspace_snapshot.complete
-                and not exact_name
-                and workspace_scope is not None
-                and workspace_generation is not None
-                and workspace_revision is not None
-            ):
-                try:
-                    index.prune_orphan_workspace_scopes(
-                        workspace_scope,
-                        names_by_id,
-                        expected_generation=workspace_generation,
-                        expected_workspace_revision=workspace_revision + 1,
-                        expected_child_revisions=workspace_child_revisions,
-                    )
-                except StaleResourceIndexRefresh:
-                    workspace_result = RefreshResult(
-                        "workspace",
-                        "",
-                        workspace_result.item_count,
-                        "stale",
-                    )
-                except (OSError, sqlite3.Error):
-                    workspace_result = RefreshResult(
-                        "workspace",
-                        "",
-                        workspace_result.item_count,
-                        "error",
-                        "The local resource name cache is unavailable.",
-                    )
             results.append(workspace_result)
             continue
 
@@ -960,10 +929,6 @@ def refresh_resource_index(
                 )
             )
 
-    try:
-        index.purge_tombstones()
-    except (OSError, sqlite3.Error):
-        pass
     return RefreshSummary(results)
 
 

@@ -233,7 +233,8 @@ elif a['action'] == 'cleanup':
                                download=download, recursive=recursive, overwrite=overwrite))
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("SSH transfer timed out.")
+            from inspire.platform.errors import WaitTimeoutError
+            raise WaitTimeoutError("SSH transfer timed out.")
         result = perform_sync(call(exec_in_notebook_ssh,
             bridge_name=bridge_name, account=account,
             command="python3 -c " + shlex.quote(program) + " " + shlex.quote(args),

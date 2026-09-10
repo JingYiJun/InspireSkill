@@ -438,7 +438,8 @@ class Jobs(Service):
             [
                 f"{item.dataset}:{item.version}" if isinstance(item, DatasetMount) else item
                 for item in spec.datasets
-            ]
+            ],
+            field="datasets",
         )
         dataset_info = resolve_dataset_info(mounts, workspace_id=ws.ref.key, session=self.session)
         config = self.client._config
@@ -455,6 +456,10 @@ class Jobs(Service):
             nodes=spec.nodes,
             max_time_hours=spec.max_time_hours,
             shm_size=spec.shm_gib,
+            shm_size_hint="shm_gib",
+            fault_tolerance_dependency_message=(
+                "fault_tolerance_retry_interval_sec only applies with auto_fault_tolerance."
+            ),
             description=spec.description,
             project_name=project.name,
             auto_fault_tolerance=(
@@ -510,11 +515,11 @@ class Jobs(Service):
             raise ValidationError("operation_id must be a non-empty string.")
         public, plan = self._plan(spec)
         session = self.session
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="jobs"):
             data = create_training_job(payload=plan.create_kwargs, session=session)
         key = data.get("job_id") or data.get("id")
         if not isinstance(key, str) or not key:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="jobs")
         return JobHandle(
             spec.name, self._make_ref(JobRef, spec.name, key, public.workspace.ref.key), identifier
         )
@@ -528,13 +533,13 @@ class Jobs(Service):
         poll_interval: float = 10,
         raise_on_failure: bool = False,
     ) -> Job:
-        for value in (timeout, poll_interval):
+        for parameter, value in (("timeout", timeout), ("poll_interval", poll_interval)):
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
                 or not (math.isfinite(value) and value > 0)
             ):
-                raise ValidationError("Wait durations must be finite positive seconds.")
+                raise ValidationError(f"{parameter} must be finite positive seconds.")
         with self.client._transport.scope(timeout=timeout):
             resolved = self._resolve(ref, workspace)
             while True:
@@ -647,7 +652,8 @@ class Jobs(Service):
         resolved = self._resolve(ref, workspace)
         selectors = (instance,) if isinstance(instance, str) else instance or ()
         rows = collect_job_events(
-            resolved.key, session=self.session, instance=selectors, workload_level=workload_level
+            resolved.key, session=self.session, instance=selectors, workload_level=workload_level,
+            conflict_message="workload_level and instance cannot be used together.",
         )
         rows = matching_events(rows, type_filter=type, reason_filter=reason)
         selected = rows[-limit:] if limit > 0 else rows

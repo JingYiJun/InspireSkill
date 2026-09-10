@@ -610,9 +610,9 @@ def test_dataset_validation_parses_strings_once_and_preserves_mounts(client, cat
     original = datasets.parse_dataset_spec
     mount = DatasetMount("data-1", "v2")
 
-    def parse(spec):
+    def parse(spec, **kwargs):
         calls.append(spec)
-        return original(spec)
+        return original(spec, **kwargs)
 
     def validate(mounts, **kwargs):
         assert mounts[0] == DatasetMount("data-0", "v1")
@@ -623,7 +623,7 @@ def test_dataset_validation_parses_strings_once_and_preserves_mounts(client, cat
     monkeypatch.setattr(mounts_api, "validate_dataset_mounts", validate)
     assert client.datasets.validate([" data-0 : v1 ", mount], workspace=catalog.ref) == ()
     assert calls == [" data-0 : v1 "]
-    with pytest.raises(ValidationError, match="--dataset data-1:v2 was given more than once"):
+    with pytest.raises(ValidationError, match="specs data-1:v2 was given more than once"):
         client.datasets.validate([mount, " data-1 : v2 "], workspace=catalog.ref)
 
 

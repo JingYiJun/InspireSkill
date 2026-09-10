@@ -126,25 +126,30 @@ def training_plan_specified_nodes(plan: JobSubmissionPlan) -> list[str]:
     return []
 
 
-def _resolve_shm_size(config: Config, shm_size: Optional[int]) -> int | None:
+def _resolve_shm_size(
+    config: Config, shm_size: Optional[int],
+    hint: str = "--shm-size, INSPIRE_SHM_SIZE, or job.shm_size",
+) -> int | None:
     resolved = shm_size if shm_size is not None else config.shm_size
     if resolved is None:
         return None
     resolved_int = int(resolved)
     if resolved_int < 1:
         raise ValueError(
-            "Shared memory size must be >= 1 (set --shm-size, INSPIRE_SHM_SIZE, or job.shm_size)."
+            f"Shared memory size must be >= 1 (set {hint})."
         )
     return resolved_int
 
 
-def _validate_shm_size_fits_memory(shm_size: int, memory_gib: int) -> None:
+def _validate_shm_size_fits_memory(
+    shm_size: int, memory_gib: int,
+    hint: str = "--shm-size, INSPIRE_SHM_SIZE, or job.shm_size",
+) -> None:
     memory_int = int(memory_gib)
     if shm_size > memory_int:
         raise ValueError(
             f"Shared memory size ({shm_size} GiB) must be <= quota memory "
-            f"({memory_int} GiB). Lower --shm-size, INSPIRE_SHM_SIZE, or "
-            "job.shm_size, or choose a quota with more memory."
+            f"({memory_int} GiB). Lower {hint}, or choose a quota with more memory."
         )
 
 
@@ -177,6 +182,10 @@ def build_training_job_plan(
     specified_nodes: Iterable[str] | None = None,
     session: Any = None,
     image_catalog_cache: ImageCatalogCache | None = None,
+    shm_size_hint: str = "--shm-size, INSPIRE_SHM_SIZE, or job.shm_size",
+    fault_tolerance_dependency_message: str = (
+        "--fault-tolerance-retry-interval only applies with --auto-fault-tolerance."
+    ),
 ) -> JobSubmissionPlan:
     if not image:
         raise ValueError("--image is required.")
@@ -218,9 +227,9 @@ def build_training_job_plan(
     if max_time_ms is not None:
         create_kwargs["max_running_time_ms"] = max_time_ms
 
-    resolved_shm_size = _resolve_shm_size(config, shm_size)
+    resolved_shm_size = _resolve_shm_size(config, shm_size, shm_size_hint)
     if resolved_shm_size is not None:
-        _validate_shm_size_fits_memory(resolved_shm_size, quota.memory_gib)
+        _validate_shm_size_fits_memory(resolved_shm_size, quota.memory_gib, shm_size_hint)
         framework_config["shm_gi"] = resolved_shm_size
 
     normalized_exclude_nodes = normalize_exclude_nodes(exclude_nodes)
@@ -249,9 +258,7 @@ def build_training_job_plan(
                 fault_tolerance_retry_interval_sec
             )
     elif fault_tolerance_retry_interval_sec is not None:
-        raise ValueError(
-            "--fault-tolerance-retry-interval only applies with --auto-fault-tolerance."
-        )
+        raise ValueError(fault_tolerance_dependency_message)
 
     # Everything below stays out of the body unless it was asked for, so a
     # create built without these options is byte-for-byte the old request.

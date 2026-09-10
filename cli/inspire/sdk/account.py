@@ -120,7 +120,7 @@ class APIKeys(Service):
     @operation
     def create(self, name: str) -> APIKeyInfo:
         session = self.session
-        with self.client._transport.single_send(uuid4().hex, create=True):
+        with self.client._transport.single_send(uuid4().hex, create=True, inspect="API keys"):
             api_keys.create_api_key(name, session=session)
         # GenerateAPIKey has no metadata result. Never invent an identity or re-list.
         return APIKeyInfo.from_view({"name": name})

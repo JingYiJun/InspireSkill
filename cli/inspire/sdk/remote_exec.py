@@ -27,7 +27,7 @@ def shaped_command(
     capture: bool = True,
 ) -> str:
     validate_capture(max_output_bytes, capture, output_to)
-    duration(timeout)
+    duration(timeout, "timeout")
     if on_output is not None and not callable(on_output):
         raise ValidationError("on_output must be callable.")
     return core.build_remote_command(

@@ -204,9 +204,11 @@ def test_mutations_single_dispatch_on_lost_response(
         return client._transport._dispatch(once, *a, **kw)
 
     monkeypatch.setattr(client._transport, "_once", dispatched)
-    with pytest.raises(SubmissionUncertainError if create else MutationUncertainError):
+    with pytest.raises(SubmissionUncertainError if create else MutationUncertainError) as error:
         getattr(client.notebooks, action)(*args, **({"name": "snapshot"} if action == "save_image" else {}))
     assert len(calls) == 1
+    if create:
+        assert "inspect notebooks" in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -244,7 +246,7 @@ def test_create_id_lookup_and_missing_identity(client, catalog, monkeypatch):
     assert client.notebooks.create(catalog.spec).ref.key == "new"
     assert len(calls) == 1
     monkeypatch.setattr(api, "list_notebooks", lambda *a, **kw: ([], 0))
-    with pytest.raises(SubmissionUncertainError) as error:
+    with pytest.raises(SubmissionUncertainError, match="inspect notebooks") as error:
         client.notebooks.create(catalog.spec, operation_id="unknown")
     assert error.value.operation_id == "unknown"
     assert len(calls) == 2

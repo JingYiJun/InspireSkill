@@ -75,9 +75,9 @@ class Resources(Service):
     ) -> ResourceUsage:
         if mine and (group or user or task or details):
             raise ValidationError(
-                "--mine reads a pre-aggregated per-project record, so it cannot be "
-                "narrowed with --group, --user, --task, or --details. Use the "
-                "default Project/User view or --details --group <name> instead."
+                "mine=True reads a pre-aggregated per-project record, so it cannot be "
+                "narrowed with group, user, task, or details. Use the "
+                "default Project/User view or details=True with group instead."
             )
         ws = self.client.workspaces.get(workspace)
         label = usage_views.display_name(ws.name, fallback="(workspace name unavailable)")
@@ -94,7 +94,7 @@ class Resources(Service):
         if group and not groups:
             raise ValidationError(
                 f"No compute group in {label} matches {group!r}. "
-                f"Run `inspire resources availability --workspace {ws.name}` "
+                f"Call resources.availability({ws.name!r}) "
                 "for the names this workspace has."
             )
         mode = "mine" if mine else ("task" if details else "project-user")

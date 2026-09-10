@@ -67,14 +67,14 @@ from .exceptions import (
 )
 
 
-def _duration(value: float) -> None:
+def _duration(value: float, parameter: str) -> None:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
         or not math.isfinite(value)
         or value <= 0
     ):
-        raise ValidationError("Wait durations must be finite positive seconds.")
+        raise ValidationError(f"{parameter} must be finite positive seconds.")
 
 
 class Notebooks(Service):
@@ -228,7 +228,7 @@ class Notebooks(Service):
         """
         from .notebook_transfer import transfer
 
-        _duration(timeout)
+        _duration(timeout, "timeout")
         with self.client._transport.scope(timeout=timeout):
             return transfer(
                 self, ref, local=local, remote=remote, workspace=workspace,
@@ -296,7 +296,7 @@ class Notebooks(Service):
         """
         from .notebook_transfer import transfer
 
-        _duration(timeout)
+        _duration(timeout, "timeout")
         with self.client._transport.scope(timeout=timeout):
             return transfer(
                 self, ref, local=local, remote=remote, workspace=workspace,
@@ -643,7 +643,8 @@ class Notebooks(Service):
             [
                 f"{x.dataset}:{x.version}" if isinstance(x, DatasetMount) else x
                 for x in spec.datasets
-            ]
+            ],
+            field="datasets",
         )
         dataset_info = resolve_dataset_info(mounts, workspace_id=ws.ref.key, session=self.session)
         stop_hour, stop_minute = core.split_auto_stop_after(spec.auto_stop_after)
@@ -708,7 +709,7 @@ class Notebooks(Service):
                 f"A notebook named '{plan.name}' already exists in this workspace."
             )
         session = self.session
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="notebooks"):
             result = browser_api.create_notebook(**plan.create_kwargs, session=session)
         key = core.extract_notebook_id(result) or core.resolve_created_notebook_id(
             name=plan.name,
@@ -717,7 +718,7 @@ class Notebooks(Service):
             user_ids_loader=self._current_user_ids,
         )
         if not key:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="notebooks")
         return NotebookHandle(
             plan.name,
             self._make_ref(NotebookRef, plan.name, key, plan.workspace.ref.key),
@@ -734,8 +735,8 @@ class Notebooks(Service):
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> Notebook:
-        _duration(timeout)
-        _duration(poll_interval)
+        _duration(timeout, "timeout")
+        _duration(poll_interval, "poll_interval")
         if target not in ("RUNNING", "STOPPED"):
             raise ValidationError("target must be RUNNING or STOPPED.")
         with self.client._transport.scope(timeout=timeout):
@@ -793,7 +794,7 @@ class Notebooks(Service):
     def follow_events(
         self, ref: str | NotebookRef, *, interval: float = 5, **filters: Any
     ) -> Iterator[EventResult]:
-        _duration(interval)
+        _duration(interval, "interval")
         with self.client._transport.scope(timeout=self.client.operation_timeout):
             resolved = self._resolve(ref, filters.pop("workspace", None))
         seen = set()
@@ -986,12 +987,12 @@ class Notebooks(Service):
         timeout: float = 600,
         poll_interval: float = 5,
     ) -> CustomImageInfo:
-        _duration(timeout)
-        _duration(poll_interval)
+        _duration(timeout, "timeout")
+        _duration(poll_interval, "poll_interval")
         resolved = ref.ref if isinstance(ref, ImageSaveHandle) else ref
         if resolved is None:
             raise ValidationError(
-                "Image identity is not available yet; resolve it in the resolved catalog first."
+                "Image identity is not available yet; resolve it in the image catalog first."
             )
         self.client._validate_ref(resolved, ImageRef)
         with self.client._transport.scope(timeout=timeout):

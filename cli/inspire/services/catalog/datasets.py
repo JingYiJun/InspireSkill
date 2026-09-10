@@ -14,31 +14,31 @@ class DatasetSpecError(ValueError):
     """Raised when a `--dataset` value cannot be parsed or resolved."""
 
 
-def parse_dataset_spec(text: str) -> DatasetMount:
+def parse_dataset_spec(text: str, *, field: str = "--dataset") -> DatasetMount:
     """Parse one `<dataset>:<version>` value."""
     raw = str(text or "").strip()
     if not raw:
-        raise DatasetSpecError("--dataset requires '<dataset>:<version>'")
+        raise DatasetSpecError(f"{field} requires '<dataset>:<version>'")
     dataset, separator, version = raw.partition(":")
     dataset = dataset.strip()
     version = version.strip()
     if not separator or not dataset or not version:
         raise DatasetSpecError(
-            f"--dataset expects '<dataset>:<version>' (for example 'pixabay-81k:v0'); got {raw!r}"
+            f"{field} expects '<dataset>:<version>' (for example 'pixabay-81k:v0'); got {raw!r}"
         )
     return DatasetMount(dataset=dataset, version=version)
 
 
-def parse_dataset_specs(values: Optional[Iterable[str]]) -> list[DatasetMount]:
+def parse_dataset_specs(values: Optional[Iterable[str]], *, field: str = "--dataset") -> list[DatasetMount]:
     """Parse repeated `--dataset` values, rejecting duplicates."""
     mounts: list[DatasetMount] = []
     seen: set[tuple[str, str]] = set()
     for value in values or ():
-        mount = parse_dataset_spec(value)
+        mount = parse_dataset_spec(value, field=field)
         key = (mount.dataset, mount.version)
         if key in seen:
             raise DatasetSpecError(
-                f"--dataset {mount.dataset}:{mount.version} was given more than once"
+                f"{field} {mount.dataset}:{mount.version} was given more than once"
             )
         seen.add(key)
         mounts.append(mount)

@@ -167,7 +167,7 @@ class Tensorboards(Service):
             ).ref.key
         hours = 24.0 if spec.auto_stop_hours is None else spec.auto_stop_hours
         session = self.session
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="TensorBoards"):
             api.create_tensorboard(
                 name=spec.name,
                 workspace_id=ws.ref.key,
@@ -181,9 +181,9 @@ class Tensorboards(Service):
         try:
             board = core.find_created_board(session, workspace_id=ws.ref.key, name=spec.name)
         except Exception as exc:
-            raise SubmissionUncertainError(identifier) from exc
+            raise SubmissionUncertainError(identifier, inspect="TensorBoards") from exc
         if board is None or not board.tb_id:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="TensorBoards")
         return TensorboardHandle(
             board.name,
             self._make_ref(TensorboardRef, board.name, board.tb_id, ws.ref.key),
@@ -224,8 +224,8 @@ class Tensorboards(Service):
         poll_interval: float = 3,
         workspace: str | WorkspaceRef | None = None,
     ) -> Tensorboard:
-        duration(timeout)
-        duration(poll_interval)
+        duration(timeout, "timeout")
+        duration(poll_interval, "poll_interval")
         with self.client._transport.scope(timeout=timeout):
             resolved = self._resolve(ref, workspace)
             target = target.lower().removeprefix("tb_status_")

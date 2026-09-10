@@ -159,7 +159,7 @@ class Transport:
             self.deadline = old
 
     @contextmanager
-    def single_send(self, operation_id: str = "", *, create: bool = False) -> Iterator[None]:
+    def single_send(self, operation_id: str = "", *, create: bool = False, inspect: str = "jobs") -> Iterator[None]:
         """Allow at most one request, reporting an unknown dispatched outcome.
 
         A recent returned console, application or plaza response skips the
@@ -176,7 +176,7 @@ class Transport:
             _v2_result(self.request("POST", USER_DETAIL_PATH, body={}))
         # The probe is a READ. A dispatched write must never be replayed;
         # only failures without a definite rejection remain uncertain.
-        state = {"operation_id": operation_id, "create": create, "used": False, "sent": False}
+        state = {"operation_id": operation_id, "create": create, "inspect": inspect, "used": False, "sent": False}
         self._write = state
         try:
             yield

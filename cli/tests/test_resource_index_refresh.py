@@ -1224,11 +1224,13 @@ def test_cache_status_says_so_when_nothing_at_all_is_cached(
     runner = CliRunner()
     everything = runner.invoke(main, ["cache", "status"])
     assert everything.exit_code == 0
+    # Nothing cached stays one sentence: no size footer under an empty cache.
     assert everything.output == "Resource name cache is empty.\n"
 
     one_kind = runner.invoke(main, ["cache", "status", "--resource", "notebook"])
     assert one_kind.exit_code == 0
-    assert one_kind.output == "notebook: 0 names, empty, never\n"
+    assert "notebook: 0 names, empty, never\n" in one_kind.output
+    assert one_kind.output.splitlines()[-1].startswith("Index size: ")
 
 
 def test_cache_clear_takes_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
@@ -1307,9 +1309,11 @@ def test_cache_status_reports_name_only_refresh_failures(
     monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
 
     assert cache_commands._status_payload(index) == {
+        "size_bytes": index.size_bytes(),
         "items": [
             {
                 "resource": "job",
+                "scopes": 1,
                 "cached_names": 0,
                 "state": "error",
                 "updated": "never",

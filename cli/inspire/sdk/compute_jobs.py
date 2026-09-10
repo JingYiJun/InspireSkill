@@ -76,14 +76,14 @@ class WorkloadBinding(Generic[V]):
     get_details_by_ids: Callable[..., dict[str, dict]] | None = None
 
 
-def duration(value: float) -> None:
+def duration(value: float, parameter: str, *, unit: str = "seconds") -> None:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
         or not math.isfinite(value)
         or value <= 0
     ):
-        raise ValidationError("Wait durations must be finite positive seconds.")
+        raise ValidationError(f"{parameter} must be finite positive {unit}.")
 
 
 class ComputeJobs(Service, Generic[R, J, V]):
@@ -284,8 +284,8 @@ class ComputeJobs(Service, Generic[R, J, V]):
         raise_on_failure: bool = False,
         workspace: str | WorkspaceRef | None = None,
     ) -> J:
-        duration(timeout)
-        duration(poll_interval)
+        duration(timeout, "timeout")
+        duration(poll_interval, "poll_interval")
         with self.client._transport.scope(timeout=timeout):
             resolved = self._resolve(ref, workspace)
             while True:
@@ -314,7 +314,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
     def follow_events(
         self, ref: str | R, *, interval: float = 5, **filters: Any
     ) -> Iterator[EventResult]:
-        duration(interval)
+        duration(interval, "interval")
         with self.client._transport.scope(timeout=self.client.operation_timeout):
             resolved = self._resolve(ref, filters.pop("workspace", None))
         seen = set()
@@ -536,7 +536,7 @@ class ComputeJobs(Service, Generic[R, J, V]):
         from inspire.services.job.job_logs import window_to_minutes, select_job_logs, format_log_line
 
         if tail is not None and head is not None:
-            raise ValidationError("--tail and --head cannot be used together.")
+            raise ValidationError("tail and head cannot be used together.")
         for value in (tail, head, limit):
             if value is not None and (type(value) is not int or value < 1):
                 raise ValidationError("Log record counts must be positive integers.")

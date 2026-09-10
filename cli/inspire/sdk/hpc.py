@@ -146,7 +146,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
                 raise ValidationError("Slurm counts must be positive integers.")
         for hours in (spec.max_time_hours, spec.keep_after_finish_hours):
             if hours is not None:
-                duration(hours)
+                duration(hours, "hours", unit="hours")
         if spec.image_type not in ("SOURCE_PUBLIC", "SOURCE_PRIVATE", "SOURCE_OFFICIAL"):
             raise ValidationError(
                 "image_type must be SOURCE_PUBLIC, SOURCE_PRIVATE or SOURCE_OFFICIAL."
@@ -172,7 +172,8 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             [
                 f"{x.dataset}:{x.version}" if isinstance(x, DatasetMount) else x
                 for x in spec.datasets
-            ]
+            ],
+            field="datasets",
         )
         data = resolve_dataset_info(mounts, workspace_id=ws.ref.key, session=self.session)
         body = core.build_hpc_create_payload(
@@ -239,11 +240,11 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
             raise ValidationError("operation_id must be a non-empty string.")
         plan = self.plan(spec)
         session = self.session
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="HPC jobs"):
             result = self._binding.create(plan.create_kwargs, session=session)
         key = self._binding.created_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="HPC jobs")
         return HPCJobHandle(
             plan.name, self._make_ref(HPCJobRef, plan.name, key, plan.workspace.ref.key), identifier
         )
@@ -272,7 +273,7 @@ class HPC(ComputeJobs[HPCJobRef, HPCJob, HPCInstanceView]):
         from inspire.services.job.job_events import matching_events, event_sort_key
 
         if workload_level and instance:
-            raise ValidationError("--workload-level and --instance cannot be used together.")
+            raise ValidationError("workload_level and instance cannot be used together.")
         resolved = self._resolve(ref, workspace)
         rows = api.list_hpc_job_events(resolved.key, session=self.session) if not instance else []
         if not workload_level:

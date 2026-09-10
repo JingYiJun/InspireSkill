@@ -137,7 +137,7 @@ def test_confirmation_uncertain_without_resubmit(client, catalog, monkeypatch, f
         return None
 
     monkeypatch.setattr(core, "find_created_board", find)
-    with pytest.raises(SubmissionUncertainError):
+    with pytest.raises(SubmissionUncertainError, match="inspect TensorBoards"):
         client.tensorboards.create(catalog)
     assert len(calls) == 1
 

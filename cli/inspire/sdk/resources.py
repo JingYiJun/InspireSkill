@@ -741,7 +741,7 @@ class Images(Service):
         session = self.session
         visibility_value = parse_visibility_value(visibility or "private")
         assert visibility_value is not None
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="images"):
             result = browser_api.create_image(
                 name=name,
                 version=version or "v1",
@@ -754,7 +754,7 @@ class Images(Service):
         data = result.get("image") or {}
         key = data.get("image_id") or result.get("image_id")
         if not key:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="images")
         label = f"{name}:{version or 'v1'}"
         return ImageRegisterHandle(
             label,
@@ -775,8 +775,8 @@ class Images(Service):
         from .compute_jobs import duration
         from .exceptions import WaitTimeoutError
 
-        duration(timeout)
-        duration(poll_interval)
+        duration(timeout, "timeout")
+        duration(poll_interval, "poll_interval")
         with self.client._transport.scope(timeout=timeout):
             resolved = self._write_ref(ref, workspace)
             try:

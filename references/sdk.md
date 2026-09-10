@@ -173,7 +173,7 @@ finally:
 
 `concurrency` 已弃用：缺省为 `None`；显式传入正整数会发出 `DeprecationWarning`，参数不产生任何效果。保留它是为了让原有代码迁移时不立即失败；它既不是池大小，也不限制在途请求，原有 `concurrency=1` 不再使调用串行。非正整数仍在构造时抛 `ValidationError`。需要限制应用整体并发时，请由调用方使用 `asyncio.Semaphore`；账号认证锁、平台配额和限流继续生效。
 
-构造函数不做 I/O；进入 `async with` 或首次调用时，在事件循环线程读取本地配置、固定账号，并仅保存一次显式凭据。账号、超时和缓存配置错误在此时抛出，完成后可读 `account` 和 `base_url`。每次操作使用独立的预算、写入状态和名称解析上下文，HTTP 连接池按异步客户端生命周期复用并在关闭客户端时释放；客户端共享目录缓存、已获取的认证快照及按会话代次匹配的数据广场登录槽。操作视图退出不关闭共享会话，广场借用竞争通过同一 workflow 调度等待。`await client.cache.clear()` 清空该缓存并保留计数，`await client.cache.stats()` 返回其 hits／misses／entries。`Accounts` 仍是同步账号管理 API。
+构造函数不做 I/O；进入 `async with` 或首次调用时，在事件循环线程读取本地配置、固定账号，并仅保存一次显式凭据。账号、超时和缓存配置错误在此时抛出，完成后可读 `account` 和 `base_url`；提前读取抛 `ConfigurationError`，提示先完成首次操作或通过 `async with client` 显式初始化。每次操作使用独立的预算、写入状态和名称解析上下文，HTTP 连接池按异步客户端生命周期复用并在关闭客户端时释放；客户端共享目录缓存、已获取的认证快照及按会话代次匹配的数据广场登录槽。操作视图退出不关闭共享会话，广场借用竞争通过同一 workflow 调度等待。`await client.cache.clear()` 清空该缓存并保留计数，`await client.cache.stats()` 返回其 hits／misses／entries。`Accounts` 仍是同步账号管理 API。
 
 异步路径的本地 I/O 按操作卸载到**客户端独占、最多 4 个 worker 的线程池**，不借用应用的默认 executor。线程按需启动并在调用间复用；固定 4 个 worker 为短时文件与证书处理提供适度并行，同时限制每客户端的线程开销，不随请求数或 CPU 数量增长。此池处理本地 I/O 和相关 CPU 工作，不承载桥接可达性等待；仍有一个引导例外：`_ensure_rtunnel_binary` 在 worker 中检查本地二进制，缺失或不可用时可能下载 rtunnel。原生网络并发不受池大小限制，4 的上限约束 worker 数量，不约束排队任务数量。卸载范围包括：目录缓存的完整锁／读／写／失效操作（包括 RAM 命中时的跨进程校验）、会话缓存、续期配置和账号读取、认证锁文件操作及登录保护的 PBKDF2、`init()` 配置读写、文件传输的检查／读取／暂存／发布、`output_to` 打开／写入／关闭。SSH 桥接候选选择、探测重试沿用共享 workflow，SSH 探测、exec 和 SCP 使用 asyncio 子进程，探测间隔使用异步等待。浏览器登录和同步登录执行相同的表单选择、提交顺序、认证轮询与错误分类，异步客户端使用 Playwright async API。
 
@@ -284,7 +284,7 @@ Jobs、HPC、Ray、Servings、Tensorboards、Notebooks 和 Images 都支持 `awa
 
 SDK 与 CLI 的持久化身份及配额缓存共用 `inspire.services.catalog.resource_index.ResourceIndex`，文件仍为账号目录内的 `resource-index.sqlite3`。共享的单 scope 刷新函数 `inspire.services.catalog.resource_refresh.refresh_scope` 负责刷新判断、租约、快照代次检查、完整扫描 reconciliation、部分结果合并和错误记录；SDK 没有另一套 SQLite 写入或刷新循环。CLI 和 SDK 均直接导入实现模块，不保留旧路径转发壳。
 
-`catalog_disk_cache=False` 默认值保持不变：只使用每客户端的短期内存快照，不读写共享目录；显式 `True` 开启共享索引和下面的小型元数据缓存。每个子进程仍独立创建 Client。`catalog_ttl=60` 继续限制 SDK 读取快照的最大年龄，`0` 禁用缓存读取和填充。共享身份行的写入 TTL 和自动刷新周期始终使用 CLI 的分类型默认值（身份通常一天，镜像和配额一周）；SDK 的较短读取期限不会缩短 CLI 行的寿命，也不会提早触发共享 scope 刷新。超过 SDK 读取期限、但尚未达到共享刷新周期时，SDK 直接实时读取，不发布另一套定时刷新结果。因此较长 TTL 的另一个 SDK 客户端仍可读取共享身份；小型元数据条目的有效期仍取写者和读者 TTL 的较短者。这两个构造参数仍有实际用途，未弃用。
+`catalog_disk_cache=False` 默认值保持不变：只使用每客户端的短期内存快照，不读写共享目录；显式 `True` 开启共享索引和下面的小型元数据缓存。每个子进程仍独立创建 Client。`catalog_ttl=60` 继续限制 SDK 读取快照的最大年龄，`0` 禁用缓存读取和填充。共享身份行的写入 TTL 和自动刷新周期始终使用 CLI 的分类型默认值（身份通常一天，镜像和配额一周）；SDK 的较短读取期限不会缩短 CLI 行的寿命，也不会仅因读取期限较短而提早触发共享 scope 刷新；唯一的 payload 修复例外是 scope 仍新鲜却缺少可用的完整目录字段，此时允许在租约内补齐。超过 SDK 读取期限、但尚未达到共享刷新周期时，SDK 直接实时读取，不发布另一套定时刷新结果。因此较长 TTL 的另一个 SDK 客户端仍可读取共享身份；小型元数据条目的有效期仍取写者和读者 TTL 的较短者。这两个构造参数仍有实际用途，未弃用。
 
 | 原 SDK 缓存种类 | 现在的持久化位置及范围 |
 |---|---|
@@ -297,7 +297,7 @@ SDK 与 CLI 的持久化身份及配额缓存共用 `inspire.services.catalog.re
 | `fair_scheduling` | 小型 SDK JSON 缓存；布尔能力标记不建立虚构身份行 |
 | `current_user` | 小型 SDK JSON 缓存；当前用户详情不是资源名称候选集 |
 
-`sdk-catalog-v1.json` 仅保留后三类元数据，打开时清理旧版遗留的身份／价格 blob；其账号／服务器隔离、固定类型白名单、256 项／8 MiB 上限、锁和原子替换规则保留。共享身份行的 payload 使用固定平台模型白名单，不使用 pickle。CLI 旧行只有名称和 ID、缺少 SDK 所需字段时，SDK 回到实时读取，不从身份行推断项目权限、计算组能力或镜像来源。
+`sdk-catalog-v1.json` 仅保留后三类元数据，打开时清理旧版遗留的身份／价格 blob；其账号／服务器隔离、固定类型白名单、256 项／8 MiB 上限、锁和原子替换规则保留。共享身份行的 payload 使用固定平台模型白名单，不使用 pickle。CLI 行只有名称和 ID、缺少 SDK 所需字段或 payload 无法解码时，SDK 拒绝整份 scope，并携带“需要补齐 payload”的原因绕过 CLI 的 freshness 判断，在共享租约内重新读取完整目录并发布。取得租约后再次检查可用快照，避免其他 SDK 已修复后重复联网；成功后的下一次调用命中缓存。后续 CLI identity-only 写入最多再次触发一次成功补齐，失败／不完整枚举不会被伪造为空目录，busy 时只读不发布。SDK 不从身份行推断项目权限、计算组能力或镜像来源。
 
 ```python
 with InspireClient("my-account", catalog_ttl=60, catalog_disk_cache=True) as client:
@@ -310,6 +310,8 @@ with InspireClient("my-account", catalog_ttl=60, catalog_disk_cache=True) as cli
 名称快路径仅接受完整、新鲜且能证明候选范围一致的索引快照，使用 SDK 的 Python `casefold()` 精确比较并检查全部候选；不能用 SQLite `NOCASE` 代替 Unicode 消歧。工作负载名称命中仍核验实时详情，重命名／删除后回退原有有界扫描。未命中、歧义、过期、身份不稳定或损坏时也回退；仍保留子串不能匹配完整名称的规则、5000 行保护和 `ResolutionIncompleteError`。CLI 跨来源镜像索引没有完整 SDK 来源证据时不会绕过 SDK 的来源消歧。工作负载列表、状态、日志、事件、指标和实时用量不从身份索引构造。
 
 共享读写使用同一个 PID 租约及心跳、generation／revision 检查和墓碑实现；租约竞争的 SDK 可以实时读取，但不能把该读取发布进其他进程持有的 scope。初始化与损坏重建使用同一个稳定文件锁，防止并发打开者重复删除刚修复的数据库；普通锁竞争、只读文件及 I/O 错误不触发损坏删除。SQLite 的文件操作和租约进入／退出在异步客户端的本地 I/O 池运行，网络加载器继续使用调用方的同步或异步驱动。
+
+CLI 与 SDK 的共享刷新仅在完整 scope 成功发布后清理超过 7 天的墓碑；完整工作区目录刷新还按原有 generation／revision 检查清理不可见工作区的 scope，维护失败不影响已发布快照。普通刷新受 scope TTL 限制，显式强制刷新仍可提前执行。新索引启用 SQLite incremental auto-vacuum，实际删除墓碑后请求最多 256 页的增量回收；旧的非增量数据库保持原格式，空闲页供后续写入复用，不自动运行完整 VACUUM 或重写文件。`inspire cache status` 按资源身份去重统计 `cached_names`、按工作区 ID 去重统计 `workspaces`，并显示 `scopes` 数量和 `size_bytes`（包含 SQLite sidecar）。
 
 `hits` 表示本客户端仍有效且代次一致的快照命中，`shared_hits` 表示从共享存储取得的快照，`misses` 表示调用加载器，`entries` 为本客户端的内存条目数。共享身份每次读取都重新检查数据库，不用未经校验的旧内存绕过跨进程失效。未开启共享时仍返回原来的 hits／misses／entries 三键。`clear()` 保留累计计数；开启共享时清理当前账号／服务器的身份目录、配额和 SDK 元数据，CLI 下次查询也会看到该失效。
 
@@ -998,7 +1000,7 @@ finished = await handle.wait(raise_on_failure=True)
 
 写操作由应用显式调用。注册签名为 `images.register(name, *, workspace, version=None, description=None, visibility=None, operation_id=None)` 和 `models.register(name, *, source_path, workspace, project, type=None, tag=None, description=None, operation_id=None)`。镜像注册预留推送槽位并返回 registry 地址，version 默认 v1、visibility 默认 private；模型注册共享盘目录，不上传本地文件。
 
-SDK 的资源 JSON 变更请求显式进入 `single_send`（不包括认证握手或 exec 数据流），最多发送一次；发送后失败不刷新、不重试、不换通道。创建／注册无法确认结果时抛 `SubmissionUncertainError(operation_id)`，其他变更抛 `MutationUncertainError`。operation_id 默认生成，允许任意非空诊断字符串，**不是服务器幂等键**。遇到不确定结果，先显式查询确认，再决定后续动作。
+SDK 的资源 JSON 变更请求显式进入 `single_send`（不包括认证握手或 exec 数据流），最多发送一次；发送后失败不刷新、不重试、不换通道。创建／注册无法确认结果时抛 `SubmissionUncertainError(operation_id, inspect=...)`，其他变更抛 `MutationUncertainError`。operation_id 默认生成，允许任意非空诊断字符串，**不是服务器幂等键**。异常的 `inspect` 属性与消息指出应检查的资源目录（jobs、notebooks、servings、TensorBoards、images、model versions 或 API keys），传输失败与缺少创建结果使用同一种消息结构。API-key 脱敏仍会清除服务器错误内容。遇到不确定结果，先显式查询确认，再决定后续动作。
 
 写请求发出后，由 `request()` 与 `single_send` 共用分类逻辑区分明确答复和未知结果；所有分支都不会自动补发：
 
@@ -1057,13 +1059,13 @@ SDK 的 notebooks 门面不提供平台程序日志接口；`metrics` 返回 `tu
 
 进入 SDK JSON 写入块时，若该 Transport 尚无返回响应记录，或距上次记录已满 60 秒，SDK 先通过普通 READ 路径执行一次 `GetUserDetail` 探测，必要时先续期再发送写入；60 秒内已有返回响应则省略探测；此时间戳不代表业务操作一定成功：控制台／应用请求到达 `_finish` 时更新，广场成功解包后也调用 `_finish` 更新它。探测共享时间预算，其刷新与重试不计入写请求的单次发送。探测失败时不发送写入；写入发出后即使收到 401 也绝不重放，创建抛 `SubmissionUncertainError`，其他变更抛 `MutationUncertainError`。
 
-SDK 定义的异常（包括 `NotebookFailedError`）均从 `InspireError` 派生。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
+SDK 定义的异常（包括 `NotebookFailedError`）均从 `InspireError` 派生。参数提示使用 Python 参数名；时间校验指出实际被拒绝的 `timeout`、`poll_interval` 或 `interval`，不统一称为 wait。`iter_output_file` 的分块参数错误为 `ValidationError`，文件读取／UTF-8 解码失败为 `TransportError`；SSH 文件传输超时为 `WaitTimeoutError`。配置、认证、冷却、参数错误、未找到、歧义、不完整枚举、传输失败、写入不确定、等待超时分别可捕获。`AmbiguousResourceError.candidates` 返回可选择引用；`AuthenticationCooldownError.retry_at` 是允许再次评估认证的 Unix 时间，不是鼓励盲目重试错误密码。冷却沿用 CLI 的账号级 guard。
 
 `timeout` 控制单次请求预算，`operation_timeout` 控制普通操作的协作式总预算，`wait(timeout=...)` 设置整个等待预算；嵌套调用使用更早截止时间。控制台 Transport 的请求、退避和账号刷新锁等待共享剩余预算；TensorBoard 应用 GET 与 Jupyter Contents 请求也使用该预算。同步网络库的底层调用和已有浏览器登录流程不能被强制抢占，显式允许浏览器时登录可能超出总预算；这些参数不是硬实时取消保证。需要硬隔离的编排器应使用独立进程，并在超时后核查任何可能已发送的写请求。
 
 传输策略由调用方声明：普通 `operation` 进入 `Transport.scope(timeout=...)`，按 READ 处理。READ 对 requests 异常、HTTP 429/5xx、共享 `_is_transient_v2_error_code` 判定的 v2 暂时错误最多尝试三次，退避与请求共用截止时间。HTTP 401/3xx 无论 allow_browser 设置均允许一次上述会话刷新，重试仍失效则抛 AuthenticationError；requests 层失败也只有显式允许浏览器才可换通道。
 
-SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_send(operation_id, create=True)` 或 `transport.single_send()` 中。一个 block 最多允许一次 request，第二次调用抛 RuntimeError；create 参数显式区分创建与其他变更。发送后不刷新、不重试、不换通道；明确拒绝映射为 ValidationError，明确限流／拒绝执行映射为可重试的 TransportError，HTTP 403 保留 AuthenticationError，仅未知结果映射为 SubmissionUncertainError / MutationUncertainError。Transport 不按 URL、Action 或 HTTP 动词猜测幂等性。`request()` 不自动解包 v2 信封，解析后的 JSON 交给 browser_api；只读路径会先识别其中的暂时错误。`plaza_request()` 则使用广场专用的信封解包器返回 data。READ 的一般 HTTP 4xx 返回包含状态码和最多约 500 字符正文的 ValidationError，业务错误保留原消息。
+SDK 中真正写入的 JSON browser_api 调用必须包在 `transport.single_send(operation_id, create=True, inspect="对应资源目录")` 或 `transport.single_send()` 中。一个 block 最多允许一次 request，第二次调用抛 RuntimeError；create 参数显式区分创建与其他变更。发送后不刷新、不重试、不换通道；明确拒绝映射为 ValidationError，明确限流／拒绝执行映射为可重试的 TransportError，HTTP 403 保留 AuthenticationError，仅未知结果映射为 SubmissionUncertainError / MutationUncertainError。Transport 不按 URL、Action 或 HTTP 动词猜测幂等性。`request()` 不自动解包 v2 信封，解析后的 JSON 交给 browser_api；只读路径会先识别其中的暂时错误。`plaza_request()` 则使用广场专用的信封解包器返回 data。READ 的一般 HTTP 4xx 返回包含状态码和最多约 500 字符正文的 ValidationError，业务错误保留原消息。
 
 工作负载 wait 的 raise_on_failure=True 抛对应 SDK 失败异常，携带最终资源快照：Job/HPC/Ray 使用 `.job`，Notebook 使用 `.notebook`，Serving 使用 `.serving`，TensorBoard 使用 `.tensorboard`。Job/HPC/Ray 等待终态；Notebook、Serving、TensorBoard 等待目标状态，具体默认目标见方法表。超时统一抛 WaitTimeoutError。
 

@@ -181,7 +181,7 @@ class Models(Service):
         if version is None:
             version = views.version_number(model.version)
         if version is None:
-            raise ValidationError("Could not infer the model version. Pass --version explicitly.")
+            raise ValidationError("Could not infer the model version. Pass version explicitly.")
         kwargs = dict(version=version, session=self.session, workspace_id=model.ref.workspace_id)
         recommended = browser_api.get_model_recommended_config(model.ref.key, **kwargs)
         compatible = browser_api.check_model_vllm_compatible(model.ref.key, **kwargs)
@@ -211,7 +211,7 @@ class Models(Service):
         ws = self.client.workspaces.get(workspace)
         proj = self.client.projects.get(project, workspace=ws.ref)
         session = self.session
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="model versions"):
             result = browser_api.create_model(
                 name=name,
                 project_id=proj.ref.key,
@@ -225,7 +225,7 @@ class Models(Service):
             )
         key = created_model_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="model versions")
         return ModelRegisterHandle(name, self._make_ref(ModelRef, name, key, ws.ref.key), identifier)
 
     @operation

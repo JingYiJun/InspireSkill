@@ -81,26 +81,33 @@ class IdentityCache:
             session, resource_type=resource_type, workspace_id=workspace, owner_scope=owner,
         )
 
-    def _read(self, index: ResourceIndex, scope: ResourceScope, kind: str) -> list[Any] | None:
+    def _read(
+        self, index: ResourceIndex, scope: ResourceScope, kind: str,
+    ) -> tuple[list[Any] | None, bool]:
+        """Return rows and whether unusable payloads need repair despite freshness."""
         token = index.snapshot_token(scope)
         interval = min(self.ttl, DEFAULT_TTL_SECONDS[scope.resource_type])
         if index.scope_due(scope, interval_seconds=int(interval), require_full=True):
-            return None
+            return None, False
         records = index.list_identities(scope, fresh_only=False)
         now = time.time()
         active = [row for row in records if row.tombstoned_at is None]
         if any(row.expires_at <= now or row.observed_at + self.ttl <= now for row in active):
-            return None
+            return None, False
         rows = []
-        for record in active:
-            if not record.payload:
-                return None  # CLI identity-only observations are not full catalog rows.
-            row = decode_catalog(json.loads(record.payload))
-            key, name = _identity(kind, row)
-            if key != record.resource_id or name != record.name:
-                return None
-            rows.append(row)
-        return rows if token == index.snapshot_token(scope) else None
+        try:
+            for record in active:
+                if not record.payload:
+                    return None, token == index.snapshot_token(scope)
+                row = decode_catalog(json.loads(record.payload))
+                key, name = _identity(kind, row)
+                if key != record.resource_id or name != record.name:
+                    return None, token == index.snapshot_token(scope)
+                rows.append(row)
+            validate_catalog(kind, rows)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return None, token == index.snapshot_token(scope)
+        return (rows, False) if token == index.snapshot_token(scope) else (None, False)
 
     def get(
         self, session: object, kind: str, params: tuple[Any, ...], load: Callable[[], Any],
@@ -112,8 +119,9 @@ class IdentityCache:
             return load(), False
         if kind == "prices":
             return self._prices(index, scope, session, params, load, groups)
+        refill = False
         try:
-            rows = self._read(index, scope, kind)
+            rows, refill = self._read(index, scope, kind)
             if rows is not None:
                 validate_catalog(kind, rows)
                 return rows, True
@@ -121,10 +129,19 @@ class IdentityCache:
             pass
         loaded: list[Any] = []
         errors: list[Exception] = []
+        reused = False
 
         def fetch(_session: object, _workspace: str, _name: str) -> FetchResult:
+            nonlocal reused
             try:
-                value = load()
+                # Another SDK writer may have repaired the scope before this lease.
+                try:
+                    value, _ = self._read(index, scope, kind)
+                except CACHE_ERRORS:
+                    value = None
+                reused = value is not None
+                if value is None:
+                    value = load()
                 validate_catalog(kind, value)
                 loaded.append(value)
                 records = []
@@ -141,18 +158,18 @@ class IdentityCache:
 
         result = refresh_scope(
             index=index, session=session, scope=scope, resource_type=scope.resource_type,
-            workspace_id=scope.workspace_id, workspace_name="", exact_name="", force=False,
+            workspace_id=scope.workspace_id, workspace_name="", exact_name="", force=refill,
             fetcher=fetch,
         )
         if errors:
             raise errors[0]
         if loaded:
-            return loaded[0], False
+            return loaded[0], reused
         # A lease belongs to another writer. Reads may go live, but must never
         # publish without that lease or manufacture an authoritative empty set.
         if result.outcome == "busy":
             try:
-                rows = self._read(index, scope, kind)
+                rows, _ = self._read(index, scope, kind)
                 if rows is not None:
                     validate_catalog(kind, rows)
                     return rows, True

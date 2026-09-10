@@ -288,7 +288,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             )
         version = spec.model_version or latest
         if version is None:
-            raise ValidationError("Could not infer model version. Pass --model-version explicitly.")
+            raise ValidationError("Could not infer model version. Pass model_version explicitly.")
         image = self.client.images.get(spec.image, workspace=ws.ref)
         image_id, image_label = image.ref.key, image.name
         priority = self._resolve_priority(spec.priority, ws, project)
@@ -373,11 +373,11 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
             raise ValidationError("operation_id must be a non-empty string.")
         plan = self.plan(spec)
         session = self.session
-        with self.client._transport.single_send(identifier, create=True):
+        with self.client._transport.single_send(identifier, create=True, inspect="servings"):
             result = api.create_serving(**plan.create_kwargs, session=session)
         key = core.created_serving_id(result)
         if not key:
-            raise SubmissionUncertainError(identifier)
+            raise SubmissionUncertainError(identifier, inspect="servings")
         return ServingHandle(
             plan.name, self._make_ref(ServingRef, plan.name, key, plan.workspace.ref.key), identifier
         )
@@ -424,8 +424,8 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         workspace: str | WorkspaceRef | None = None,
         target: str = "RUNNING",
     ) -> Serving:
-        duration(timeout)
-        duration(poll_interval)
+        duration(timeout, "timeout")
+        duration(poll_interval, "poll_interval")
         target = statuses.normalize_status(target)
         with self.client._transport.scope(timeout=timeout):
             resolved = self._resolve(ref, workspace)
@@ -552,7 +552,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         from inspire.services.job.job_events import matching_events
 
         if workload_level and instance:
-            raise ValidationError("--workload-level and --instance cannot be used together.")
+            raise ValidationError("workload_level and instance cannot be used together.")
         resolved = self._resolve(ref, workspace)
         rows = serving_events(
             resolved.key,
@@ -578,7 +578,7 @@ class Servings(ComputeJobs[ServingRef, Serving, ServingInstanceView]):
         from inspire.services.job.job_logs import window_to_minutes, select_job_logs, format_log_line
 
         if tail is not None and head is not None:
-            raise ValidationError("--tail and --head cannot be used together.")
+            raise ValidationError("tail and head cannot be used together.")
         for value in (tail, head, limit):
             if value is not None and (type(value) is not int or value < 1):
                 raise ValidationError("Log record counts must be positive integers.")

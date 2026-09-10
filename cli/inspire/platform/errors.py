@@ -51,8 +51,9 @@ class TransportError(InspireError):
 
 
 class SubmissionUncertainError(InspireError):
-    def __init__(self, operation_id: str):
-        super().__init__("Submission may have succeeded; inspect jobs before submitting again.")
+    def __init__(self, operation_id: str, *, inspect: str = "jobs"):
+        super().__init__(f"Submission may have succeeded; inspect {inspect} before submitting again.")
+        self.inspect = inspect
         self.operation_id = operation_id
 
 

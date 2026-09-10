@@ -246,6 +246,7 @@ def collect_job_events(
     *,
     session: Any,
     workload_level: bool = False,
+    conflict_message: str = "--workload-level and --instance cannot be used together.",
     instance: Sequence[str] = (),
     list_instances: Callable[..., list[dict]] | None = None,
     views_factory: Callable[..., list[JobInstanceView]] | None = None,
@@ -255,7 +256,7 @@ def collect_job_events(
     from inspire.platform.web.browser_api import jobs
 
     if workload_level and instance:
-        raise ValueError("--workload-level and --instance cannot be used together.")
+        raise ValueError(conflict_message)
     workload_events = workload_events or jobs.list_job_events
     instance_events = instance_events or jobs.list_job_instance_events
     if workload_level:

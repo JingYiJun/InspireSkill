@@ -33,7 +33,7 @@ def transfer(
     workspace: Any, transport: str, recursive: bool, overwrite: bool,
     timeout: float, max_bytes: int, download: bool,
 ) -> core.TransferResult:
-    duration(timeout)
+    duration(timeout, "timeout")
     if transport not in ("auto", "jupyter", "ssh"):
         raise ValidationError("transport must be auto, jupyter, or ssh.")
     if type(max_bytes) is not int or max_bytes <= 0:
