@@ -356,7 +356,8 @@ def test_request_preparation_warms_netrc_and_certificates(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("rejected", [False, True])
-def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rejected):
+@pytest.mark.parametrize("verification", [False, True])
+def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rejected, verification):
     from playwright import async_api, sync_api
 
     traces = []
@@ -364,6 +365,11 @@ def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rej
     monkeypatch.setattr(auth, "resolve_playwright_proxy_config", lambda **kw: (None, "none"))
     monkeypatch.setattr(auth, "describe_effective_proxy_config", lambda **kw: {})
     monkeypatch.setattr(auth, "_persist", lambda *a, **kw: None)
+
+    def requests_requires_code(*args, **kwargs):
+        raise auth._CasVerificationRequired("requests needs a verification code")
+
+    monkeypatch.setattr(auth, "_login_with_cas_requests", requests_requires_code)
 
     def runtime(asynchronous):
         trace = []
@@ -400,6 +406,11 @@ def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rej
                         return {"cookies": []}
                     if name == "cookies":
                         return []
+                    if name == "content" and verification:
+                        return (
+                            '<form id="fm1"><input name="username"><input name="password">'
+                            '<input name="authcode"><img src="/cas/captcha.jpg"></form>'
+                        )
                     if name == "content":
                         return '<div class="form-error">rejected</div>'
                     return self
@@ -441,7 +452,7 @@ def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rej
 
     def sync():
         try:
-            return auth._login_with_browser("fake", "unused", **options)
+            return auth._submit_credentials("fake", "unused", **options)
         except Exception as error:
             return type(error), str(error), getattr(error, "credential_rejection", None)
 
@@ -455,16 +466,23 @@ def test_browser_login_same_sequence_messages_and_loop_progress(monkeypatch, rej
             async with AsyncDriver(transport) as driver:
                 try:
                     actual = await driver.execute(
-                        call(auth._login_with_browser, "fake", "unused", **options)
+                        call(auth._submit_credentials, "fake", "unused", **options)
                     )
                 except Exception as error:
                     actual = type(error), str(error), getattr(error, "credential_rejection", None)
-            if rejected:
+            if rejected or verification:
                 assert actual == expected
             else:
                 assert actual.storage_state == expected.storage_state
                 assert actual.user_detail == expected.user_detail
             assert traces[0] == traces[1]
+            for trace in traces:
+                actions = [event[0] for event in trace]
+                assert actions.count("fill") == (0 if verification else 2)
+                assert actions.count("press") == (0 if verification else 1)
+                if verification:
+                    assert actual[0] is auth._CasVerificationRequired
+                    assert actions.count("close") == 1
         finally:
             pulse.cancel()
             await asyncio.gather(pulse, return_exceptions=True)

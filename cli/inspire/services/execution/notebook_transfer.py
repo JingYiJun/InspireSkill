@@ -220,7 +220,8 @@ if a['action'] == 'prepare':
         shutil.rmtree(stage)
         raise
 elif a['action'] == 'publish':
-    source = Path(a['stage']) / 'payload'
+    # Resolve our own staging directory; /tmp may itself be a system symlink.
+    source = Path(a['stage']).resolve() / 'payload'
     size, count = inventory(source)
     publish(source, p, a['overwrite'])
     print(json.dumps({'size': size, 'count': count}))
@@ -280,7 +281,8 @@ def temporary_directory():
     def create():
         nonlocal context
         context = tempfile.TemporaryDirectory(prefix="inspire-transfer-")
-        return context.name
+        # System temp roots may be symlinks (for example /var on macOS).
+        return str(Path(context.name).resolve())
 
     try:
         yield perform_sync(blocking_call(create))

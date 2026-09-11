@@ -449,7 +449,7 @@ def test_cross_transport_exec_observes_upload(client, shared_container, tmp_path
     source.write_bytes(b"proof\r\n\x00\xff")
     ref = job_ref(client, NotebookRef)
     client.notebooks.upload(ref, local=source, remote=remote, transport=upload_transport)
-    result = client.notebooks.exec(ref, command="base64 " + shlex.quote(remote),
+    result = client.notebooks.exec(ref, command="base64 < " + shlex.quote(remote),
                                    cwd=None if absolute else str(root), transport=exec_transport)
     assert result.returncode == 0, result.output
     assert base64.b64decode(result.stdout or result.output) == source.read_bytes()
@@ -570,7 +570,7 @@ def test_resolved_path_bridges_transfer_and_exec(
         assert uploaded.remote_path == str(expected)
         assert expected.read_bytes() == source.read_bytes()
         assert not (home / relative).exists()
-        return "base64 " + shlex.quote(uploaded.remote_path)
+        return "base64 < " + shlex.quote(uploaded.remote_path)
 
     async def scenario():
         async with InspireAsyncClient("alpha") as ac:
@@ -636,3 +636,35 @@ def test_local_publication_overwrite_policy(tmp_path, overwrite):
             core.publish(source, target, overwrite)
         assert target.read_bytes() == b"old"
     assert not list(tmp_path.glob(".inspire-transfer-*"))
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_download_staging_under_symlinked_temp_root(
+    client, ssh, monkeypatch, tmp_path, asynchronous,
+):
+    """An SDK-owned temp directory may have a system symlink above it."""
+    from inspire.sdk import _async_runtime
+
+    temp_root = tmp_path / "real-temp"
+    temp_root.mkdir()
+    temp_alias = tmp_path / "temp-alias"
+    temp_alias.symlink_to(temp_root, target_is_directory=True)
+    monkeypatch.setattr(core.tempfile, "tempdir", str(temp_alias))
+    source, target = tmp_path / "remote", tmp_path / "download"
+    source.write_bytes(b"complete\x00payload")
+    ref = job_ref(client, NotebookRef)
+
+    async def download():
+        async with InspireAsyncClient("alpha") as ac:
+            return await ac.notebooks.download(
+                ref, local=target, remote=str(source), transport="ssh",
+            )
+
+    if asynchronous:
+        monkeypatch.setattr(_async_runtime, "InspireClient", lambda **kw: client)
+        result = asyncio.run(download())
+    else:
+        result = client.notebooks.download(ref, local=target, remote=str(source), transport="ssh")
+    assert target.read_bytes() == source.read_bytes()
+    assert result.bytes_transferred == source.stat().st_size
+    assert not list(temp_root.iterdir())

@@ -11,17 +11,19 @@
 
 ### 新增
 
-- **新增实验性同步 Python SDK。** `from inspire import InspireClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组，统一资源引用、分页、批量状态与关键字参数合同。CLI 与 SDK 共享创建、配额、状态、日志／事件／指标及业务视图服务；写请求通过 `single_send` 单次分派，发送后不自动重试，结果不确定时返回专用异常。本地账号与配置、缓存、批处理、SSH／Shell／文件传输及终端渲染保持 CLI-only，原包依赖和默认安装行为不变。
+- **新增实验性同步与异步 Python SDK。** `from inspire import InspireClient, InspireAsyncClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组。提供类型化资源引用、分页、批量状态、创建计划、生命周期等待、日志／事件／指标、远程执行与 Notebook 文件传输；账号管理与初始化也可通过 SDK 调用。交互式 Shell、SSH 桥创建、CLI 批处理和终端渲染仍由 CLI 提供。使用合同见 [`references/sdk.md`](references/sdk.md)。
 
-  SDK 尚未发布，本次直接统一门面合同：`jobs.logs(instances=...)` 改为 `instance`，单字符串与序列均可用，四种日志接口的 `None`／`"all"` 都选择全部实例；Jobs 显式选择也先发现并校验。Jobs／HPC／Ray／Serving 的 `instances()` 统一返回冻结的 SDK `Instance(label, handle, ...)`，保留实际字段和 raw，隐藏 handle／pod／raw 的 repr；移除 SDK 对旧 `JobInstance` 和三个 CLI 实例视图的导出，服务层类型不变。四者均提供返回 label 的 `instance_names()`，exec／logs 均接受 label 或 handle。
+- **CLI 与 SDK 共用业务服务和传输决策。** 同步与异步客户端复用请求分类、认证与重试规则；异步通过 greenlet 栈切换使用原生 HTTP、Playwright、WebSocket 和 SSH／SCP 子进程 I/O，本地文件操作使用客户端拥有的线程池。普通安装新增 `httpx[socks]` 和显式 `greenlet` 依赖，无需额外 SDK 安装选项。写请求单次分派，发送后不自动重试，结果不确定时抛出专用异常。
 
-  Notebook／Serving／TensorBoard 的 wait 先归一化 target，再拒绝词表外值并列出可选项，Notebook 接受大小写与首尾空白变体；TensorBoard 的状态及默认目标同步采用上述大写合同。
+- **SDK 可复用 CLI 的磁盘资源索引。** `catalog_disk_cache=True` 启用共享目录缓存，保留 CLI 使用的身份列，缺失 payload 的新鲜目录在刷新租约内修复；共享刷新同时清理 tombstone 与孤立 scope。
 
-  `models.status()` 按输入顺序返回与 get 相同的 `ModelInfo`，原详细状态聚合保留为 `models.detail() -> ModelStatus`；`api_keys.delete()` 统一返回 None。
+### 修复与维护
 
-  两处镜像等待统一接受名称、ImageRef、ImageSelector 和 Notebook ImageSaveHandle，并验证同一 workspace 参数，Notebook 入口委托 images。五种 Plan 的 image 统一为 Image，Job 补充 create_kwargs／to_dict，Notebook 补充 to_dict，平台创建载荷保持原语义。
+- **Notebook 传输支持系统临时目录包含符号链接。** 对 SDK 自建的暂存目录解析实际路径，避免 macOS 的 `/tmp`、`/var` 等系统别名导致传输失败；用户输入路径和传输内容中的符号链接仍被拒绝。CI 增加 macOS，跨传输测试使用兼容 GNU／BSD 的 Base64 输入方式。
 
-  异步接口从同步门面重新生成并保留方法说明；文档计数由真实类内省测试核对，同时修正歧义候选模型、回调背压、计划载荷和 HPC 事件分类边界的说明。
+- **账号凭据与本地私有状态统一使用私有权限写入。** POSIX 上文件创建时限制为 `0600`，私有目录为 `0700`，触及时收紧既有权限；Windows 上目录设置可继承的当前用户 ACL，失败警告，显式密钥导出仍逐文件验证并在失败时报错。账号添加与 SDK 凭据构造也使用同一原子写入路径；依赖共享读取这些文件的流程需要调整权限与账号使用方式。
+
+- **浏览器登录独立判断验证码要求。** HTTP 表单要求验证码且尚未提交凭据时，允许浏览器的调用会检查 Chromium 的表单；Chromium 也要求验证码时不填写、不提交，并在同步与异步路径正确关闭浏览器。已提交凭据后的失败不进入另一条登录路径。
 
 ## v7.1.8
 

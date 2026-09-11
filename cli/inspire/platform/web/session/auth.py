@@ -51,20 +51,11 @@ class _CasLoginFailure(AuthenticationError):
 
 
 class _CasVerificationRequired(ValueError):
-    """CAS is asking for a verification code, which no automated login can answer.
-
-    Deliberately *not* an :class:`AuthenticationError`: nothing was submitted,
-    so there is no rejected credential to remember. What it does have to stop
-    is the browser fallback, which would fill the same form, leave the same
-    field empty, and spend a real login attempt losing the same way.
-    """
+    """This login form requires a code; no credentials have been submitted."""
 
 
-# Names CAS uses for the field it adds when it wants a human. It appears in the
-# password form after repeated failed logins from one machine and disappears
-# again on its own, which is exactly when an unattended CLI is most likely to
-# be retrying — and every one of those retries is a credential submission that
-# cannot succeed.
+# Verification is client-specific: requests and Chromium can receive different
+# forms. Never submit a password to a form that still requires a code.
 _VERIFICATION_FIELD_NAMES = frozenset({"authcode", "captcha", "smscode", "vercode", "verifycode"})
 
 
@@ -76,6 +67,15 @@ def _request_timeout(timeout: float) -> float:
     if transport is not None and transport.deadline is not None:
         return min(timeout, transport.remaining())
     return timeout
+
+
+def _verification_required_message() -> str:
+    return (
+        "The platform's login page is asking for a verification code in this client. "
+        "No credentials were submitted on this attempt. "
+        "An existing browser login does not share its session with the CLI. "
+        "This does not establish that the password is wrong or the account is locked."
+    )
 
 
 def _required_verification_field(fields: dict[str, str]) -> str | None:
@@ -465,8 +465,9 @@ def _login_not_complete_message(
     if asking_for_code:
         lines.append(
             "The page CAS answered with is asking for a verification code, so this "
-            "rejection is about the machine proving itself, not about the account. "
-            "Sign in once in a browser, or wait — CAS drops that field again on its own."
+            "response alone does not establish that the password is wrong or the "
+            "account is locked. Verification can differ between clients; an existing "
+            "browser login does not share its session with the CLI."
         )
     if submitted:
         lines.append(
@@ -1014,15 +1015,8 @@ def _login_with_cas_requests(
         )
         verification_field = None
     if verification_field:
-        raise _CasVerificationRequired(
-            "The platform's login page is asking for a verification code "
-            f"(field `{verification_field}`), which no automated login can answer.\n"
-            "CAS adds that field after repeated failed logins from one machine and "
-            "removes it again on its own, so the account and the password are usually "
-            "fine — the machine is what is being asked to prove itself.\n"
-            f"Sign in once at {base_url.rstrip('/')}/login in a browser, then re-run. "
-            "No credentials were submitted on this attempt."
-        )
+        http.close()
+        raise _CasVerificationRequired(_verification_required_message())
     exponent_hex, modulus_hex = (yield call(_resolve_cas_rsa_key, http, login_resp.text, login_resp.url))
     fields["username"] = username
     fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
@@ -1291,9 +1285,10 @@ def _submit_credentials(
         # submission, not a fallback.
         raise
     except _CasVerificationRequired:
-        # Nothing was submitted, and nothing this side can do would change the
-        # answer. The browser would only spend an attempt finding that out.
-        raise
+        # No password was submitted. CAS can challenge the requests client
+        # while offering Chromium a normal password form; inspect that form
+        # independently before allowing the single credential submission.
+        logger.debug("CAS requests requires verification; inspecting the browser login form.")
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
@@ -1351,6 +1346,9 @@ def _login_with_browser(
         ]
 
         def _fill_login_form() -> Optional[object]:
+            if _asks_for_verification_code(_page_content(page), page.url):
+                perform_sync(call(browser.close))
+                raise _CasVerificationRequired(_verification_required_message())
             for user_sel, pass_sel in login_pairs:
                 try:
                     perform_sync(call(page.wait_for_selector, user_sel, timeout=5000, state="visible"))
