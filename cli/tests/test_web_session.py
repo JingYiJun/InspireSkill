@@ -569,6 +569,9 @@ class _FakePlaywrightLogin:
     def __init__(self, *, form_found: bool, page_html: str = "") -> None:
         self.form_found = form_found
         self.page_html = page_html
+        self.fills = 0
+        self.submissions = 0
+        self.closed = False
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         outer = self
@@ -578,10 +581,10 @@ class _FakePlaywrightLogin:
                 self.first = self
 
             def fill(self, _value: str) -> None:
-                pass
+                outer.fills += 1
 
             def press(self, _key: str, timeout: int) -> None:
-                pass
+                outer.submissions += 1
 
             def evaluate(self, _script: str) -> None:
                 pass
@@ -620,6 +623,9 @@ class _FakePlaywrightLogin:
         class Browser:
             def new_context(self, **_kwargs) -> Context:
                 return Context()
+
+            def close(self) -> None:
+                outer.closed = True
 
         class Chromium:
             def launch(self, **_kwargs) -> Browser:
@@ -1128,17 +1134,47 @@ def test_a_login_page_asking_for_a_verification_code_submits_nothing(
         "resolve_requests_proxy_config",
         lambda account=None: ({}, "none"),
     )
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("the browser cannot answer a verification code either"),
-    )
-
     with pytest.raises(ValueError, match="verification code") as excinfo:
-        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+        ws_auth._login_with_cas_requests("user", "password", base_url="https://qz.sii.edu.cn")
 
     assert not isinstance(excinfo.value, ws.AuthenticationError)
     assert "No credentials were submitted" in str(excinfo.value)
     assert http.posts == 0
+
+
+@pytest.mark.parametrize("browser_requires_code", [False, True])
+def test_requests_verification_checks_browser_before_submitting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, browser_requires_code: bool
+) -> None:
+    """A client-specific challenge must neither block a clean form nor be ignored."""
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+    code = '<input name="authcode"><img src="/cas/captcha.jpg">'
+    browser = _FakePlaywrightLogin(
+        form_found=True,
+        page_html=(
+            '<form id="fm1"><input name="username"><input name="password">'
+            + (code if browser_requires_code else "")
+            + "</form>"
+        ),
+    )
+    browser.install(monkeypatch)
+
+    def requests_requires_code(*_args, **_kwargs):  # noqa: ANN202
+        raise ws_auth._CasVerificationRequired("requests needs a verification code")
+
+    monkeypatch.setattr(ws_auth, "_login_with_cas_requests", requests_requires_code)
+    error = ws_auth._CasVerificationRequired if browser_requires_code else ws.AuthenticationError
+    with pytest.raises(error):
+        ws_auth.login_with_playwright("alice", "password", account="alice")
+
+    assert browser.submissions == (0 if browser_requires_code else 1)
+    assert browser.fills == (0 if browser_requires_code else 2)
+    assert login_guard.block_file("alice").exists() is not browser_requires_code
+    if browser_requires_code:
+        assert browser.closed
 
 
 def test_the_dead_template_captcha_is_not_read_as_a_prompt() -> None:
@@ -1289,7 +1325,7 @@ def test_a_code_field_that_appears_only_in_the_answer_is_still_named(
     )
     monkeypatch.setattr(
         "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("the browser cannot answer a verification code either"),
+        lambda: pytest.fail("a rejected submission must not be retried through the browser"),
     )
 
     with pytest.raises(ws.AuthenticationError) as excinfo:
@@ -1353,7 +1389,7 @@ def test_a_gated_rejection_keeps_the_platforms_words_but_not_their_classificatio
     )
     monkeypatch.setattr(
         "playwright.sync_api.sync_playwright",
-        lambda: pytest.fail("the browser cannot answer a verification code either"),
+        lambda: pytest.fail("a rejected submission must not be retried through the browser"),
     )
 
     with pytest.raises(ws.AuthenticationError) as excinfo:

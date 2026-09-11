@@ -149,15 +149,14 @@ def test_a_transient_refusal_still_uses_the_short_schedule() -> None:
 def test_the_raisers_classification_outranks_the_words_it_quotes() -> None:
     """A CAPTCHA-gated rejection quotes the platform's own "账号或密码错误".
 
-    The raiser knows the quote is about an empty code field, not about the
-    credentials, and says so on the error. Scanning the text instead would
-    find the quote and buy a fine password the six-hour credential hold.
+    The code field makes the generic rejection inconclusive about credentials.
+    Scanning the quoted text instead would impose the six-hour credential hold.
     """
     gated = AuthenticationError(
         "Login did not complete.\n"
         "Platform reported: 账号或密码错误。\n"
         "The page CAS answered with is asking for a verification code, so this "
-        "rejection is about the machine proving itself, not about the account."
+        "response alone does not establish that the password is wrong."
     )
     gated.credential_rejection = False
     with pytest.raises(AuthenticationError):
