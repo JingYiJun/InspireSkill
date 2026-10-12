@@ -2174,10 +2174,10 @@ def shell_serving(
             workspace_id=workspace_id,
             session=session,
             pick=pick,
-            operation=lambda resolved_id: (
+            operation=lambda resolved_id, live_session: (
                 resolved_id,
                 browser_api_module.list_serving_instances(
-                    resolved_id, page=1, page_size=200, session=session
+                    resolved_id, page=1, page_size=200, session=live_session
                 )[0],
             ),
         )

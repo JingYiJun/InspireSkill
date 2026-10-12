@@ -1466,10 +1466,10 @@ def shell_ray(
             workspace=workspace,
             limit=200,
             pick=pick,
-            operation=lambda resolved_id: (
+            operation=lambda resolved_id, live_session: (
                 resolved_id,
                 _fetch_ray_instances(
-                    resolved_id, limit=200, session=session, show_all=True
+                    resolved_id, limit=200, session=live_session, show_all=True
                 )[0],
             ),
         )
