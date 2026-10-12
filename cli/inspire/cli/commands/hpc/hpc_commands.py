@@ -1586,9 +1586,13 @@ def shell_hpc(
             ),
         )
 
-        views = hpc_instance_views(
-            [row for row in instances if "run" in str(row.get("status") or "").lower()]
-        )
+        running = [row for row in instances if "run" in str(row.get("status") or "").lower()]
+        # Keep the labels shown by `instances`, including duplicate roles.
+        running_handles = {view.handle for view in hpc_instance_views(running)}
+        views = [
+            view for view in hpc_instance_views(instances)
+            if view.handle in running_handles
+        ]
         if not views:
             _handle_error(
                 ctx,

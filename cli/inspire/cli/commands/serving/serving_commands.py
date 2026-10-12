@@ -61,6 +61,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.services.serving.serving_instances import (
     ServingInstanceSelectionError,
+    fetch_serving_instances,
     select_serving_instance_views,
     serving_instance_views,
 )
@@ -2176,9 +2177,7 @@ def shell_serving(
             pick=pick,
             operation=lambda resolved_id, live_session: (
                 resolved_id,
-                browser_api_module.list_serving_instances(
-                    resolved_id, page=1, page_size=200, session=live_session
-                )[0],
+                fetch_serving_instances(resolved_id, session=live_session)[0],
             ),
         )
 
@@ -2187,7 +2186,12 @@ def shell_serving(
             for row in instances
             if "running" in str(row.get("status") or "").lower()
         ]
-        views = serving_instance_views(running)
+        # Keep the labels shown by `instances`, including fallback ranks.
+        running_handles = {view.handle for view in serving_instance_views(running)}
+        views = [
+            view for view in serving_instance_views(instances)
+            if view.handle in running_handles
+        ]
         if not views:
             _handle_error(
                 ctx,
